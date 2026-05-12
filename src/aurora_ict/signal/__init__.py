@@ -1,7 +1,7 @@
-"""Aurora-ICT signal — bot 박힌 거 박을 거 박힘 layer.
+"""Aurora-ICT signal — bot이 소비하는 signal layer.
 
-박힌 strategy 박힘 → 박힌 진입 가능한 setup 박힌 거 박힌 signal 박힘.
-bot_ict_instance 박힌 거 박힌 거 박힘 박힌 거 박힘 박힌 거 박힘.
+strategy가 만든 setup 중 진입 가능한 것을 signal로 변환한다.
+bot_ict_instance가 이 signal을 받아 주문을 실행한다.
 """
 
 from aurora_ict.signal.ict_signal import (

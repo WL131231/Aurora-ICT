@@ -1,19 +1,18 @@
 """Silver Bullet entry model — Aurora-ICT Phase 1 첫 매매 strategy.
 
-ICT 박힌 핵심 entry model 박힘. 매일 3개 1시간 윈도우 박힌 거 박은 첫 FVG 박힘 박은
-박힌 거 박힘.
+ICT의 대표 entry model. 매일 3개의 1시간 Silver Bullet 윈도우에서 첫 FVG를 잡아
+진입하는 단순한 형태.
 
-박힌 시퀀스:
-1. **Silver Bullet 윈도우** 박힌 박힌 거 (NY 3-4am / 10-11am / 2-3pm)
-2. **HTF bias** 박힘 (15m or higher swing structure 박힌 거 박힌 trend)
-3. 박힌 윈도우 안 박힌 **첫 FVG** 박힘 (bias 방향 박힘)
-4. **Entry** = FVG edge (limit order) — 가격 박힌 거 박힘 박힌 retest 박힌 후
-5. **SL** = FVG 박힌 봉 wick 너머
-6. **TP** = 다음 BSL/SSL (옛 swing high/low — Sweep 박힌 거 박힘 X)
-7. **RR ≥ 1:2** 박힘 (책 박힌 1:3 박힘 strict, 1:2 박힘 박는 거)
+처리 시퀀스:
+1. **Silver Bullet 윈도우** 진입 (NY 3-4am / 10-11am / 2-3pm)
+2. **HTF bias** 결정 (15m 이상 swing structure 기준 trend)
+3. 윈도우 안의 **첫 FVG** (bias 방향과 일치하는 것)
+4. **Entry** = FVG mean threshold (limit order) — retest 노림
+5. **SL** = FVG 봉 wick 너머
+6. **TP** = 다음 BSL/SSL (아직 sweep되지 않은 swing high/low)
+7. **RR ≥ 1:2** (책의 1:3은 strict, 1:2 정도면 채택)
 
-박은 거 박은 거 = 박힌 setup 박힌 거 박힘. 실제 주문 박힘 X — bot_instance 박힌 거 박힘
-박힐 거 박힘.
+이 모듈은 setup 후보만 생성한다. 실제 주문 집행은 bot_instance가 담당.
 """
 
 from __future__ import annotations
@@ -42,19 +41,19 @@ class Direction(StrEnum):
 
 @dataclass(slots=True)
 class SilverBulletSetup:
-    """Silver Bullet setup 1개 — 박힐 수 있는 매매 1건.
+    """Silver Bullet setup 한 건 — 진입 후보 매매 1건.
 
     Attributes:
-        ts_ms: FVG 박힌 봉 (중간 봉) open time.
+        ts_ms: FVG 봉 (중간 봉) open time.
         direction: LONG / SHORT.
         window: ``"london_sb"`` / ``"am_sb"`` / ``"pm_sb"``.
-        entry: limit order 박은 가격 (FVG edge 박힘).
+        entry: limit order 가격 (FVG mean threshold).
         stop_loss: SL 가격.
         take_profit: TP 가격 (next liquidity target).
         risk_reward: TP / SL ratio (절대값).
-        fvg: 박힌 FVG 박은 거.
-        target_swing_idx: TP 박힌 거 박힌 swing index (없으면 None).
-        reason: 박힌 reason 박힌 거 박힘 (debug 박힘).
+        fvg: 트리거 FVG 객체.
+        target_swing_idx: TP로 잡은 swing index (없으면 None).
+        reasons: 디버그용 사유 문자열 리스트.
     """
 
     ts_ms: int
@@ -73,10 +72,10 @@ def _bias_from_structure(
     df: pd.DataFrame,
     swings: list[SwingPoint],
 ) -> TrendDirection:
-    """가장 최근 structure event 박은 trend 박힘.
+    """가장 최근 structure event로부터 trend를 추출.
 
-    None 박힘 박힘 박힘 박힌 (BOS/CHOCH 박힘 박힘 박힌 거 박힘) → 박은 swing 박힌 거 박힌
-    last_high vs last_low 박힌 순서 박힌 거 박힘.
+    이벤트가 없으면 (BOS/CHoCH 아직 미발생) → 마지막 high vs 마지막 low의 시간
+    순서로 fallback 결정.
     """
     events = detect_structure_events(df, swings)
     if events:
@@ -92,12 +91,12 @@ def _next_liquidity_target(
     direction: Direction,
     entry_price: float,
 ) -> SwingPoint | None:
-    """Entry 박은 거 박힘 박힘 target liquidity 박힘.
+    """Entry 가격을 기준으로 다음 target liquidity 탐색.
 
-    - LONG → entry 위쪽 박힌 unswept swing high (BSL — TP 박힌 자리)
-    - SHORT → entry 아래쪽 박힌 unswept swing low (SSL)
+    - LONG → entry 위쪽의 unswept swing high (BSL — TP 자리)
+    - SHORT → entry 아래쪽의 unswept swing low (SSL)
 
-    가장 가까운 박힌 거 (entry 박힌 거 박힘 박힌 가격 차이 가장 작은 거) 박힘.
+    가장 가까운 것 (entry와 가격 차이가 최소) 반환.
     """
     target_type = SwingType.HIGH if direction is Direction.LONG else SwingType.LOW
     candidates: list[SwingPoint] = []
@@ -105,16 +104,16 @@ def _next_liquidity_target(
         if s.type is not target_type or s.swept:
             continue
         if direction is Direction.LONG:
-            # TP 박은 entry 박힌 위 박힘
+            # TP는 entry 위쪽이어야 함
             if s.price > entry_price:
                 candidates.append(s)
         else:
-            # TP 박은 entry 박힌 아래
+            # TP는 entry 아래쪽이어야 함
             if s.price < entry_price:
                 candidates.append(s)
     if not candidates:
         return None
-    # 가장 가까운 박힌 거 (entry 박힌 거 박힘 박힌 가격 차이 최소)
+    # entry와 가격 차이가 가장 작은 후보
     return min(candidates, key=lambda s: abs(s.price - entry_price))
 
 
@@ -126,15 +125,14 @@ def detect_silver_bullet_setups(
     min_rr: float = 2.0,
     fvg_min_size_pct: float | None = 0.0005,
 ) -> list[SilverBulletSetup]:
-    """Silver Bullet setup 박힌 거 박힘.
+    """Silver Bullet setup 후보 검출.
 
     Args:
         df: OHLCV DataFrame — index = ms 또는 datetime UTC.
-        bias: 외부에서 박힌 HTF bias. ``None`` 박힘 → 박힌 swing structure 박힘 박힘
-            자동 박힘.
-        swing_left/right: swing pivot 박은 window.
-        min_rr: 최소 RR 박힘 (표준 2.0).
-        fvg_min_size_pct: FVG 박힌 거 박힌 최소 % size (noise 박힘 박힘 박힘).
+        bias: 외부에서 주입하는 HTF bias. ``None``이면 swing structure로 자동 추정.
+        swing_left/right: swing pivot 윈도우.
+        min_rr: 최소 RR (표준 2.0).
+        fvg_min_size_pct: FVG 최소 % size (noise 필터).
 
     Returns:
         ``SilverBulletSetup`` list — 시간순.
@@ -156,9 +154,9 @@ def detect_silver_bullet_setups(
 
     fvgs = detect_fvgs(df, min_size_pct=fvg_min_size_pct)
 
-    # 박힌 윈도우 박힘 박힌 거 박힌 FVG 박힘 박힘 박힘 첫 번째 박힘 박힘 (window 단위)
+    # 각 (day, window) 조합에 대해 첫 valid FVG 한 건만 setup으로 채택
     setups: list[SilverBulletSetup] = []
-    seen_windows: set[tuple[int, str]] = set()  # (day_ms, window_name) 박힘 박힌 첫 박힘
+    seen_windows: set[tuple[int, str]] = set()  # (day_ms, window_name) — 일자별 1회 제한
 
     for fvg in fvgs:
         if fvg.type is not desired_fvg_type:
@@ -169,7 +167,7 @@ def detect_silver_bullet_setups(
         day_ms = (fvg.ts_ms // 86_400_000) * 86_400_000
         key = (day_ms, window)
         if key in seen_windows:
-            continue  # 박은 윈도우 박힌 거 valid setup 박은 박힘 박힙 박힘
+            continue  # 같은 (day, window)에서 이미 valid setup 채택됨
 
         entry = fvg.mean_threshold
 
@@ -193,7 +191,7 @@ def detect_silver_bullet_setups(
         if rr < min_rr:
             continue
 
-        # valid setup 박힘 박힘 — seen_windows 박은 거 박힘 박힘 박힘
+        # valid setup 확정 — seen_windows에 추가해 같은 (day, window) 중복 차단
         seen_windows.add(key)
 
         reasons = [

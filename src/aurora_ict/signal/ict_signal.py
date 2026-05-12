@@ -1,15 +1,15 @@
-"""ICT Signal generator — strategy 박힌 거 박힌 bot 박힐 박는 signal.
+"""ICT Signal generator — strategy 결과를 bot이 소비하는 signal로 변환.
 
-bot_ict_instance 박힌 거 박힌 거 박은 거:
-1. 매 분 OHLCV (BTCUSDT 1m) fetch 박음
-2. ``generate_ict_signal(df)`` 박은 거 박힌 거 박힘
-3. ``action`` 박힌 거 박힌 거 박힘 박힌 거 박힘:
-   - ``NO_ACTION`` — 진입 박힌 거 없음
-   - ``ENTER_LONG`` / ``ENTER_SHORT`` — limit order 박은 거 박힘
-   - ``CANCEL`` — 박힌 박힌 박힘 limit order 박은 거 박은 거 박힘
+bot_ict_instance 호출 흐름:
+1. 매 분 OHLCV (BTCUSDT 1m) fetch
+2. ``generate_ict_signal(df)`` 호출
+3. ``action`` 기반 분기:
+   - ``NO_ACTION`` — 진입할 대상 없음
+   - ``ENTER_LONG`` / ``ENTER_SHORT`` — limit order 등록
+   - ``CANCEL`` — 기존 미체결 limit order 취소 (현 구현엔 enum 미사용)
 
-박힌 signal 박힌 거 박힘 = 박힌 setup 박힌 가장 가까운 거 박힘 박힘 박힘 — bot 박힌 거
-박은 거 박힐 거 박힘 1개 시점 박힌 거 박힘 (실시간 박힘).
+returned signal은 가장 최근 setup 1건만 반영 — bot은 시점당 1개 의사결정을 하는
+실시간 루프 구조.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from aurora_ict.strategy.silver_bullet import (
 
 
 class SignalAction(StrEnum):
-    """bot 박힐 박은 action 박힌 거."""
+    """bot이 수행할 action."""
 
     NO_ACTION = "no_action"
     ENTER_LONG = "enter_long"
@@ -40,11 +40,11 @@ class ICTSignal:
     """ICT signal 1개.
 
     Attributes:
-        action: 박힌 action 박힌 거.
-        setup: 박힌 SilverBulletSetup 박힌 거 (``NO_ACTION`` 박힘 박힘 ``None``).
-        symbol: 박힌 symbol (e.g. "BTCUSDT").
-        ts_ms: signal 박은 ts (= 마지막 봉 박힘 박힘).
-        reason: 박힌 reason 박힌 거 박힙 박힘.
+        action: 수행할 action.
+        setup: 대상 SilverBulletSetup (``NO_ACTION``이면 ``None``).
+        symbol: 대상 symbol (e.g. "BTCUSDT").
+        ts_ms: signal 발생 ts (= 마지막 봉 시점).
+        reason: 진단/로깅용 사유 문자열.
     """
 
     action: SignalAction
@@ -55,7 +55,7 @@ class ICTSignal:
 
     @property
     def is_actionable(self) -> bool:
-        """진입 박은 action 박힌 거 박힘."""
+        """진입성(action) signal 여부."""
         return self.action in (SignalAction.ENTER_LONG, SignalAction.ENTER_SHORT)
 
 
@@ -66,17 +66,17 @@ def generate_ict_signal(
     min_rr: float = 2.0,
     fvg_min_size_pct: float | None = 0.0005,
 ) -> ICTSignal:
-    """OHLCV 박힌 거 박힘 박힌 ICT signal 박힘.
+    """OHLCV DataFrame으로부터 ICT signal을 한 건 생성.
 
     Args:
-        df: OHLCV DataFrame — 마지막 봉 박은 현재 시점.
-        symbol: 박힌 symbol (e.g. "BTCUSDT").
-        bias: HTF bias 박힘. ``None`` 박힘 자동 박힘.
+        df: OHLCV DataFrame — 마지막 봉이 현재 시점.
+        symbol: 대상 symbol (e.g. "BTCUSDT").
+        bias: HTF bias. ``None``이면 swing structure로 자동 추정.
         min_rr: 최소 RR.
-        fvg_min_size_pct: FVG 박힌 최소 % size.
+        fvg_min_size_pct: FVG 최소 % size.
 
     Returns:
-        ``ICTSignal`` — actionable 박힘 박힘 박은 entry 박은 거 박힘.
+        ``ICTSignal`` — actionable이면 entry 정보 포함.
     """
     if isinstance(df.index, pd.DatetimeIndex):
         last_ts_ms = int(df.index[-1].value // 10**6)
@@ -110,14 +110,10 @@ def generate_ict_signal(
             reason="no setup",
         )
 
-    # 가장 최근 setup 박은 거 박힘 (마지막 봉 박힌 거 박힘 박힘 박힌 setup)
-    # — bot 박힌 거 박힘 박힘 박힐 박힘 박힌 거 박힘 1개 박힌 거 박힘
+    # 가장 최근 setup만 채택 (마지막 봉 기준) — bot은 시점당 1개 의사결정.
     setup = setups[-1]
 
-    # 박힌 setup 박힌 거 박힘 마지막 봉 박힌 거 박힘 박힌 거 박힘 박힘 — stale setup 박힘 X
-    # (박힌 거 박힌 거 박힌 거 박힘 박힌 거 박힘 박힌 거 박힘 박힘 박힘 박힘 박힘)
-    # 박힌 거 박힌 거 박힘 = 박힌 봉 박힌 거 박힘 박힘 박힌 거 박힙 박힐 박힌 거 박힘 박힘
-    # (within 5 bars 박힌 거 박힘 박힘 박힘 박힘)
+    # 마지막 봉에서 setup 봉이 너무 멀면 stale 처리 (within 5 bars 안에서만 신뢰).
     bars_since = len(df) - 1 - setup.fvg.idx
     if bars_since > 5:
         return ICTSignal(

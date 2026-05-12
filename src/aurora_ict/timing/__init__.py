@@ -1,6 +1,6 @@
-"""Aurora-ICT timing — ICT Killzone / Silver Bullet / Macros 박힘.
+"""Aurora-ICT timing — ICT Killzone / Silver Bullet / Macros.
 
-ICT 박힌 핵심 = TIME first, PRICE second. 시간 박힌 거 박힘 안 박은 setup 박힘 신뢰도 ↓.
+ICT 핵심 = TIME first, PRICE second. 시간대가 맞지 않은 setup은 신뢰도가 떨어진다.
 """
 
 from aurora_ict.timing.killzone import (

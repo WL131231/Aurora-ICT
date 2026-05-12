@@ -1,17 +1,17 @@
-"""Aurora-ICT settings — pydantic v2 Settings + 환경변수 박힘.
+"""Aurora-ICT settings — pydantic v2 Settings + 환경변수 기반.
 
-박은 거 박힘:
-- ``run_mode`` = ``demo`` (기본) / ``live`` — 박힌 모드 박힘 박힘 API 키 박힘 박힘 박힘
-- ``enabled`` = bot 박힘 ON/OFF (start 박은 박힘 박힘 박힘 박힘 박힘)
-- Bybit demo / live API 키 박힘 박힘 박힘 박힘
-- 매매 박힌 파라미터 — risk_per_trade_pct / leverage / symbol / min_rr 등
+담는 항목:
+- ``run_mode`` = ``demo`` (기본) / ``live`` — 모드에 따라 사용하는 API 키 분기
+- ``enabled`` = bot ON/OFF (start 시 이 값이 False면 가동 불가)
+- Bybit demo / live API 키 (각 모드별로 별도 보관)
+- 매매 파라미터 — risk_per_trade_pct / leverage / symbol / min_rr 등
 
-env 박힌 거 박힘 박힘 prefix = ``AURORA_ICT_``. 예:
+환경변수 prefix = ``AURORA_ICT_``. 예:
 - ``AURORA_ICT_RUN_MODE=demo``
 - ``AURORA_ICT_DEMO_API_KEY=...``
 - ``AURORA_ICT_LIVE_API_KEY=...``
 
-.env 박힌 거 박힘 박힘 박힘 박힘 박힘 박힙 박힘 박힘 박힘 박힘 박힘.
+.env 파일도 같은 prefix로 읽어 들인다.
 """
 
 from __future__ import annotations
@@ -24,29 +24,29 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class RunMode(StrEnum):
-    """봇 박힘 박힌 모드."""
+    """봇 실행 모드."""
 
     DEMO = "demo"
     LIVE = "live"
 
 
 class IctSettings(BaseSettings):
-    """Aurora-ICT 박힌 설정 — 환경변수 박힘 자동 박힘.
+    """Aurora-ICT 설정 — 환경변수에서 자동 로드.
 
     Attributes:
-        run_mode: 박은 모드 (demo / live). 기본 demo.
-        enabled: bot 박힘 박은 start 박힘 박은 박힘 (False 박힙 박힘 start 박힘 X).
-        symbol: 박힌 symbol (e.g. "BTC/USDT:USDT" ccxt 박힘 박힘 박힘 박힘 박힘).
+        run_mode: 운용 모드 (demo / live). 기본 demo.
+        enabled: bot 가동 허용 플래그 (False면 start 불가).
+        symbol: 거래 symbol (e.g. "BTC/USDT:USDT", ccxt unified symbol 형식).
         timeframe: OHLCV timeframe.
-        risk_per_trade_pct: 박힌 trade 박힌 risk %.
-        leverage: 박힌 leverage.
+        risk_per_trade_pct: 트레이드당 risk %.
+        leverage: 레버리지.
         min_rr: 최소 RR.
-        fvg_min_size_pct: FVG 박힌 최소 % size.
-        step_interval_sec: bot step 박힘 interval.
+        fvg_min_size_pct: FVG 최소 % size.
+        step_interval_sec: bot step 호출 간격.
         ohlcv_limit: fetch 봉 수.
 
-        demo_api_key / demo_api_secret: Bybit Demo Trading 박힌 키.
-        live_api_key / live_api_secret: Bybit 실매매 박힌 키 (박힙 박힘 박힘 박힘 박힘 빈).
+        demo_api_key / demo_api_secret: Bybit Demo Trading 키.
+        live_api_key / live_api_secret: Bybit 실매매 키 (미사용 시 빈 값).
     """
 
     model_config = SettingsConfigDict(
@@ -75,14 +75,14 @@ class IctSettings(BaseSettings):
 
     @property
     def active_api_key(self) -> str:
-        """``run_mode`` 박힌 박힌 API key 박힙 박힘 박힘."""
+        """``run_mode``에 해당하는 API key 반환."""
         if self.run_mode is RunMode.LIVE:
             return self.live_api_key.get_secret_value()
         return self.demo_api_key.get_secret_value()
 
     @property
     def active_api_secret(self) -> str:
-        """``run_mode`` 박힌 박힌 API secret."""
+        """``run_mode``에 해당하는 API secret 반환."""
         if self.run_mode is RunMode.LIVE:
             return self.live_api_secret.get_secret_value()
         return self.demo_api_secret.get_secret_value()
@@ -96,7 +96,7 @@ class IctSettings(BaseSettings):
         return self.run_mode is RunMode.DEMO
 
     def has_credentials(self) -> bool:
-        """박힌 모드 박힌 박힌 API 키 박힘 박힘 박힘 박힘."""
+        """현재 모드의 API 키 보유 여부."""
         return bool(self.active_api_key and self.active_api_secret)
 
 
@@ -104,9 +104,9 @@ _singleton: IctSettings | None = None
 
 
 def get_settings() -> IctSettings:
-    """싱글톤 settings 박힘.
+    """싱글톤 settings 반환.
 
-    첫 호출 박힘 .env 박힘 박힘 박힘 박힘 박힘 — 박힙 박힘 박힘 cache 박힘.
+    첫 호출 시 .env를 읽어 IctSettings를 만든 뒤 이후 호출은 cache 사용.
     """
     global _singleton
     if _singleton is None:
@@ -115,10 +115,10 @@ def get_settings() -> IctSettings:
 
 
 def reload_settings(env_file: str | Path | None = None) -> IctSettings:
-    """settings 박힘 박힘 박힘 박힘 박힙 박힘 박힘 — 테스트 박힘 / 박힌 박힘 박힘 박힘 박힘 박힘.
+    """싱글톤 settings를 강제로 다시 로드 — 테스트/런타임 키 갱신 등에 사용.
 
     Args:
-        env_file: 명시적 박힌 .env 박힘 박힘 박힙 박힘 박힘. ``None`` 박힘 박힘 박힘 박힘.
+        env_file: 명시적 .env 경로. ``None``이면 기본 위치에서 다시 읽음.
     """
     global _singleton
     if env_file is not None:

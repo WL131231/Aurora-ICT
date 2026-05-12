@@ -1,15 +1,15 @@
-"""Aurora-ICT bot instance — Bybit 박힌 거 박힘 매매 박힘.
+"""Aurora-ICT bot instance — Bybit 대상 실매매 실행기.
 
-박힌 거 박힌 거 박힘:
+처리 흐름:
 1. 매 분 OHLCV (BTCUSDT 1m) fetch — Bybit
-2. ``generate_ict_signal()`` 박힌 거 박힘
-3. ENTER_LONG / ENTER_SHORT 박힘 박힐 → limit order (entry) + SL + TP placement
-4. 박힌 position 박힌 거 박힐 박힘 SL/TP 박힌 거 박힘 박힐 박힘 (Bybit conditional 박힘)
-5. close 박힌 거 박힌 거 박힘 박힘 position 박힌 거 박힘 박힘
+2. ``generate_ict_signal()`` 호출
+3. ENTER_LONG / ENTER_SHORT 신호 시 → limit order (entry) + SL + TP placement
+4. 진입 후 position 추적, SL/TP 트리거는 거래소가 처리 (Bybit conditional)
+5. 청산이 감지되면 내부 position state 리셋
 
-Exchange client 박힌 거 박힘 박힌 거 박힘 — ``ExchangeClientProtocol`` 박힘 박힘 박힘
-박힐 박힘. Aurora 측 ``CCXTClient`` (Bybit) 박힌 거 박힘 박힘 박힘 박힘 박힘 (duck typing).
-테스트 박힌 거 박힘 박힘 박힘 mock 박힘 박힘.
+Exchange client는 외부 주입 — ``ExchangeClientProtocol``을 만족하면 됨.
+Aurora 측 ``CCXTClient`` (Bybit)를 어댑터로 감싸 사용 (duck typing).
+테스트에서는 mock으로 교체.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 class ExchangeClientProtocol(Protocol):
-    """Aurora 측 ``CCXTClient`` 박힌 거 박힘 (duck typing)."""
+    """Aurora 측 ``CCXTClient``와 호환되는 duck-typed 인터페이스."""
 
     async def fetch_ohlcv(
         self, symbol: str, timeframe: str, limit: int,
@@ -64,7 +64,7 @@ class BotState(StrEnum):
 
 @dataclass(slots=True)
 class _ActivePosition:
-    """박힌 박힌 position 박힌 박힌 state."""
+    """현재 진입 중인 position state."""
 
     direction: Direction
     entry: float
@@ -76,17 +76,17 @@ class _ActivePosition:
 
 @dataclass(slots=True)
 class BotIctInstance:
-    """ICT Silver Bullet 박힌 봇 instance.
+    """ICT Silver Bullet 봇 instance.
 
     Attributes:
-        client: Bybit client (Aurora 측 ``CCXTClient`` 박은 박힘 박힌 거).
-        symbol: 박힌 symbol (e.g. "BTCUSDT").
-        timeframe: OHLCV 박힌 timeframe (표준 "1m").
-        risk_per_trade_pct: 박힌 trade 박힌 risk % (총 자산 박힌 거).
-        leverage: 박힌 leverage.
+        client: Bybit client (Aurora 측 ``CCXTClient``를 어댑터로 감싼 것).
+        symbol: 거래 symbol (e.g. "BTCUSDT").
+        timeframe: OHLCV timeframe (표준 "1m").
+        risk_per_trade_pct: 트레이드당 risk % (총 자산 기준).
+        leverage: 사용 leverage.
         min_rr: 최소 RR (표준 2.0).
-        step_interval_sec: 박힌 step 박힘 박힘 interval (표준 60s).
-        ohlcv_limit: fetch 박힌 박힌 봉 수 (표준 200).
+        step_interval_sec: step 호출 간격 (표준 60s).
+        ohlcv_limit: fetch 봉 수 (표준 200).
     """
 
     client: ExchangeClientProtocol
@@ -102,19 +102,19 @@ class BotIctInstance:
     state: BotState = field(default=BotState.STOPPED)
     active_position: _ActivePosition | None = field(default=None)
     _task: asyncio.Task[None] | None = field(default=None)
-    _last_setup_ts_ms: int = field(default=0)  # 박힌 박힌 setup 박힌 거 중복 방지
+    _last_setup_ts_ms: int = field(default=0)  # 동일 setup 중복 진입 방지
 
     async def start(self) -> None:
-        """봇 박힌 거 박힘 (background task 박힘)."""
+        """봇 기동 (background task 생성)."""
         if self.state is BotState.RUNNING:
-            logger.info("BotIctInstance %s 박힘 박힌 박힘 박힘", self.symbol)
+            logger.info("BotIctInstance %s 이미 실행 중", self.symbol)
             return
         self.state = BotState.RUNNING
         self._task = asyncio.create_task(self._run_loop())
-        logger.info("BotIctInstance %s 박힘 박힘 박힘", self.symbol)
+        logger.info("BotIctInstance %s 시작", self.symbol)
 
     async def stop(self) -> None:
-        """봇 박힌 거 박힘 (background task 박힘 cancel)."""
+        """봇 정지 (background task cancel)."""
         self.state = BotState.STOPPED
         if self._task is not None:
             self._task.cancel()
@@ -123,22 +123,22 @@ class BotIctInstance:
             except asyncio.CancelledError:
                 pass
             self._task = None
-        logger.info("BotIctInstance %s 박힘 박힘", self.symbol)
+        logger.info("BotIctInstance %s 정지", self.symbol)
 
     async def _run_loop(self) -> None:
-        """매 step 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘."""
+        """매 step_interval_sec 마다 step()을 호출하는 메인 루프."""
         while self.state is BotState.RUNNING:
             try:
                 await self.step()
-            except Exception as e:  # noqa: BLE001 — step 박힌 거 박힘 박힘 박힘 박힘 박힘 박힘
-                logger.exception("step 박힘 박힘: %s", e)
+            except Exception as e:  # noqa: BLE001 — step 실패가 loop 전체를 죽이지 않도록
+                logger.exception("step 실패: %s", e)
             await asyncio.sleep(self.step_interval_sec)
 
     async def step(self) -> ICTSignal:
-        """박힌 step 박힘 박힘 — fetch + signal + execute. 박힌 박힘 박힘 signal 박힘.
+        """단일 step — fetch + signal + execute. 생성된 signal 반환.
 
         Returns:
-            박힌 ``ICTSignal`` 박힘 박힘 박힘 (테스트 박힘 박힘 박힘 박힙 박힘).
+            계산된 ``ICTSignal`` (테스트/디버그 용도로 노출).
         """
         df = await self._fetch_ohlcv()
 
@@ -149,7 +149,7 @@ class BotIctInstance:
             fvg_min_size_pct=self.fvg_min_size_pct,
         )
 
-        # 박힌 박힌 position 박힌 거 박힙 박힘 진입 박힘 박힘 박힘 X
+        # 진입 중인 position이 있으면 신규 진입은 막고 상태만 동기화
         if self.active_position is not None:
             await self._sync_position_state()
             return signal
@@ -157,7 +157,7 @@ class BotIctInstance:
         if not signal.is_actionable or signal.setup is None:
             return signal
 
-        # 박은 setup 박힌 거 박힌 거 박힘 박힘 박힘 박힘 (중복 박힘 X)
+        # 동일 setup으로 재진입 방지 (중복 주문 X)
         if signal.setup.ts_ms == self._last_setup_ts_ms:
             return signal
 
@@ -166,11 +166,11 @@ class BotIctInstance:
         return signal
 
     async def _fetch_ohlcv(self) -> pd.DataFrame:
-        """OHLCV fetch + DataFrame 박힘."""
+        """OHLCV fetch + DataFrame 변환."""
         rows = await self.client.fetch_ohlcv(
             self.symbol, self.timeframe, self.ohlcv_limit,
         )
-        # ccxt 박힌 거 박힘 = [ts_ms, open, high, low, close, volume]
+        # ccxt row 포맷 = [ts_ms, open, high, low, close, volume]
         df = pd.DataFrame(
             rows,
             columns=["ts_ms", "open", "high", "low", "close", "volume"],
@@ -180,18 +180,18 @@ class BotIctInstance:
         return df
 
     async def _execute_setup(self, setup: SilverBulletSetup) -> None:
-        """박힌 setup 박힌 거 박힘 박힘 주문 박힘 박힘.
+        """setup 한 건을 실제 주문으로 실행.
 
-        - limit order 박은 entry 박힘
-        - stop_loss / take_profit 박힘 박힘 (Bybit conditional)
-        - qty = risk_per_trade_pct 박힌 거 박힌 거 박힘 박힘 / SL 박힌 거리
+        - limit order로 entry 등록
+        - stop_loss / take_profit 함께 전달 (Bybit conditional)
+        - qty = risk_per_trade_pct 기반 자산 / SL 거리
         """
         side = "buy" if setup.direction is Direction.LONG else "sell"
 
         equity = await self._fetch_equity()
         qty = self._calc_qty(setup, equity)
         if qty <= 0:
-            logger.warning("qty 박힘 박힘 박힘 → skip: setup=%s", setup.ts_ms)
+            logger.warning("qty 계산 결과 0 이하 → skip: setup=%s", setup.ts_ms)
             return
 
         logger.info(
@@ -209,7 +209,7 @@ class BotIctInstance:
                 stop_loss=setup.stop_loss,
                 take_profit=setup.take_profit,
             )
-        except Exception as e:  # noqa: BLE001 — 주문 실패 박힙 박힘 박힘 박힘
+        except Exception as e:  # noqa: BLE001 — 주문 실패도 봇은 계속 돌아야 함
             logger.exception("place_order 실패: %s", e)
             return
 
@@ -223,33 +223,32 @@ class BotIctInstance:
         )
 
     async def _fetch_equity(self) -> float:
-        """박힌 자산 (USDT equity) 박힘 박힘.
+        """가용 자산 (USDT equity) 조회.
 
-        Bybit V5 박힌 거 박힘: ``fetch_balance()`` 박힘 박힘 ccxt format = ``{"USDT":
-        {"total": ...}, ...}`` 박힘. fallback 박은 박힘 박힘 박힘 박힘 ``"total"`` 박힌 거
-        박힘 박힘 1000.0 박힘 (테스트 박힘 박힘 박힘).
+        Bybit V5 ccxt format = ``{"USDT": {"total": ...}, ...}``.
+        fallback 1000.0 (테스트/오류 대비).
         """
         try:
             bal = await self.client.fetch_balance()
         except Exception as e:  # noqa: BLE001
-            logger.warning("fetch_balance 박힘: %s — fallback $1000", e)
+            logger.warning("fetch_balance 실패: %s — fallback $1000", e)
             return 1000.0
         if not isinstance(bal, dict):
             return 1000.0
-        # ccxt 박힌 거 박힙 박힘 = {"USDT": {"total": float, "free": float, ...}, ...}
+        # ccxt 표준 = {"USDT": {"total": float, "free": float, ...}, ...}
         usdt = bal.get("USDT")
         if isinstance(usdt, dict):
             total = usdt.get("total")
             if isinstance(total, (int, float)) and total > 0:
                 return float(total)
-        # Bybit direct format 박힘 박힘 박힘 (capital fallback)
+        # Bybit direct format fallback
         total = bal.get("total")
         if isinstance(total, (int, float)) and total > 0:
             return float(total)
         return 1000.0
 
     def _calc_qty(self, setup: SilverBulletSetup, equity: float) -> float:
-        """진입 qty 박힘 박힘.
+        """진입 qty 계산.
 
         risk_amount = equity × risk_per_trade_pct/100
         qty = risk_amount / |entry - stop_loss|
@@ -259,23 +258,23 @@ class BotIctInstance:
         if sl_dist <= 0:
             return 0.0
         qty = notional_risk / sl_dist
-        # 최소 박힌 거 박힘 박힘 — Bybit 박힘 박힘 0.001 BTC 박힘
+        # Bybit BTC 최소 주문수량 0.001
         return max(qty, 0.001)
 
     async def _sync_position_state(self) -> None:
-        """박힌 position 박은 거 박힌 거 박힘 박힘 박힘 fetch_position() 박힘 박힘.
+        """거래소 fetch_position()으로 현재 position 상태 동기화.
 
-        SL/TP 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 → ``active_position`` 박힘 박힘.
+        SL/TP가 트리거되어 거래소 쪽에서 닫혔으면 ``active_position`` 리셋.
         """
         try:
             pos = await self.client.fetch_position(self.symbol)
         except Exception as e:  # noqa: BLE001
-            logger.warning("fetch_position 박힘: %s", e)
+            logger.warning("fetch_position 실패: %s", e)
             return
 
         if pos is None or float(pos.get("contracts", 0) or 0) == 0:
-            # position 박힘 박힘 박힘 → SL/TP 박힘 박힙 박힘 박힘
-            logger.info("position 박힘 박힘 박힘 (SL/TP hit 박힙) — state reset")
+            # 거래소 측 position 없음 → SL/TP hit으로 청산된 것으로 간주
+            logger.info("position 종료 감지 (SL/TP hit 추정) — state reset")
             self.active_position = None
 
 
