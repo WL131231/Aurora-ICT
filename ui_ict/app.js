@@ -155,12 +155,14 @@ function renderMarkers(payload) {
 
   // Setups
   m.setups.forEach(s => {
+    const score = s.confluence_score ?? 0;
+    const conf = score > 0 ? ` · ★${score}` : "";
     markers.push({
       time: tsToTimeSec(s.ts_ms),
       position: s.direction === "long" ? "belowBar" : "aboveBar",
       color: s.direction === "long" ? "#34d399" : "#fb7185",
       shape: s.direction === "long" ? "arrowUp" : "arrowDown",
-      text: `${s.direction.toUpperCase()} RR=${s.risk_reward.toFixed(1)}`,
+      text: `${s.direction.toUpperCase()} RR=${s.risk_reward.toFixed(1)}${conf}`,
     });
   });
 

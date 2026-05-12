@@ -23,13 +23,19 @@ from enum import StrEnum
 import pandas as pd
 
 from aurora_ict.indicators.fvg import FVG, FVGType, detect_fvgs
+from aurora_ict.indicators.liquidity import detect_liquidity_sweeps
+from aurora_ict.indicators.order_block import (
+    OrderBlock,
+    OrderBlockType,
+    detect_order_blocks,
+)
 from aurora_ict.indicators.structure import (
     StructureType,
     TrendDirection,
     detect_structure_events,
 )
 from aurora_ict.indicators.swing_points import SwingPoint, SwingType, detect_swing_points
-from aurora_ict.timing.killzone import in_silver_bullet
+from aurora_ict.timing.killzone import in_macro, in_silver_bullet
 
 
 class Direction(StrEnum):
@@ -53,6 +59,8 @@ class SilverBulletSetup:
         risk_reward: TP / SL ratio (절대값).
         fvg: 트리거 FVG 객체.
         target_swing_idx: TP로 잡은 swing index (없으면 None).
+        confluence_score: 같은 시점/방향 보강 지표 수 (0~3). OB/Macro/Sweep 각 +1.
+        confluences: 어떤 confluence 가 발견됐는지 (디버그 / UI 표시용).
         reasons: 디버그용 사유 문자열 리스트.
     """
 
@@ -65,6 +73,8 @@ class SilverBulletSetup:
     risk_reward: float
     fvg: FVG
     target_swing_idx: int | None = None
+    confluence_score: int = 0
+    confluences: list[str] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
 
 
@@ -117,6 +127,71 @@ def _next_liquidity_target(
     return min(candidates, key=lambda s: abs(s.price - entry_price))
 
 
+def _ob_confluence(
+    obs: list[OrderBlock],
+    direction: Direction,
+    setup_idx: int,
+    lookback: int = 12,
+) -> OrderBlock | None:
+    """Setup 직전 ``lookback`` 봉 안의 같은 방향 OB 후보 탐색.
+
+    같은 방향 = LONG → bullish OB / SHORT → bearish OB.
+    아직 mitigated 되지 않은 OB 만 confluence 로 인정.
+    """
+    target = OrderBlockType.BULLISH if direction is Direction.LONG else OrderBlockType.BEARISH
+    for ob in reversed(obs):
+        if ob.type is not target:
+            continue
+        if ob.mitigated:
+            continue
+        if not (setup_idx - lookback <= ob.idx <= setup_idx):
+            continue
+        return ob
+    return None
+
+
+def _sweep_confluence(
+    df: pd.DataFrame,
+    swings: list[SwingPoint],
+    direction: Direction,
+    setup_ts_ms: int,
+    lookback_bars: int = 12,
+) -> bool:
+    """Setup 직전 ``lookback_bars`` 안에 같은 방향 sweep 이 있었는지.
+
+    LONG → bullish sweep (SSL, 저점 sweep 후 반등)
+    SHORT → bearish sweep (BSL, 고점 sweep 후 하락)
+
+    detect_liquidity_sweeps 는 in-place 로 swing.swept 도 갱신하지만 본 함수는
+    검출 결과 list 만 사용한다.
+    """
+    sweeps = detect_liquidity_sweeps(df, swings)
+    from aurora_ict.indicators.liquidity import SweepType
+
+    target = SweepType.BULLISH if direction is Direction.LONG else SweepType.BEARISH
+    # 1m 봉 가정 시 lookback_bars × 60_000 ms 안의 sweep
+    # 그러나 timeframe 가 다르면 부정확 — 가장 안전한 건 봉 개수 기반.
+    # df 의 idx 가 sweep.idx 와 일치하므로 idx 차이로 계산.
+    if isinstance(df.index, pd.DatetimeIndex):
+        ts_arr = (df.index.astype("int64") // 10**6).to_numpy()
+    else:
+        ts_arr = df.index.to_numpy()
+    # setup_ts_ms 의 df index 찾기
+    setup_idx = None
+    for i, t in enumerate(ts_arr):
+        if int(t) == setup_ts_ms:
+            setup_idx = i
+            break
+    if setup_idx is None:
+        return False
+    for sw in sweeps:
+        if sw.type is not target:
+            continue
+        if setup_idx - lookback_bars <= sw.idx <= setup_idx:
+            return True
+    return False
+
+
 def detect_silver_bullet_setups(
     df: pd.DataFrame,
     bias: TrendDirection | None = None,
@@ -124,6 +199,7 @@ def detect_silver_bullet_setups(
     swing_right: int = 1,
     min_rr: float = 2.0,
     fvg_min_size_pct: float | None = 0.0005,
+    min_confluence: int = 0,
 ) -> list[SilverBulletSetup]:
     """Silver Bullet setup 후보 검출.
 
@@ -153,6 +229,8 @@ def detect_silver_bullet_setups(
     )
 
     fvgs = detect_fvgs(df, min_size_pct=fvg_min_size_pct)
+    # OB 는 setup 검출 후 confluence 평가에서 사용 — 1회만 계산.
+    obs = detect_order_blocks(df, displacement_bars=3, mark_mitigation=True)
 
     # 각 (day, window) 조합에 대해 첫 valid FVG 한 건만 setup으로 채택
     setups: list[SilverBulletSetup] = []
@@ -191,6 +269,28 @@ def detect_silver_bullet_setups(
         if rr < min_rr:
             continue
 
+        # Confluence 평가 — OB / Macro / Sweep 각 +1
+        confluences: list[str] = []
+        score = 0
+
+        ob_match = _ob_confluence(obs, direction, fvg.idx)
+        if ob_match is not None:
+            score += 1
+            confluences.append(f"ob={ob_match.type.value}@{ob_match.ts_ms}")
+
+        macro_name = in_macro(fvg.ts_ms)
+        if macro_name is not None:
+            score += 1
+            confluences.append(f"macro={macro_name}")
+
+        if _sweep_confluence(df, swings, direction, fvg.ts_ms):
+            score += 1
+            confluences.append("sweep")
+
+        # min_confluence 미달은 제외 (기본 0 이라 호환성 유지)
+        if score < min_confluence:
+            continue
+
         # valid setup 확정 — seen_windows에 추가해 같은 (day, window) 중복 차단
         seen_windows.add(key)
 
@@ -199,6 +299,7 @@ def detect_silver_bullet_setups(
             f"bias={bias.value}",
             f"fvg={fvg.type.value}@{fvg.ts_ms}",
             f"rr={rr:.2f}",
+            f"confluence={score}",
         ]
         setups.append(SilverBulletSetup(
             ts_ms=fvg.ts_ms,
@@ -210,6 +311,8 @@ def detect_silver_bullet_setups(
             risk_reward=rr,
             fvg=fvg,
             target_swing_idx=target_swing.idx,
+            confluence_score=score,
+            confluences=confluences,
             reasons=reasons,
         ))
 
