@@ -31,6 +31,7 @@ a = Analysis(
         "aurora_ict.bot.manager",
         "aurora_ict.bot.aurora_adapter",
         "aurora_ict.config.settings",
+        "aurora_ict.updater",
         # ccxt 비동기 거래소 (Bybit) — PyInstaller 가 명시 import 만 잡음
         "ccxt.async_support.bybit",
         "ccxt.pro.bybit",
