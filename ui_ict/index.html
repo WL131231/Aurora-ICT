@@ -106,6 +106,81 @@
     position: relative;
   }
   #chart { width: 100%; height: 100%; }
+  /* 포지션 패널 — 하단 (차트 아래) */
+  .positions-panel {
+    background: var(--bg-2);
+    border-top: 1px solid var(--line);
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    max-height: 220px;
+  }
+  .positions-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 18px;
+    border-bottom: 1px solid var(--line);
+    font-size: 10px;
+    letter-spacing: 0.25em;
+  }
+  .positions-title { color: var(--text-1); font-weight: 500; }
+  .positions-count { color: var(--text-3); }
+  .positions-scroll { overflow-y: auto; flex: 1; }
+  .positions-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .positions-table thead {
+    position: sticky; top: 0;
+    background: var(--bg-2);
+    z-index: 1;
+  }
+  .positions-table th {
+    text-align: left;
+    padding: 6px 12px;
+    font-weight: 400;
+    letter-spacing: 0.1em;
+    color: var(--text-3);
+    border-bottom: 1px solid var(--line);
+  }
+  .positions-table th.actions-col { text-align: right; }
+  .positions-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+    color: var(--text-1);
+  }
+  .positions-table tr:hover td { background: rgba(219,219,222,0.03); }
+  .pos-empty {
+    text-align: center !important;
+    color: var(--text-3) !important;
+    padding: 24px 12px !important;
+  }
+  .pos-side-long  { color: #34d399; font-weight: 500; }
+  .pos-side-short { color: #fb7185; font-weight: 500; }
+  .pos-pnl-pos    { color: #34d399; }
+  .pos-pnl-neg    { color: #fb7185; }
+  .pos-actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+  .pos-actions button {
+    width: auto;
+    margin: 0;
+    padding: 4px 10px;
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    border-radius: 3px;
+  }
+  .pos-actions .pos-btn-close-half  { color: #fbbf24; border-color: rgba(251,191,36,0.30); }
+  .pos-actions .pos-btn-close-half:hover { background: rgba(251,191,36,0.10); }
+  .pos-actions .pos-btn-close-full  { color: #fb7185; border-color: rgba(251,113,133,0.35); }
+  .pos-actions .pos-btn-close-full:hover { background: rgba(251,113,133,0.12); }
+
   .legend {
     padding: 10px 18px;
     background: var(--bg-2);
@@ -224,6 +299,34 @@
 
   <main class="main">
     <div class="chart-wrap"><div id="chart"></div></div>
+
+    <!-- 하단 포지션 패널 — Symbol / Size / Entry / Mark / Liq / Margin / PnL + Close By -->
+    <div class="positions-panel">
+      <div class="positions-header">
+        <span class="positions-title">POSITIONS</span>
+        <span class="positions-count" id="positions-count">0 open</span>
+      </div>
+      <div class="positions-scroll">
+        <table class="positions-table">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Size</th>
+              <th>Entry</th>
+              <th>Mark</th>
+              <th>Liq.</th>
+              <th>Margin</th>
+              <th>Unrealized PnL</th>
+              <th class="actions-col">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="positions-tbody">
+            <tr><td colspan="8" class="pos-empty">포지션 없음 — 봇 가동 후 진입 시 표시됩니다</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="legend">
       <span class="leg-bull-fvg">Bullish FVG</span>
       <span class="leg-bear-fvg">Bearish FVG</span>
