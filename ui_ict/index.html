@@ -131,6 +131,36 @@
   .leg-sb::before          { color: rgba(251, 191, 36, 0.5); }
   .leg-setup-long::before  { color: #34d399; }
   .leg-setup-short::before { color: #fb7185; }
+  .cred-form { display: flex; flex-direction: column; gap: 6px; }
+  .cred-form input {
+    width: 100%;
+    padding: 8px 10px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    color: var(--text-1);
+    font-family: inherit;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    border-radius: 4px;
+    transition: border-color 0.18s;
+  }
+  .cred-form input:focus {
+    outline: none;
+    border-color: var(--line-strong);
+  }
+  .cred-form input::placeholder { color: var(--text-3); }
+  .cred-hint {
+    margin: 4px 0 0 0;
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    color: var(--text-3);
+    line-height: 1.4;
+  }
+  #btn-toggle-enabled.on {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+  }
   .toast {
     position: fixed;
     bottom: 20px;
@@ -167,6 +197,17 @@
     <h2>Mode</h2>
     <button id="btn-demo" class="active">DEMO</button>
     <button id="btn-live" class="danger">LIVE</button>
+
+    <h2>API Credentials</h2>
+    <div class="cred-form">
+      <input id="cred-api-key" type="password" placeholder="API Key" autocomplete="off" />
+      <input id="cred-api-secret" type="password" placeholder="API Secret" autocomplete="off" />
+      <button id="btn-save-cred">SAVE KEYS</button>
+      <p class="cred-hint">Demo 키 권장 — .env 파일에 저장됩니다</p>
+    </div>
+
+    <h2>Bot Enable</h2>
+    <button id="btn-toggle-enabled">ENABLE</button>
 
     <h2>Control</h2>
     <button id="btn-start">START</button>

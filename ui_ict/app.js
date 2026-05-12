@@ -3,17 +3,17 @@
 const API = "http://127.0.0.1:8765";
 
 // ============================================================
-// 차트 박힘
+// Chart
 // ============================================================
 const chartEl = document.getElementById("chart");
 const chart = LightweightCharts.createChart(chartEl, {
-  layout: { background: { color: "#06060a" }, textColor: "#a1a1aa" },
+  layout: { background: { color: "#141316" }, textColor: "#8b8b90" },
   grid: {
-    vertLines: { color: "rgba(255,255,255,0.04)" },
-    horzLines: { color: "rgba(255,255,255,0.04)" },
+    vertLines: { color: "rgba(219,219,222,0.04)" },
+    horzLines: { color: "rgba(219,219,222,0.04)" },
   },
-  timeScale: { borderColor: "rgba(255,255,255,0.1)", timeVisible: true, secondsVisible: false },
-  rightPriceScale: { borderColor: "rgba(255,255,255,0.1)" },
+  timeScale: { borderColor: "rgba(219,219,222,0.10)", timeVisible: true, secondsVisible: false },
+  rightPriceScale: { borderColor: "rgba(219,219,222,0.10)" },
   crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
 });
 const candleSeries = chart.addCandlestickSeries({
@@ -22,7 +22,7 @@ const candleSeries = chart.addCandlestickSeries({
   wickUpColor: "#34d399", wickDownColor: "#fb7185",
 });
 
-// 박힌 거 박힘 박힘 박힘 박힙 박힘 박힘 박힘 (FVG box, Killzone band — line/area 박힘 박힘)
+// overlay 시리즈 (FVG line / Killzone band 등)
 const fvgBullSeries = chart.addAreaSeries({
   topColor: "rgba(52, 211, 153, 0.12)",
   bottomColor: "rgba(52, 211, 153, 0.02)",
@@ -41,7 +41,6 @@ const fvgBearSeries = chart.addAreaSeries({
 });
 
 function clearOverlays() {
-  // lightweight-charts 박힘 박힘 박힘 박힘 박힘 (개별 데이터 박힘 박힘 박힘)
   fvgBullSeries.setData([]);
   fvgBearSeries.setData([]);
   candleSeries.setMarkers([]);
@@ -50,7 +49,7 @@ function clearOverlays() {
 function tsToTimeSec(ts_ms) { return Math.floor(ts_ms / 1000); }
 
 // ============================================================
-// 상태 박힘
+// Status / API helpers
 // ============================================================
 const $ = (id) => document.getElementById(id);
 
@@ -85,10 +84,15 @@ function renderStatus(s) {
 
   $("btn-demo").classList.toggle("active", s.run_mode === "demo");
   $("btn-live").classList.toggle("active", s.run_mode === "live");
+
+  // Enable 토글 상태 반영
+  const btnEn = $("btn-toggle-enabled");
+  btnEn.classList.toggle("on", !!s.enabled);
+  btnEn.textContent = s.enabled ? "DISABLE" : "ENABLE";
 }
 
 // ============================================================
-// Marker 박힘
+// Markers (FVG / Sweep / Structure / Setup)
 // ============================================================
 function renderMarkers(payload) {
   const m = payload.markers;
@@ -99,9 +103,7 @@ function renderMarkers(payload) {
   $("c-kz").textContent = payload.count.killzones;
   $("c-setups").textContent = payload.count.setups;
 
-  // FVG 박힘 박힘 — 박힌 박힌 박힙 박힙 박힘 area series 박힘 박힘 박힘 박힘 박힘 박힘 박힘
-  // 박힘 박힘 박힘 (각 FVG 박힘 박힘 박힘 박힘 박힘 박힘 박힘 별도 시리즈 박힘 박힙) — 단순화.
-  // 박힌 박힘 박힘 박힘 marker 박힙 박힘 박힘 박힘 박힘 setMarkers 박힘 박힘.
+  // 단순 marker 렌더 — 각 FVG 별 사각형 대신 setMarkers 일괄 표시.
   const markers = [];
 
   // FVG markers
@@ -116,7 +118,7 @@ function renderMarkers(payload) {
     });
   });
 
-  // Sweep markers (wick 박힘 박힘)
+  // Sweep markers (wick-only sweeps)
   m.sweeps.forEach(s => {
     markers.push({
       time: tsToTimeSec(s.ts_ms),
@@ -151,11 +153,11 @@ function renderMarkers(payload) {
     });
   });
 
-  // 시간순 박힘
+  // 시간순 정렬
   markers.sort((a, b) => a.time - b.time);
   candleSeries.setMarkers(markers);
 
-  // FVG area series 박힘 박힘 박힘 박힘 박힘 (단순 박힘 박힘 — 박은 박힙 박힘 mean line 박힘 박힘 박힘 박힘 박힘)
+  // FVG mean line — 각 FVG 의 mid price 를 area series 로 추적 (단순 indicator)
   const bullLine = m.fvgs.filter(f => f.type === "bullish").map(f => ({
     time: tsToTimeSec(f.ts_ms), value: f.mean,
   }));
@@ -167,7 +169,7 @@ function renderMarkers(payload) {
 }
 
 // ============================================================
-// OHLCV → candles (markers/ 박힙 박힙 박힌 봉 박힘 박힙)
+// OHLCV fetch + render (candles + markers)
 // ============================================================
 async function fetchAndRender() {
   try {
@@ -187,24 +189,54 @@ async function fetchAndRender() {
 }
 
 // ============================================================
-// 박은 버튼 박힘
+// Button handlers
 // ============================================================
 $("btn-demo").onclick = async () => {
   try { await api("/ict/run-mode", "POST", { mode: "demo" }); await fetchAndRender(); }
   catch (e) { toast(e.message, true); }
 };
 $("btn-live").onclick = async () => {
-  if (!confirm("LIVE 모드로 박힘 박힘 박힘 박힘? (실거래)")) return;
+  if (!confirm("LIVE 모드로 전환하시겠습니까? (실거래)")) return;
   try { await api("/ict/run-mode", "POST", { mode: "live" }); await fetchAndRender(); }
   catch (e) { toast(e.message, true); }
 };
 $("btn-start").onclick = async () => {
-  try { await api("/ict/start", "POST"); toast("봇 박힘 박힘"); await fetchAndRender(); }
+  try { await api("/ict/start", "POST"); toast("봇 시작됨"); await fetchAndRender(); }
   catch (e) { toast(e.message, true); }
 };
 $("btn-stop").onclick = async () => {
-  try { await api("/ict/stop", "POST"); toast("봇 박힘 박힘"); await fetchAndRender(); }
+  try { await api("/ict/stop", "POST"); toast("봇 중지됨"); await fetchAndRender(); }
   catch (e) { toast(e.message, true); }
+};
+
+// 키 저장 + Enable 토글 (온보딩)
+$("btn-save-cred").onclick = async () => {
+  const apiKey = $("cred-api-key").value.trim();
+  const apiSecret = $("cred-api-secret").value.trim();
+  if (!apiKey || !apiSecret) {
+    toast("API Key/Secret 필수", true);
+    return;
+  }
+  // 현재 run_mode 기준 저장 (DEMO/LIVE 버튼으로 분리)
+  const mode = $("btn-live").classList.contains("active") ? "live" : "demo";
+  try {
+    await api("/ict/credentials", "POST", {
+      mode, api_key: apiKey, api_secret: apiSecret,
+    });
+    toast(`${mode.toUpperCase()} 키 저장됨`);
+    $("cred-api-key").value = "";
+    $("cred-api-secret").value = "";
+    await fetchAndRender();
+  } catch (e) { toast(e.message, true); }
+};
+
+$("btn-toggle-enabled").onclick = async () => {
+  const currentlyOn = $("btn-toggle-enabled").classList.contains("on");
+  try {
+    await api("/ict/enabled", "POST", { enabled: !currentlyOn });
+    toast(currentlyOn ? "Bot disabled" : "Bot enabled");
+    await fetchAndRender();
+  } catch (e) { toast(e.message, true); }
 };
 
 // ============================================================
@@ -217,6 +249,6 @@ function fit() {
 window.addEventListener("resize", fit);
 fit();
 
-// 초기 박힘 + polling
+// 초기 fetch + polling (10s 주기)
 fetchAndRender();
 setInterval(fetchAndRender, 10_000);
