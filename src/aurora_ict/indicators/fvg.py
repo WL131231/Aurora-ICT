@@ -1,16 +1,16 @@
 """FVG (Fair Value Gap) detector — Aurora-ICT v0.1.0 첫 indicator.
 
-ICT 핵심 PD-Array 박은 거. 3봉 패턴 박힌 imbalance:
+ICT 핵심 PD-Array. 3봉 패턴 기반 imbalance:
 - **Bullish FVG (BISI — Buyside Imbalance, Sellside Inefficiency)**: 1봉 high < 3봉 low
 - **Bearish FVG (SIBI — Sellside Imbalance, Buyside Inefficiency)**: 1봉 low > 3봉 high
 
-중간 (2번째) 봉은 보통 큰 displacement candle 박힘 (장대봉). 이 봉 박힌 거 박힌 wick
-overlap 박힌 안 박혀야 valid FVG. 즉 1봉 wick와 3봉 wick 사이에 박힌 안 박힌 gap.
+중간 (2번째) 봉은 보통 큰 displacement candle (장대봉). 이 봉의 wick이 1봉/3봉과
+overlap되지 않아야 valid FVG — 즉 1봉 wick와 3봉 wick 사이에 빈 gap이 남는 패턴.
 
-가격 측 FVG 박힌 거 다시 박을 가능성 높음 (mean reversion 박는 거 = IPDA의 fair value
-re-balance). 그래서 ICT 진입 박는 거 = FVG retest 박힌 시점.
+가격은 FVG 영역을 다시 매워줄 확률이 높다 (mean reversion = IPDA의 fair value
+re-balance). 그래서 ICT 진입 시점 = FVG retest 발생 순간.
 
-Inverse FVG (IFVG): FVG 박힌 거 깨졌을 때 (close 박은 게 박힘 너머) 박힘. 첫 momentum
+Inverse FVG (IFVG): FVG가 깨졌을 때 (close가 FVG 너머로) 발생. 첫 momentum
 shift 신호.
 
 Key threshold:
@@ -18,7 +18,7 @@ Key threshold:
 - **Low** = FVG bottom edge (bullish 측 1봉 high / bearish 측 3봉 high)
 - **Mean Threshold (50%)** = (high + low) / 2 — Consequent Encroachment (C.E)
 
-진입 박힐 때 보통 mean threshold 박힌 거까지 박은 retest 박힘 후 reaction 박힘.
+진입 시 보통 mean threshold까지의 retest 후 reaction을 노린다.
 """
 
 from __future__ import annotations
@@ -38,16 +38,16 @@ class FVGType(StrEnum):
 
 @dataclass(slots=True)
 class FVG:
-    """FVG 1개 박힌 거.
+    """FVG 한 건의 데이터.
 
     Attributes:
         ts_ms: 중간 (displacement) 봉 open time (ms).
         type: bullish (BISI) / bearish (SIBI).
-        high: FVG 상단 가격 (gap 박힌 거의 위 edge).
-        low: FVG 하단 가격 (gap 박힌 거의 아래 edge).
-        idx: DataFrame 박힌 거의 중간 봉 index.
-        filled: 추후 가격이 박힌 거 채웠는지 (mean threshold 박힌 거 박혔는지).
-        invalidated: close 박은 게 박힌 거 너머 박혔는지 (IFVG 박힘).
+        high: FVG 상단 가격 (gap 위 edge).
+        low: FVG 하단 가격 (gap 아래 edge).
+        idx: DataFrame 상 중간 봉 index.
+        filled: 추후 가격이 mean threshold까지 retest했는지.
+        invalidated: close가 FVG 영역 너머로 갔는지 (IFVG 발생).
     """
 
     ts_ms: int
@@ -60,12 +60,12 @@ class FVG:
 
     @property
     def mean_threshold(self) -> float:
-        """Consequent Encroachment (50% 박힘) — 박힌 진입 박을 때 가장 sensitive level."""
+        """Consequent Encroachment (50% 라인) — 진입 시 가장 sensitive한 level."""
         return (self.high + self.low) / 2.0
 
     @property
     def size(self) -> float:
-        """FVG 박힌 크기 (가격 단위)."""
+        """FVG 폭 (가격 단위)."""
         return self.high - self.low
 
 
@@ -78,19 +78,19 @@ def detect_fvgs(
 
     Args:
         df: OHLCV DataFrame — index = timestamp (ms 또는 datetime), columns =
-            ``open / high / low / close`` (volume optional). 최소 3 row 박혀야.
-        min_size: 절대 가격 단위 최소 gap 박는 거 (None = 필터 X).
-        min_size_pct: 중간 봉 close 박은 거 대비 % 최소 gap (예: 0.001 = 0.1%).
-            ``min_size``와 함께 박으면 둘 다 만족해야 박힘.
+            ``open / high / low / close`` (volume optional). 최소 3 row 필요.
+        min_size: 절대 가격 단위 최소 gap (None = 필터 미적용).
+        min_size_pct: 중간 봉 close 대비 % 최소 gap (예: 0.001 = 0.1%).
+            ``min_size``와 함께 지정하면 둘 다 만족해야 통과.
 
     Returns:
-        FVG list — 시간순. 빈 list = 박힌 거 없음.
+        FVG list — 시간순. 빈 list = 미검출.
 
     Notes:
-        - df.index 측 DatetimeIndex 박힘 → ``ts_ms = index.astype(int) // 10**6``.
-        - df.index 측 int (ms) 박힘 → 그대로.
-        - 중간 봉이 1봉/3봉 wick 박힌 거 박는지 검증 X — 단순히 1봉 high < 3봉 low (bullish)
-          만족하면 박음. ICT 박힘 "wick overlap 박히면 implied FVG 박힘" — 별도 박힘.
+        - df.index가 DatetimeIndex면 ``ts_ms = index.astype(int) // 10**6``.
+        - df.index가 int (ms)면 그대로 사용.
+        - 중간 봉과 1봉/3봉 wick의 overlap 여부는 검증하지 않음 — 단순히 1봉 high <
+          3봉 low (bullish) 조건만 검사. "wick overlap 시 implied FVG"는 별도 처리.
     """
     if len(df) < 3:
         return []
@@ -100,7 +100,7 @@ def detect_fvgs(
     if missing:
         raise ValueError(f"df missing columns: {missing}")
 
-    # ts_ms 박힌 거 추출
+    # ts_ms array 추출
     if isinstance(df.index, pd.DatetimeIndex):
         ts_arr = (df.index.astype("int64") // 10**6).to_numpy()
     else:
@@ -112,7 +112,7 @@ def detect_fvgs(
 
     fvgs: list[FVG] = []
     for i in range(1, len(df) - 1):
-        # Bullish FVG: 1봉 high < 3봉 low → gap 박은 위
+        # Bullish FVG: 1봉 high < 3봉 low → 위쪽으로 gap
         if highs[i - 1] < lows[i + 1]:
             gap_low = float(highs[i - 1])
             gap_high = float(lows[i + 1])
@@ -125,7 +125,7 @@ def detect_fvgs(
                     low=gap_low,
                     idx=i,
                 ))
-        # Bearish FVG: 1봉 low > 3봉 high → gap 박은 아래
+        # Bearish FVG: 1봉 low > 3봉 high → 아래쪽으로 gap
         elif lows[i - 1] > highs[i + 1]:
             gap_high = float(lows[i - 1])
             gap_low = float(highs[i + 1])
@@ -161,17 +161,17 @@ def mark_filled_and_invalidated(
     fvgs: list[FVG],
     df: pd.DataFrame,
 ) -> None:
-    """FVG list 박힌 거 박힌 후 가격 동작 박힘 mark.
+    """FVG list에 대해 이후 가격 동작을 검사하고 flag를 갱신.
 
-    각 FVG 박힌 거 박힌 이후 봉 박힘 검사:
-    - **filled**: 가격이 mean_threshold 박힌 거 박힘 (50% retest 박힘).
-      - bullish: low 박은 게 mean_threshold ≤ 박힘
-      - bearish: high 박은 게 mean_threshold ≥ 박힘
-    - **invalidated**: close 박은 게 FVG 박힌 거 너머 박힘.
-      - bullish: close < low (FVG 박힌 거 깨짐)
+    각 FVG 이후 봉을 순회하며:
+    - **filled**: 가격이 mean_threshold에 닿음 (50% retest).
+      - bullish: low ≤ mean_threshold
+      - bearish: high ≥ mean_threshold
+    - **invalidated**: close가 FVG 영역 너머로 이탈.
+      - bullish: close < low (FVG 깨짐)
       - bearish: close > high
 
-    in-place mutation 박음.
+    in-place mutation.
     """
     if not fvgs:
         return
@@ -181,7 +181,7 @@ def mark_filled_and_invalidated(
     closes = df["close"].to_numpy()
 
     for fvg in fvgs:
-        # 중간 봉 다음 봉부터 검사
+        # 중간 봉 다음다음(idx+2) 봉부터 검사
         for j in range(fvg.idx + 2, len(df)):
             if fvg.type is FVGType.BULLISH:
                 if not fvg.filled and lows[j] <= fvg.mean_threshold:

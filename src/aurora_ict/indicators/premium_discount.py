@@ -1,15 +1,15 @@
 """Premium/Discount + Dealing Range — ICT 50% equilibrium.
 
-ICT 박힌 정의:
-- **Dealing Range** = 박힌 swing high → swing low 박힌 거 박은 range.
-- **50% equilibrium** = (high + low) / 2 — 박힘 박힌 핵심 reference.
-- **Premium** = 박힌 50% 박힌 위 (sell zone).
-- **Discount** = 박힌 50% 박힌 아래 (buy zone).
+ICT 정의:
+- **Dealing Range** = 최근 swing high → swing low로 만든 range.
+- **50% equilibrium** = (high + low) / 2 — 핵심 reference line.
+- **Premium** = equilibrium 위 (sell zone).
+- **Discount** = equilibrium 아래 (buy zone).
 
-ICT 박힌 원칙: **buy at discount, sell at premium**.
+ICT 원칙: **buy at discount, sell at premium**.
 
-박힌 거 박힘 박힌 박힌 swing high/low 박힌 거 박힌 거 박힌 거 박은 거 (가장 최근 swing 박힌
-거 박은 거). 박힌 거 박힘 박힌 거 박힌 dealing range 박힘 갱신 박힘 박힘 박힘.
+range 계산은 가장 최근 swing high와 가장 최근 swing low를 사용한다. swing이 갱신되면
+dealing range도 함께 갱신된다.
 """
 
 from __future__ import annotations
@@ -21,11 +21,11 @@ from aurora_ict.indicators.swing_points import SwingPoint, SwingType
 
 
 class PDZone(StrEnum):
-    """Premium / Discount 박힌 zone."""
+    """Premium / Discount zone enum."""
 
     PREMIUM = "premium"
     DISCOUNT = "discount"
-    EQUILIBRIUM = "equilibrium"  # ±0.1% 박힌 거 박힌 50% 자리
+    EQUILIBRIUM = "equilibrium"  # ±0.1% 안의 50% 자리
 
 
 @dataclass(slots=True)
@@ -33,8 +33,8 @@ class DealingRange:
     """Dealing range 1개.
 
     Attributes:
-        high: swing high 박힌 가격.
-        low: swing low 박힌 가격.
+        high: swing high 가격.
+        low: swing low 가격.
         high_idx: swing high index.
         low_idx: swing low index.
     """
@@ -46,20 +46,20 @@ class DealingRange:
 
     @property
     def equilibrium(self) -> float:
-        """50% 박힌 자리."""
+        """50% 라인."""
         return (self.high + self.low) / 2.0
 
     @property
     def size(self) -> float:
-        """range 박힌 크기."""
+        """range 폭."""
         return self.high - self.low
 
     def classify(self, price: float, tolerance_pct: float = 0.001) -> PDZone:
-        """price 박힌 거 박힌 zone 박힘.
+        """price가 어느 zone에 속하는지 분류.
 
         Args:
-            price: 박힌 가격.
-            tolerance_pct: equilibrium 박힌 거 박힌 ±% 박힌 거 (표준 0.1%).
+            price: 분류할 가격.
+            tolerance_pct: equilibrium 주변 ±% 허용 폭 (표준 0.1%).
 
         Returns:
             ``PDZone.PREMIUM`` / ``PDZone.DISCOUNT`` / ``PDZone.EQUILIBRIUM``.
@@ -71,28 +71,28 @@ class DealingRange:
         return PDZone.PREMIUM if price > eq else PDZone.DISCOUNT
 
     def fib_level(self, ratio: float) -> float:
-        """Fibonacci level 박힌 거 박힘.
+        """Fibonacci level 계산.
 
-        - ratio=0 → low (discount 박힌 끝)
+        - ratio=0 → low (discount 끝)
         - ratio=0.5 → equilibrium
         - ratio=0.618 → OTE sweet spot lower
         - ratio=0.786 → OTE sweet spot upper
-        - ratio=1 → high (premium 박힌 끝)
+        - ratio=1 → high (premium 끝)
         """
         return self.low + (self.high - self.low) * ratio
 
 
 def latest_dealing_range(swings: list[SwingPoint]) -> DealingRange | None:
-    """가장 최근 박힌 swing high + swing low 박힌 거 박힘 → dealing range 박힘.
+    """가장 최근 swing high + 가장 최근 swing low로 dealing range 구성.
 
-    박힌 거 박힌 거 박힌 거 = 가장 최근 high 박힌 거 + 가장 최근 low 박힌 거 박힘 박힘.
-    박힌 두 박힌 거 박힌 index 박힌 거 박힌 거 박힌 거 박힘 (chronological 박힘 X).
+    두 swing의 index가 시간순서대로 정렬돼 있을 필요는 없다 (high가 더 최근일 수도,
+    low가 더 최근일 수도 있다).
 
     Args:
         swings: swing point list.
 
     Returns:
-        ``DealingRange`` 박힘, 박힌 swing 박힌 거 박힘 박힘 ``None``.
+        ``DealingRange``. high/low 중 하나라도 없으면 ``None``.
     """
     last_high: SwingPoint | None = None
     last_low: SwingPoint | None = None
@@ -114,22 +114,20 @@ def latest_dealing_range(swings: list[SwingPoint]) -> DealingRange | None:
 
 
 def is_ote_zone(price: float, dealing_range: DealingRange, bias: str = "long") -> bool:
-    """Optimal Trade Entry (OTE) zone 박힌 거 박힘.
+    """Optimal Trade Entry (OTE) zone 여부 판정.
 
-    ICT OTE = Fibonacci 0.618 ~ 0.786 박힌 거 박힘 박은 박힘 sweet spot.
+    ICT OTE = Fibonacci 0.618 ~ 0.786 retrace 구간 sweet spot.
 
     Args:
-        price: 박힌 가격.
-        dealing_range: 박힌 dealing range.
-        bias: ``"long"`` 박힘 박힘 박은 discount 박힌 OTE (0.618~0.786 박힘 박힌 low 박힌
-            쪽 박힘 박은 거 — fib level 0.214~0.382 박힘 박힌 거 박힌 거 박힘).
-            ``"short"`` 박힘 박힘 박은 premium 박힌 OTE (fib 0.618~0.786 박힘 박힌 거).
+        price: 판정할 가격.
+        dealing_range: 기준 dealing range.
+        bias: ``"long"``이면 discount 쪽 OTE — low=0 기준으로 low에 가까운 retrace
+            영역(fib 0.214~0.382)을 사용.
+            ``"short"``이면 premium 쪽 OTE — fib 0.618~0.786 구간.
 
     Notes:
-        ICT 박힌 fib 박힌 거 박힘 dealing range 박힌 거 박힘 박힌 거 박힌 거 박힘 ↔ swing
-        박힌 거 박힙 박힘 박힌 거 박힘. 여기는 low=0, high=1 박힘 → long bias 박힘 박힘
-        retrace 박힌 거 박힌 거 박힌 거 박힘 박은 박힘 박힘 박힌 거 = 0.214~0.382 박힘
-        박힌 거 박힘.
+        ICT 본문은 swing 시작점을 1, 끝점을 0으로 잡지만 여기서는 low=0, high=1로
+        놓고 계산한다. 그래서 long bias의 retrace 구간이 fib 0.214~0.382로 표현된다.
     """
     if bias == "long":
         return dealing_range.fib_level(0.214) <= price <= dealing_range.fib_level(0.382)

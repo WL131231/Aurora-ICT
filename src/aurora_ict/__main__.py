@@ -1,17 +1,17 @@
-"""Aurora-ICT 진입점 — ``python -m aurora_ict`` 박힘 박힘 박힘.
+"""Aurora-ICT 진입점 — ``python -m aurora_ict``.
 
-박힌 거 박힘:
-1. settings 박힘 박힘
-2. BotManager 박힘 박힘 (aurora_client_factory 박힘)
-3. FastAPI app 박힘 박힘
-4. uvicorn 박힘 박힘 박힘 (host 박힘 ``127.0.0.1``, port 박힘 ``8765``)
+수행 순서:
+1. settings 로드
+2. BotManager 생성 (aurora_client_factory 주입)
+3. FastAPI app 생성
+4. uvicorn 기동 (host 기본 ``127.0.0.1``, port 기본 ``8765``)
 
-UI 박힘 박힘 박힘 → ``http://127.0.0.1:8765/docs`` 박힘 박힘 박힘 박힘 박힘 박힘.
+UI 접근 → ``http://127.0.0.1:8765/docs``.
 
 환경변수:
 - ``AURORA_ICT_HOST`` (default ``127.0.0.1``)
 - ``AURORA_ICT_PORT`` (default ``8765``)
-- 박힘 박힘 ``AURORA_ICT_*`` settings 박힘 박힘 박힘 박힘 박힘
+- 그 외 ``AURORA_ICT_*`` settings 전반
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def main() -> None:
 
     settings = get_settings()
     logger.info(
-        "Aurora-ICT 박힘 박힘 — mode=%s symbol=%s enabled=%s",
+        "Aurora-ICT 시작 — mode=%s symbol=%s enabled=%s",
         settings.run_mode.value, settings.symbol, settings.enabled,
     )
 
@@ -49,7 +49,7 @@ def main() -> None:
     host = os.environ.get("AURORA_ICT_HOST", "127.0.0.1")
     port = int(os.environ.get("AURORA_ICT_PORT", "8765"))
 
-    logger.info("REST API 박힘 박힘 박힘 http://%s:%d/docs", host, port)
+    logger.info("REST API 기동 — http://%s:%d/docs", host, port)
 
     uvicorn.run(app, host=host, port=port, log_level="info")
 

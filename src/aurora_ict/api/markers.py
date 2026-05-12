@@ -1,19 +1,15 @@
-"""UI 차트 marker DTO — Aurora-ICT 박힌 거 박힘 박힘 박힘.
+"""UI 차트 marker DTO — frontend (lightweight-charts)에 그릴 마커 일체.
 
-frontend 박힌 거 박힘 lightweight-charts 박힌 거 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘
-박힘 박힘 박힘 박힘 박힘 marker 박힘 박힘 박힘 박힘.
-
-박힌 거 박힘 5 종 marker:
-1. **FVG box** — bullish/bearish 박힘, low/high price + duration
-2. **Sweep wick** — bullish/bearish 박힘 박힘 박은 sweep 박힘 박힘
-3. **Structure event** — BOS / CHoCH 박힘 박힘 line marker
+지원 marker 6종:
+1. **FVG box** — bullish/bearish, low/high price + duration
+2. **Sweep wick** — bullish/bearish 방향의 liquidity sweep 표시
+3. **Structure event** — BOS / CHoCH line marker
 4. **Swing pivot** — HIGH/LOW marker
 5. **Killzone window** — vertical band (시작/끝 ts) + name
-6. **Silver Bullet setup** — 박힌 setup 박은 entry/SL/TP marker
+6. **Silver Bullet setup** — 진입 후보 setup의 entry/SL/TP marker
 
-박힌 거 박힘 박힘 ``to_chart_markers(df)`` 박힌 거 박힘 박힘 박힘 ``ChartMarkers`` 박힘
-박힘 박힘 박힘 박힘 박힘 박힘 박힘 ``.to_dict()`` 박힘 박힘 박힘 JSON 박힘 박힘 박힘 박힘
-박힘 박힘 박힘 박힘 박힘.
+``to_chart_markers(df)``가 ``ChartMarkers`` bundle을 생성하고, ``.to_dict()``로
+JSON-직렬화 가능한 dict를 만들어 REST에 실어 보낸다.
 """
 
 from __future__ import annotations
@@ -33,9 +29,9 @@ from aurora_ict.timing.killzone import classify_killzone, in_silver_bullet
 
 @dataclass(slots=True)
 class FVGMarker:
-    """FVG box marker — 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은."""
+    """FVG box marker — frontend에 그릴 박스 정보."""
 
-    ts_ms: int       # 박힌 박힌 박힌 박힘 박힌 거 (FVG 박힌 거 박힘 박힘 박힙 박힘)
+    ts_ms: int       # 중간 봉 open time (FVG의 anchor)
     type: str        # "bullish" / "bearish"
     low: float
     high: float
@@ -46,7 +42,7 @@ class FVGMarker:
 
 @dataclass(slots=True)
 class SweepMarker:
-    """Liquidity Sweep marker — wick 박힌 거 박힘."""
+    """Liquidity Sweep marker — sweep wick 정보."""
 
     ts_ms: int
     type: str        # "bullish" (SSL) / "bearish" (BSL)
@@ -98,7 +94,7 @@ class SetupMarker:
 
 @dataclass(slots=True)
 class ChartMarkers:
-    """전체 marker bundle — UI 박힌 거 박힘 박힘 박힘."""
+    """전체 marker bundle — UI 한 번 호출로 받아갈 결과 묶음."""
 
     fvgs: list[FVGMarker] = field(default_factory=list)
     sweeps: list[SweepMarker] = field(default_factory=list)
@@ -108,7 +104,7 @@ class ChartMarkers:
     setups: list[SetupMarker] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        """JSON-serializable dict 박힘 박힘 박힘."""
+        """JSON-serializable dict 변환."""
         return {
             "fvgs": [asdict(f) for f in self.fvgs],
             "sweeps": [asdict(s) for s in self.sweeps],
@@ -120,7 +116,7 @@ class ChartMarkers:
 
 
 def _ts_at_idx(df: pd.DataFrame, idx: int) -> int:
-    """df 박힌 거 박힘 idx 박힌 거 박힌 거 박힘 ts_ms 박힘 박힘."""
+    """df의 idx 위치 row를 ts_ms (UTC ms)로 변환."""
     if isinstance(df.index, pd.DatetimeIndex):
         return int(df.index[idx].value // 10**6)
     return int(df.index[idx])
@@ -132,16 +128,16 @@ def to_chart_markers(
     fvg_min_size_pct: float | None = 0.0005,
     min_rr: float = 2.0,
 ) -> ChartMarkers:
-    """DataFrame 박힌 거 박힘 박힘 박힘 모든 ICT marker 박힘 박힘.
+    """DataFrame 한 건으로부터 모든 ICT marker를 한꺼번에 계산.
 
     Args:
         df: OHLCV DataFrame.
-        include_setups: ``True`` 박힘 박힘 Silver Bullet setup 박힘 박힘 박힘 박힘.
-        fvg_min_size_pct: FVG 박힌 최소 % size.
-        min_rr: setup 박힌 최소 RR.
+        include_setups: ``True``일 때 Silver Bullet setup marker도 포함.
+        fvg_min_size_pct: FVG 최소 % size.
+        min_rr: setup 최소 RR.
 
     Returns:
-        ``ChartMarkers`` 박힘 박힘.
+        ``ChartMarkers`` bundle.
     """
     if len(df) < 3:
         return ChartMarkers()
@@ -171,7 +167,7 @@ def to_chart_markers(
             swept=sw.swept,
         ))
 
-    # 3. Sweeps (swept flag 박힘 박힘 박힙 박힘 박힘 detect_liquidity_sweeps 박힘 박힘)
+    # 3. Sweeps (detect_liquidity_sweeps가 swing.swept 플래그를 in-place로 갱신함)
     sweeps = detect_liquidity_sweeps(df, swings)
     for sw in sweeps:
         markers.sweeps.append(SweepMarker(
@@ -180,9 +176,8 @@ def to_chart_markers(
             swept_price=sw.swept_price,
             wick_price=sw.wick_price,
         ))
-    # swings 박힌 거 박힌 거 박힙 박힘 박힌 sweeps 박힌 거 박힘 박힘 swept flag 박힙 박힘 박힘
-    # 박힘 박힘 markers.swings 박은 박은 박힌 거 박힘 박힘 다시 박힘 — 박힌 거 박힘 박힘 박힘
-    # mutation 박힌 거 박힙 박힘. 박은 거 박힙 박힘 다시 박힘 박힘 박힙 박힘.
+    # detect_liquidity_sweeps가 swing.swept를 갱신했으므로 markers.swings를 최신
+    # swept 플래그로 재생성한다 (in-place mutation 결과 반영).
     markers.swings = [
         SwingMarker(
             ts_ms=sw.ts_ms,
@@ -202,8 +197,8 @@ def to_chart_markers(
             broken_level=ev.broken_level,
         ))
 
-    # 5. Killzones — 박힌 박힌 박힘 박힘 봉 박힘 박힘 박힙 박힘 박힙 박힙 박힘 박힙 박힘 박힙
-    # 박힘 박힘 — 시작/끝 박힌 거 박힘 박힘 박힘 박힙 박힘.
+    # 5. Killzones — 봉 단위로 killzone 변경 시점을 모아 (start_ms, end_ms) 구간으로
+    # 압축한다.
     if len(df) > 0:
         prev_kz: str | None = None
         zone_start_ms: int | None = None
@@ -221,7 +216,7 @@ def to_chart_markers(
                     ))
                 prev_kz = kz_name
                 zone_start_ms = ts_ms if kz_name is not None else None
-        # 마지막 박힘 박힘 박힘 박힘
+        # 마지막 진행 중인 zone flush
         if prev_kz is not None and zone_start_ms is not None:
             last_ts = _ts_at_idx(df, len(df) - 1)
             markers.killzones.append(KillzoneMarker(

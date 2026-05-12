@@ -1,4 +1,4 @@
-"""Aurora-ICT bot — 봇 instance 박힌 거 박힘 실제 매매 박힘 박힘."""
+"""Aurora-ICT bot — 봇 instance와 실제 매매 실행 layer."""
 
 from aurora_ict.bot.aurora_adapter import AuroraClientAdapter
 from aurora_ict.bot.bot_ict_instance import (
@@ -21,10 +21,9 @@ __all__ = [
 
 
 async def aurora_client_factory(settings):  # type: ignore[no-untyped-def]
-    """Aurora ``CcxtClient`` 박힌 거 박힘 박힘 박힙 박힘 박힘 박힘 박힘 factory.
+    """Aurora ``CcxtClient``를 생성해 어댑터로 감싸 반환하는 factory.
 
-    박힘 박힙 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘
-    박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘.
+    settings의 run_mode / API 키 / demo 여부를 그대로 사용한다.
     """
     from aurora.exchange.ccxt_client import CcxtClient  # type: ignore[import-not-found]
     client = CcxtClient(

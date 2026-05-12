@@ -1,17 +1,16 @@
-"""FastAPI app — Aurora-ICT REST 박힘.
+"""FastAPI app — Aurora-ICT REST 엔드포인트.
 
-박힌 endpoint:
-- ``GET  /ict/status`` — 봇 상태 박힘
-- ``POST /ict/start`` — 봇 박힘 박힘
-- ``POST /ict/stop`` — 봇 박힘 박힘
-- ``POST /ict/run-mode`` — demo/live 박힘 박힘 (body: ``{"mode": "demo"|"live"}``)
+제공 엔드포인트:
+- ``GET  /ict/status`` — 봇 상태 조회
+- ``POST /ict/start`` — 봇 기동
+- ``POST /ict/stop`` — 봇 정지
+- ``POST /ict/run-mode`` — demo/live 전환 (body: ``{"mode": "demo"|"live"}``)
 - ``POST /ict/enabled`` — enabled toggle (body: ``{"enabled": true|false}``)
-- ``GET  /ict/config`` — 박힌 settings 박힙 박힘 (api key 박힘 박힘 박힘 박힘)
-- ``GET  /ict/markers`` — 박힌 OHLCV 박힘 박힘 박힘 chart markers (FVG/Sweep/MSS/Setup)
+- ``GET  /ict/config`` — 현재 settings 노출 (api key는 마스킹)
+- ``GET  /ict/markers`` — 최근 OHLCV 기반 chart markers (FVG/Sweep/MSS/Setup)
 - ``GET  /ict/health`` — health probe
 
-박힌 거 박힙 박힘 BotManager 박힌 거 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘
-박힙 박힘 박힘 박힘 박힘 박힘 박힘 (production 박힙 박힘 박힘 ``lifespan`` 박힘 박힘 박힘).
+BotManager는 모듈 전역 싱글톤으로 주입한다 (production에선 ``lifespan`` 훅 사용 권장).
 """
 
 from __future__ import annotations
@@ -91,7 +90,7 @@ def _write_env_credentials(mode: str, api_key: str, api_secret: str) -> Path:
 
 
 def _settings_safe_dict(settings: IctSettings) -> dict[str, Any]:
-    """settings → dict (api key 박힘 박힘 박힘 박힘 박힘)."""
+    """settings → dict (api key는 직접 노출하지 않고 보유 여부만 표시)."""
     return {
         "run_mode": settings.run_mode.value,
         "enabled": settings.enabled,
@@ -129,18 +128,18 @@ def _status_dict(manager: BotManager) -> dict[str, Any]:
 
 
 def create_app(manager: BotManager) -> FastAPI:
-    """FastAPI app 박힘 박힘 박힘.
+    """FastAPI app 인스턴스 생성.
 
     Args:
-        manager: 박힌 BotManager 박힌 거 박힘 박힘 박힘 박힘.
+        manager: 라우터에서 사용할 BotManager 싱글톤.
     """
     app = FastAPI(
         title="Aurora-ICT API",
         version="0.2.1",
-        description="ICT (Inner Circle Trader) 매매 박힌 봇 REST API",
+        description="ICT (Inner Circle Trader) 매매 봇 REST API",
     )
 
-    # CORS — dev 박힘 박힘 박힘 박힘 박힘 (production 박힘 박힘 박힘 박힘 박힘 박힘 박힘)
+    # CORS — dev 편의를 위해 wildcard (production에서는 도메인 제한 필요)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -273,7 +272,7 @@ def create_app(manager: BotManager) -> FastAPI:
 
         Returns:
             - ``{"active": False}`` 봇 미가동 또는 포지션 없음
-            - ``{"active": True, ...}`` 박힌 active position + mark price + PnL + margin
+            - ``{"active": True, ...}`` 현재 active position + mark price + PnL + margin
         """
         bot = manager.bot
         if bot is None or bot.active_position is None:
@@ -332,19 +331,19 @@ def create_app(manager: BotManager) -> FastAPI:
         timeframe: str | None = None,
         limit: int = 200,
     ) -> dict[str, Any]:
-        """OHLCV fetch 박힌 거 박힘 박힘 markers 박힘 박힘."""
+        """OHLCV fetch 후 chart marker 일체를 계산해 반환."""
         bot = manager.bot
         if bot is None:
             raise HTTPException(
                 status_code=404,
-                detail="봇 박힙 박힘 박힘 박힘 — /ict/start 박힘 박힙 박힘 박힙 박힘",
+                detail="봇이 실행 중이 아닙니다 — /ict/start 먼저 호출하세요",
             )
         use_symbol = symbol or bot.symbol
         use_tf = timeframe or bot.timeframe
         try:
             rows = await bot.client.fetch_ohlcv(use_symbol, use_tf, limit)
         except Exception as e:  # noqa: BLE001
-            logger.warning("fetch_ohlcv 박힘: %s", e)
+            logger.warning("fetch_ohlcv 실패: %s", e)
             raise HTTPException(status_code=502, detail=f"fetch_ohlcv: {e}") from e
 
         df = pd.DataFrame(
@@ -379,11 +378,11 @@ def create_app(manager: BotManager) -> FastAPI:
         timeframe: str | None = None,
         limit: int = 200,
     ) -> dict[str, Any]:
-        """OHLCV 봉 박힘 박힘 박힘 (UI 박힘 박힘 lightweight-charts candles)."""
+        """OHLCV 봉 그대로 반환 (UI lightweight-charts candle 입력용)."""
         bot = manager.bot
         if bot is None:
             raise HTTPException(
-                status_code=404, detail="봇 박힙 박힘 박힘 박힘",
+                status_code=404, detail="봇이 실행 중이 아닙니다",
             )
         use_symbol = symbol or bot.symbol
         use_tf = timeframe or bot.timeframe

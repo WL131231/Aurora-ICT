@@ -1,21 +1,21 @@
 """Liquidity Sweep + BSL/SSL detector — ICT 핵심 entry trigger.
 
-ICT 박은 정의:
-- **BSL** (Buy Side Liquidity) = 옛 swing high 박은 위 (short stop 박혀있음)
-- **SSL** (Sell Side Liquidity) = 옛 swing low 박은 아래 (long stop 박혀있음)
-- **Liquidity Sweep** = wick 박은 게 옛 swing high/low 박은 거 박은 후 close 박은 게
-  박힌 안 박은 봉 (1봉 박힘). 다음 봉이 sweep candle close 박지 않으면 valid.
+ICT 정의:
+- **BSL** (Buy Side Liquidity) = 직전 swing high 위 (short stop이 몰려 있는 자리)
+- **SSL** (Sell Side Liquidity) = 직전 swing low 아래 (long stop이 몰려 있는 자리)
+- **Liquidity Sweep** = wick은 직전 swing high/low를 찍었지만 close는 그 안으로
+  돌아온 봉 (보통 1봉). 다음 봉이 sweep candle close를 깨지 않으면 valid.
 
-ICT 박힌 가정: smart money 박은 박힌 게 옛 swing point 박은 위/아래 박힌 stop 박힌 거
-청산 박힘 후 반대 방향 박힘. 그래서 sweep 박힌 후 entry 박는 게 본질.
+ICT 가설: smart money가 직전 swing point 위/아래의 stop을 청산시킨 뒤 반대 방향으로
+가격을 밀어 올린다. 따라서 sweep 직후 entry를 잡는 게 본질.
 
 종류:
-- **Bullish Sweep** (= SSL sweep 박힘) → 박힌 거 박은 후 long entry candidate
-- **Bearish Sweep** (= BSL sweep 박힘) → 박힌 거 박은 후 short entry candidate
+- **Bullish Sweep** (SSL sweep) → 이후 long entry 후보
+- **Bearish Sweep** (BSL sweep) → 이후 short entry 후보
 
-또 **Equal Highs (EQH) / Equal Lows (EQL)** 박힌 거 = 가장 박힌 liquidity 박힘 (개미 박힌
-"강한 저항" 박은 거 박은 게 smart money 박힌 사냥감). 같은 swing 박힌 거 박힌 거 박힌
-연속 박힌 거 박힘.
+**Equal Highs (EQH) / Equal Lows (EQL)** = 가장 매력적인 liquidity 풀 (개미가
+"강한 저항"으로 보는 자리 = smart money의 사냥감). 같은 가격대의 swing이
+2개 이상 연속될 때 발생.
 """
 
 from __future__ import annotations
@@ -31,8 +31,8 @@ from aurora_ict.indicators.swing_points import SwingPoint, SwingType
 class SweepType(StrEnum):
     """Sweep 방향."""
 
-    BULLISH = "bullish"  # SSL sweep (옛 swing low 박힘 → 박은 후 long 박힘)
-    BEARISH = "bearish"  # BSL sweep (옛 swing high 박힘 → 박은 후 short 박힘)
+    BULLISH = "bullish"  # SSL sweep (직전 swing low 찍고 회복 → 이후 long 후보)
+    BEARISH = "bearish"  # BSL sweep (직전 swing high 찍고 회복 → 이후 short 후보)
 
 
 @dataclass(slots=True)
@@ -42,10 +42,10 @@ class LiquiditySweep:
     Attributes:
         ts_ms: sweep 봉 open time (ms).
         type: BULLISH / BEARISH.
-        swept_price: 옛 swing 박힌 가격 (BSL = swing high, SSL = swing low).
-        wick_price: sweep candle wick 박힌 거 (BSL = high, SSL = low).
+        swept_price: 청산 대상 swing 가격 (BSL = swing high, SSL = swing low).
+        wick_price: sweep candle wick 가격 (BSL = high, SSL = low).
         idx: sweep candle index.
-        swing_idx: 박힌 옛 swing point 박힌 index.
+        swing_idx: sweep된 swing point index.
     """
 
     ts_ms: int
@@ -58,13 +58,13 @@ class LiquiditySweep:
 
 @dataclass(slots=True)
 class EqualLevel:
-    """Equal Highs / Equal Lows — 가장 박힌 liquidity 자리.
+    """Equal Highs / Equal Lows — 가장 매력적인 liquidity 자리.
 
     Attributes:
         type: HIGH (EQH) / LOW (EQL).
         price: 평균 가격.
-        indices: 박힌 swing 박힌 거 박힌 indices (≥ 2).
-        tolerance_pct: 박힌 거 박힌 거 박힌 % tolerance 박힌 거.
+        indices: 클러스터에 포함된 swing index 리스트 (≥ 2).
+        tolerance_pct: 클러스터링에 사용된 % tolerance.
     """
 
     type: SwingType
@@ -78,20 +78,20 @@ def detect_liquidity_sweeps(
     swings: list[SwingPoint],
     require_close_back: bool = True,
 ) -> list[LiquiditySweep]:
-    """Liquidity Sweep 박힌 거 박힘.
+    """Liquidity Sweep 검출.
 
-    각 swing point 박힌 거 박힌 거 박은 후 봉 박힌 게 박힌 거의 wick 박힌 게 swing
-    가격 박힌 거 박힌 후 close 박은 게 박힌 안 박은 봉 박는 거.
+    각 swing point 이후 봉을 순회하며, wick은 swing 가격을 넘어섰지만 close는
+    swing 안쪽으로 돌아온 봉을 찾는다.
 
     Args:
-        df: OHLCV DataFrame — ``open / high / low / close`` 박힘.
-        swings: 박힌 swing point list (``detect_swing_points()`` 박은 결과).
-        require_close_back: True 박힘 (표준) — sweep candle close 박은 게 swing 박은
-            거 박힌 안 박혀야 valid. False 박힘 — wick 박힌 거만 박힘.
+        df: OHLCV DataFrame — ``open / high / low / close`` 필수.
+        swings: ``detect_swing_points()`` 결과.
+        require_close_back: True (표준) — sweep candle close가 swing 안쪽으로
+            돌아와야 valid. False — wick 조건만으로 인정.
 
     Returns:
-        LiquiditySweep list — 시간순. 또 sweep 박힌 swing 박힌 거 박힌 ``swept=True``
-        박힘 (in-place mutation 박힘).
+        LiquiditySweep list — 시간순. sweep된 swing은 ``swept=True``로
+        in-place 갱신됨.
     """
     if not swings or len(df) < 2:
         return []
@@ -110,13 +110,13 @@ def detect_liquidity_sweeps(
     for swing in swings:
         if swing.swept:
             continue
-        # swing 박힌 거 박힌 다음 봉부터 박은 후 박힌 거 박힌 거 박은
+        # swing 봉 다음부터 sweep 여부 검사
         for j in range(swing.idx + 1, len(df)):
             if swing.type is SwingType.HIGH:
-                # BSL sweep — wick 박힌 게 swing high 박은 거보다 위, close 박은 게 박힌 안
+                # BSL sweep — wick은 swing high 위, close는 swing 안으로 복귀
                 if highs[j] > swing.price:
                     if require_close_back and closes[j] >= swing.price:
-                        # close 박은 게 박힌 위 박힘 → sweep X (breakout 박힘)
+                        # close가 swing 위에 머무름 → sweep 아님 (breakout)
                         swing.swept = True
                         break
                     sweeps.append(LiquiditySweep(
@@ -130,10 +130,10 @@ def detect_liquidity_sweeps(
                     swing.swept = True
                     break
             else:  # LOW
-                # SSL sweep — wick 박힌 게 swing low 박은 거보다 아래, close 박은 게 박힌 안
+                # SSL sweep — wick은 swing low 아래, close는 swing 안으로 복귀
                 if lows[j] < swing.price:
                     if require_close_back and closes[j] <= swing.price:
-                        # close 박은 게 박힌 아래 → sweep X (breakout 박힘)
+                        # close가 swing 아래에 머무름 → sweep 아님 (breakout)
                         swing.swept = True
                         break
                     sweeps.append(LiquiditySweep(
@@ -155,18 +155,18 @@ def detect_equal_levels(
     tolerance_pct: float = 0.001,
     min_count: int = 2,
 ) -> list[EqualLevel]:
-    """Equal Highs / Lows 박힌 거 박힘.
+    """Equal Highs / Lows 검출.
 
-    같은 type (HIGH/LOW) 박힌 swing 박힌 거 박힌 가격이 ``tolerance_pct`` 안 박힌 거
-    여러 개 박힌 거 박힘 → EQH / EQL 박힘.
+    같은 type (HIGH/LOW) swing 중 가격이 ``tolerance_pct`` 안에 모인 것들을
+    하나의 클러스터로 묶어 EQH / EQL을 만든다.
 
     Args:
         swings: swing point list.
-        tolerance_pct: 박힌 거 박힌 거 박힌 % tolerance (예: 0.001 = 0.1%).
-        min_count: 최소 박힌 swing 박힌 거 (표준 = 2 박힘).
+        tolerance_pct: 클러스터링 % tolerance (예: 0.001 = 0.1%).
+        min_count: 클러스터 최소 멤버 수 (표준 = 2).
 
     Returns:
-        EqualLevel list — 평균 가격 박힌 거 박힘.
+        EqualLevel list — 클러스터별 평균 가격 포함.
     """
     if len(swings) < min_count:
         return []

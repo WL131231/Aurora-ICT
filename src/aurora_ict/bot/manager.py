@@ -1,16 +1,14 @@
-"""BotManager — 단일 BotIctInstance 박힌 거 박힘 lifecycle + 모드 toggle.
+"""BotManager — 단일 BotIctInstance의 lifecycle + 모드 toggle 관리.
 
-박은 거 박은 거 박힘:
-- BotIctInstance 박힌 거 박힘 박힘 박힘 박힘 박힘 박힘 (또는 인스턴스 외부 박힘)
-- start / stop / 모드 박힘 (demo ↔ live) 박힘 박힘
-- 상태 박힌 거 박힘 박힘 박힘 (UI / API 박힌 거 박힙 박힘 박힘)
+담당 책임:
+- BotIctInstance 생성/소유 (또는 인스턴스 외부 주입)
+- start / stop / 모드 전환 (demo ↔ live)
+- 상태 스냅샷 제공 (UI / API 호출용)
 
-모드 박힘 박힘 박힘 박힘:
-- 박힌 인스턴스 박힘 박힘 박힘 박힘 → settings 박힘 박힘 박힘 → 박은 client 박힘 박힘
-  새 BotIctInstance 박힘
+모드 전환 흐름:
+- 기존 인스턴스 정지 → settings 갱신 → 새 client로 새 BotIctInstance 생성
 
-박힌 거 박힌 거 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘 박힘
-박힘 박힘 박힘 박힘 박힘 박힘 박힘.
+단일 인스턴스 전제 (멀티 심볼/유저는 상위 계층에서 처리).
 """
 
 from __future__ import annotations
@@ -30,13 +28,13 @@ from aurora_ict.config.settings import IctSettings, RunMode, get_settings
 logger = logging.getLogger(__name__)
 
 
-# Client factory 박힌 거 박힙 박힘 — settings 박힙 박힘 client 박힘 박힘 박힘 박힘 callable.
+# Client factory — settings를 받아 client를 만들어 반환하는 async callable.
 ClientFactory = Callable[[IctSettings], Awaitable[ExchangeClientProtocol]]
 
 
 @dataclass(slots=True)
 class BotStatus:
-    """봇 상태 박힘 박힘 (UI/API 박힙 박힘)."""
+    """봇 상태 스냅샷 (UI/API 응답용)."""
 
     state: BotState
     run_mode: RunMode
@@ -49,11 +47,11 @@ class BotStatus:
 
 @dataclass(slots=True)
 class BotManager:
-    """단일 BotIctInstance 박힌 거 박힙 lifecycle + 모드 박힘.
+    """단일 BotIctInstance의 lifecycle + 모드 전환을 관리.
 
     Attributes:
-        client_factory: settings 박힙 박힘 ExchangeClient 박힘 박힘 박힘 박힘 (async).
-        settings: 박힘 박힘 박힘 박힘 박힘. ``None`` 박힘 박힘 ``get_settings()`` 박힘.
+        client_factory: settings로부터 ExchangeClient를 만드는 async factory.
+        settings: 사용할 설정. ``None``이면 ``get_settings()`` 사용.
     """
 
     client_factory: ClientFactory
@@ -61,15 +59,15 @@ class BotManager:
     _bot: BotIctInstance | None = field(default=None)
 
     async def start(self) -> BotStatus:
-        """봇 박힘 박힘. ``enabled=False`` 박힘 박힘 박힘 박힘 ValueError."""
+        """봇 기동. ``enabled=False``이거나 API 키가 없으면 ValueError."""
         if not self.settings.enabled:
-            raise ValueError("봇 박힘 박은 disabled — settings.enabled=False")
+            raise ValueError("봇이 disabled 상태 — settings.enabled=False")
         if not self.settings.has_credentials():
             raise ValueError(
-                f"API 키 박힘 X (run_mode={self.settings.run_mode.value})",
+                f"API 키 없음 (run_mode={self.settings.run_mode.value})",
             )
         if self._bot is not None and self._bot.state is BotState.RUNNING:
-            logger.info("이미 박힘 박힘 — re-start 박힘 X")
+            logger.info("이미 실행 중 — re-start 무시")
             return self.status()
 
         client = await self.client_factory(self.settings)
@@ -86,32 +84,30 @@ class BotManager:
         )
         await self._bot.start()
         logger.info(
-            "BotManager 박힘 박힘 — mode=%s symbol=%s",
+            "BotManager started — mode=%s symbol=%s",
             self.settings.run_mode.value, self.settings.symbol,
         )
         return self.status()
 
     async def stop(self) -> BotStatus:
-        """봇 박힘 박힘 박힘."""
+        """봇 정지."""
         if self._bot is not None:
             await self._bot.stop()
         return self.status()
 
     async def set_run_mode(self, mode: RunMode) -> BotStatus:
-        """모드 박힘 — 박힙 박힘 박힘 박힘 박힘 (running 박힙 박힘 stop 박힘 → 박힘 박힘
-        박힘 변경 → restart)."""
+        """모드 전환 — 실행 중이면 stop → settings 변경 → restart."""
         was_running = self._bot is not None and self._bot.state is BotState.RUNNING
         if was_running:
             await self.stop()
         self.settings.run_mode = mode
-        logger.info("run_mode 박힘 박힘 → %s", mode.value)
+        logger.info("run_mode 변경 → %s", mode.value)
         if was_running:
             await self.start()
         return self.status()
 
     async def set_enabled(self, enabled: bool) -> BotStatus:
-        """``enabled`` 박힘 박힘. False 박힙 박힘 stop, True 박힙 박힘 start (박힌 박힘
-        박힙 박힘 박힘)."""
+        """``enabled`` 토글. False면 stop, True면 start (필요 시)."""
         was_running = self._bot is not None and self._bot.state is BotState.RUNNING
         self.settings.enabled = enabled
         if not enabled and was_running:
@@ -121,7 +117,7 @@ class BotManager:
         return self.status()
 
     def status(self) -> BotStatus:
-        """현재 상태 박힘."""
+        """현재 상태 스냅샷."""
         if self._bot is None:
             return BotStatus(
                 state=BotState.STOPPED,
@@ -144,12 +140,12 @@ class BotManager:
 
     @property
     def bot(self) -> BotIctInstance | None:
-        """박은 박힌 BotIctInstance 박힘 박힘 박힘 박힘 (debug 박힘)."""
+        """현재 BotIctInstance 노출 (debug/내부 접근용)."""
         return self._bot
 
 
 def _make_status_dict(status: BotStatus) -> dict[str, Any]:
-    """BotStatus → dict (UI/API 박힘 박힘)."""
+    """BotStatus → dict (UI/API 직렬화용)."""
     return {
         "state": status.state.value,
         "run_mode": status.run_mode.value,
