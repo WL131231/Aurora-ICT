@@ -202,6 +202,92 @@ def test_silver_bullet_one_per_window() -> None:
     assert len(setups) <= 1
 
 
+def test_silver_bullet_confluence_field_present() -> None:
+    """모든 setup 은 confluence_score / confluences 필드를 가짐 (기본 0 / 빈 리스트 허용)."""
+    start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
+    df = _make_df_ny(start, [
+        (100, 105, 99, 104),
+        (104, 130, 103, 125),
+        (125, 124, 100, 101),
+        (101, 108, 95, 96),
+        (96, 110, 95.5, 109),
+        (109, 112, 92, 93),
+        (93, 100, 92.5, 99),
+        (99, 105, 98, 104),
+        (104, 106, 100, 101),
+        (101, 105, 99, 100),
+        (100, 102, 99, 101),
+        (101, 110, 100, 109),
+        (109, 119, 108, 118),
+        (118, 122, 115, 121),
+    ])
+    setups = detect_silver_bullet_setups(
+        df, bias=TrendDirection.UP, fvg_min_size_pct=0.001, min_rr=1.0,
+    )
+    assert setups, "fixture 가 최소 1건 setup 을 만들어야 함"
+    for s in setups:
+        assert hasattr(s, "confluence_score")
+        assert s.confluence_score >= 0
+        assert isinstance(s.confluences, list)
+
+
+def test_silver_bullet_min_confluence_filter() -> None:
+    """min_confluence 가 setup.confluence_score 초과면 결과 없음."""
+    start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
+    df = _make_df_ny(start, [
+        (100, 105, 99, 104),
+        (104, 130, 103, 125),
+        (125, 124, 100, 101),
+        (101, 108, 95, 96),
+        (96, 110, 95.5, 109),
+        (109, 112, 92, 93),
+        (93, 100, 92.5, 99),
+        (99, 105, 98, 104),
+        (104, 106, 100, 101),
+        (101, 105, 99, 100),
+        (100, 102, 99, 101),
+        (101, 110, 100, 109),
+        (109, 119, 108, 118),
+        (118, 122, 115, 121),
+    ])
+    # min_confluence=99 → 어떤 setup 도 통과 못 함
+    setups = detect_silver_bullet_setups(
+        df, bias=TrendDirection.UP, fvg_min_size_pct=0.001, min_rr=1.0,
+        min_confluence=99,
+    )
+    assert setups == []
+
+
+def test_silver_bullet_macro_confluence_when_inside_macro() -> None:
+    """AM Silver Bullet 의 첫 봉이 am_macro_2 (09:50-10:10) 안이면 macro confluence."""
+    # NY 09:55 시작 → 약 15봉 후 AM SB 시작 (10:00). 첫 SB 봉은 am_macro_2 안.
+    start = datetime(2026, 5, 12, 9, 55, tzinfo=NY)
+    df = _make_df_ny(start, [
+        (100, 105, 99, 104),
+        (104, 130, 103, 125),
+        (125, 124, 100, 101),
+        (101, 108, 95, 96),
+        (96, 110, 95.5, 109),
+        (109, 112, 92, 93),
+        (93, 100, 92.5, 99),
+        (99, 105, 98, 104),
+        (104, 106, 100, 101),
+        (101, 105, 99, 100),
+        (100, 102, 99, 101),
+        (101, 110, 100, 109),
+        (109, 119, 108, 118),
+        (118, 122, 115, 121),
+    ])
+    setups = detect_silver_bullet_setups(
+        df, bias=TrendDirection.UP, fvg_min_size_pct=0.001, min_rr=1.0,
+    )
+    # 적어도 한 setup 에 macro confluence 가 있어야 함
+    has_macro = any(
+        "macro=" in c for s in setups for c in s.confluences
+    )
+    assert has_macro, f"macro confluence 없음. confluences={[s.confluences for s in setups]}"
+
+
 def test_silver_bullet_auto_bias_from_structure() -> None:
     """bias=None 박힘 박힘 → structure 박힙 박힘 자동 박힘."""
     start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)

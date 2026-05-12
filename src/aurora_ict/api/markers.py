@@ -86,7 +86,7 @@ class KillzoneMarker:
 
 @dataclass(slots=True)
 class SetupMarker:
-    """Silver Bullet setup marker — entry/SL/TP."""
+    """Silver Bullet setup marker — entry/SL/TP + confluence."""
 
     ts_ms: int
     direction: str   # "long" / "short"
@@ -95,6 +95,8 @@ class SetupMarker:
     stop_loss: float
     take_profit: float
     risk_reward: float
+    confluence_score: int = 0
+    confluences: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -310,6 +312,8 @@ def to_chart_markers(
                 stop_loss=s.stop_loss,
                 take_profit=s.take_profit,
                 risk_reward=s.risk_reward,
+                confluence_score=s.confluence_score,
+                confluences=list(s.confluences),
             ))
 
     return markers
