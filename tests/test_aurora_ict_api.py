@@ -113,7 +113,7 @@ def test_run_mode_change(client: TestClient) -> None:
     resp = client.post("/ict/run-mode", json={"mode": "live"})
     assert resp.status_code == 200
     assert resp.json()["run_mode"] == "live"
-    # 박힌 demo 박은 박힘 박힘 박힘
+    # demo 로 되돌리기
     resp = client.post("/ict/run-mode", json={"mode": "demo"})
     assert resp.json()["run_mode"] == "demo"
 
@@ -132,9 +132,118 @@ def test_enabled_toggle(client: TestClient) -> None:
 
 
 def test_markers_requires_bot_running(client: TestClient) -> None:
-    """봇 박힙 박힙 박힘 박힙 → 404."""
+    """봇 미가동 상태 → 404."""
     resp = client.get("/ict/markers")
     assert resp.status_code == 404
+
+
+# ============================================================
+# POST /ict/credentials (온보딩)
+# ============================================================
+
+
+def test_credentials_invalid_mode(client: TestClient) -> None:
+    resp = client.post(
+        "/ict/credentials",
+        json={"mode": "paper", "api_key": "K", "api_secret": "S"},
+    )
+    assert resp.status_code == 400
+
+
+def test_credentials_empty_key_or_secret(client: TestClient) -> None:
+    resp = client.post(
+        "/ict/credentials",
+        json={"mode": "demo", "api_key": "", "api_secret": "S"},
+    )
+    assert resp.status_code == 400
+    resp = client.post(
+        "/ict/credentials",
+        json={"mode": "demo", "api_key": "K", "api_secret": "   "},
+    )
+    assert resp.status_code == 400
+
+
+def test_credentials_saves_demo_and_updates_settings(
+    manager: BotManager, tmp_path, monkeypatch,
+) -> None:
+    """demo 키 저장 → .env 파일 생성 + manager.settings 즉시 갱신."""
+    from aurora_ict.api import app as app_mod
+
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(app_mod, "_env_path", lambda: env_path)
+
+    c = TestClient(create_app(manager))
+    resp = c.post(
+        "/ict/credentials",
+        json={"mode": "demo", "api_key": "NEW_K", "api_secret": "NEW_S"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["has_demo_credentials"] is True
+
+    # .env 파일 박힘 + 키 라인 박힌 거 확인
+    content = env_path.read_text(encoding="utf-8")
+    assert "AURORA_ICT_DEMO_API_KEY=NEW_K" in content
+    assert "AURORA_ICT_DEMO_API_SECRET=NEW_S" in content
+
+    # 메모리 settings 즉시 갱신 확인
+    assert manager.settings.demo_api_key.get_secret_value() == "NEW_K"
+    assert manager.settings.demo_api_secret.get_secret_value() == "NEW_S"
+
+
+def test_credentials_replaces_existing_lines(
+    manager: BotManager, tmp_path, monkeypatch,
+) -> None:
+    """기존 라인 박힌 .env → 새 값으로 교체 (중복 라인 생기지 않음)."""
+    from aurora_ict.api import app as app_mod
+
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "AURORA_ICT_DEMO_API_KEY=OLD_K\n"
+        "AURORA_ICT_DEMO_API_SECRET=OLD_S\n"
+        "AURORA_ICT_SYMBOL=BTC/USDT:USDT\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app_mod, "_env_path", lambda: env_path)
+
+    c = TestClient(create_app(manager))
+    resp = c.post(
+        "/ict/credentials",
+        json={"mode": "demo", "api_key": "NEW_K", "api_secret": "NEW_S"},
+    )
+    assert resp.status_code == 200
+
+    content = env_path.read_text(encoding="utf-8")
+    # 기존 OLD_K / OLD_S 박힌 거 사라지고 NEW 만 박힘
+    assert "OLD_K" not in content
+    assert "OLD_S" not in content
+    assert "AURORA_ICT_DEMO_API_KEY=NEW_K" in content
+    assert "AURORA_ICT_DEMO_API_SECRET=NEW_S" in content
+    # 다른 라인 (SYMBOL) 은 보존
+    assert "AURORA_ICT_SYMBOL=BTC/USDT:USDT" in content
+
+
+def test_credentials_live_mode(
+    manager: BotManager, tmp_path, monkeypatch,
+) -> None:
+    """live 모드 키 저장 → AURORA_ICT_LIVE_ prefix + live_api_key 필드 갱신."""
+    from aurora_ict.api import app as app_mod
+
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(app_mod, "_env_path", lambda: env_path)
+
+    c = TestClient(create_app(manager))
+    resp = c.post(
+        "/ict/credentials",
+        json={"mode": "live", "api_key": "LK", "api_secret": "LS"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["has_live_credentials"] is True
+
+    content = env_path.read_text(encoding="utf-8")
+    assert "AURORA_ICT_LIVE_API_KEY=LK" in content
+    assert "AURORA_ICT_LIVE_API_SECRET=LS" in content
+    assert manager.settings.live_api_key.get_secret_value() == "LK"
 
 
 def test_markers_returns_data_when_running(client: TestClient) -> None:

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,7 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from aurora_ict.api.markers import to_chart_markers
 from aurora_ict.bot.manager import BotManager
@@ -39,6 +40,47 @@ class RunModeRequest(BaseModel):
 
 class EnabledRequest(BaseModel):
     enabled: bool
+
+
+class CredentialsRequest(BaseModel):
+    mode: str  # "demo" | "live"
+    api_key: str
+    api_secret: str
+
+
+def _env_path() -> Path:
+    """`.env` 위치 — frozen(.exe 옆) / dev(cwd) 분기."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / ".env"
+    return Path.cwd() / ".env"
+
+
+def _write_env_credentials(mode: str, api_key: str, api_secret: str) -> Path:
+    """`.env` 파일에 키 갱신. 기존 라인 있으면 교체, 없으면 추가.
+
+    Args:
+        mode: "demo" 또는 "live".
+        api_key / api_secret: 평문 키.
+
+    Returns:
+        실제 갱신된 .env 경로.
+    """
+    env_path = _env_path()
+    lines: list[str] = []
+    if env_path.is_file():
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    prefix = "AURORA_ICT_LIVE_" if mode == "live" else "AURORA_ICT_DEMO_"
+    key_var = f"{prefix}API_KEY"
+    secret_var = f"{prefix}API_SECRET"
+    filtered = [
+        ln for ln in lines
+        if not ln.startswith(f"{key_var}=")
+        and not ln.startswith(f"{secret_var}=")
+    ]
+    filtered.append(f"{key_var}={api_key}")
+    filtered.append(f"{secret_var}={api_secret}")
+    env_path.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+    return env_path
 
 
 def _settings_safe_dict(settings: IctSettings) -> dict[str, Any]:
@@ -143,6 +185,31 @@ def create_app(manager: BotManager) -> FastAPI:
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return _status_dict(manager)
+
+    @app.post("/ict/credentials")
+    async def set_credentials(req: CredentialsRequest) -> dict[str, Any]:
+        """API 키 등록 — .env 영구 저장 + 메모리 settings 즉시 갱신."""
+        if req.mode not in ("demo", "live"):
+            raise HTTPException(status_code=400, detail=f"invalid mode: {req.mode}")
+        if not req.api_key.strip() or not req.api_secret.strip():
+            raise HTTPException(status_code=400, detail="api_key / api_secret 필수")
+        try:
+            env_path = _write_env_credentials(
+                req.mode, req.api_key.strip(), req.api_secret.strip(),
+            )
+        except OSError as e:
+            raise HTTPException(
+                status_code=500, detail=f".env 쓰기 실패: {e}",
+            ) from e
+        # 메모리 settings 즉시 갱신 (다음 start 시 바로 반영)
+        if req.mode == "demo":
+            manager.settings.demo_api_key = SecretStr(req.api_key.strip())
+            manager.settings.demo_api_secret = SecretStr(req.api_secret.strip())
+        else:
+            manager.settings.live_api_key = SecretStr(req.api_key.strip())
+            manager.settings.live_api_secret = SecretStr(req.api_secret.strip())
+        logger.info("credentials 갱신 — mode=%s, env=%s", req.mode, env_path)
+        return _settings_safe_dict(manager.settings)
 
     @app.get("/ict/markers")
     async def get_markers(
