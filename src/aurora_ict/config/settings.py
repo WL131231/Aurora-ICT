@@ -66,7 +66,7 @@ class IctSettings(BaseSettings):
     min_rr: float = Field(default=2.0, ge=1.0)
     fvg_min_size_pct: float = Field(default=0.0005, ge=0)
     step_interval_sec: int = Field(default=60, ge=10)
-    ohlcv_limit: int = Field(default=200, ge=50, le=1000)
+    ohlcv_limit: int = Field(default=1000, ge=50, le=1000)
 
     demo_api_key: SecretStr = Field(default=SecretStr(""))
     demo_api_secret: SecretStr = Field(default=SecretStr(""))

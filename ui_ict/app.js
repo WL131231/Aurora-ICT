@@ -178,8 +178,8 @@ async function fetchAndRender() {
     if (status.state !== "running") return;
 
     const [ohlcv, markers] = await Promise.all([
-      api("/ict/ohlcv?limit=200"),
-      api("/ict/markers?limit=200"),
+      api("/ict/ohlcv?limit=1000"),
+      api("/ict/markers?limit=1000"),
     ]);
     candleSeries.setData(ohlcv.candles);
     renderMarkers(markers);

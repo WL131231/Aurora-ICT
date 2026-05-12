@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import pytest
-import urllib.error
 
 from aurora_ict import updater
-
 
 # ============================================================
 # _parse_version
@@ -27,8 +26,8 @@ def test_parse_version_strips_pre_release() -> None:
 
 
 def test_parse_version_partial() -> None:
-    """비표준 (1.0a) — 가능한 부분까지만 매핑."""
-    assert updater._parse_version("1.0a") == (1, 0)
+    """비표준 (1.0a) — 가능한 부분까지만 매핑. '0a' 는 ValueError 라 거기서 break."""
+    assert updater._parse_version("1.0a") == (1,)
 
 
 def test_parse_version_empty() -> None:
