@@ -154,8 +154,15 @@ jobs:
           RELEASES_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          target_commitish: main
           files: dist/Aurora-ICT.exe
-          generate_release_notes: true
+          generate_release_notes: false
+          body: |
+            Aurora-ICT ${{ github.ref_name }} release.
+
+            Code repo (private): https://github.com/WL131231/Aurora-ICT
           repository: WL131231/Aurora-ICT-releases
           token: ${{ secrets.RELEASES_REPO_TOKEN }}
 
@@ -165,10 +172,17 @@ jobs:
           RELEASES_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          target_commitish: main
           files: |
             dist/Aurora-ICT-macOS.zip
             dist/Aurora-ICT-macOS.dmg
-          generate_release_notes: true
+          generate_release_notes: false
+          body: |
+            Aurora-ICT ${{ github.ref_name }} release.
+
+            Code repo (private): https://github.com/WL131231/Aurora-ICT
           repository: WL131231/Aurora-ICT-releases
           token: ${{ secrets.RELEASES_REPO_TOKEN }}
 
