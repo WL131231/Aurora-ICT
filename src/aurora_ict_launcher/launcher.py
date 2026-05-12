@@ -33,6 +33,10 @@ from aurora_ict.api.app import create_app
 from aurora_ict.bot import aurora_client_factory
 from aurora_ict.bot.manager import BotManager
 from aurora_ict.config.settings import get_settings, reload_settings
+from aurora_ict.updater import (
+    apply_pending_update,
+    start_background_check,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +127,14 @@ def _find_env_file() -> Path | None:
 def main() -> int:
     _setup_logging()
     logger.info("Aurora-ICT launcher 시작")
+
+    # 직전 실행에서 다운로드된 업데이트 있으면 swap → 새 버전 재시작 (return 안 함)
+    # frozen + Windows + .new 파일 있을 때만 동작 — dev 환경에서는 no-op
+    apply_pending_update()
+
+    # 백그라운드 update check 시작 — 새 버전 발견 시 .exe.new 로 다운로드
+    # (사용자 GUI 사용 안 막음, 다음 실행 시 자동 적용)
+    start_background_check()
 
     env_file = _find_env_file()
     if env_file is not None:
