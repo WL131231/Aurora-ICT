@@ -19,6 +19,11 @@ from aurora_ict.indicators.premium_discount import (
     is_ote_zone,
     latest_dealing_range,
 )
+from aurora_ict.indicators.smt import (
+    SmtEvent,
+    SmtType,
+    detect_smt_divergence,
+)
 from aurora_ict.indicators.structure import (
     StructureEvent,
     StructureType,
@@ -48,6 +53,10 @@ __all__ = [
     "PDZone",
     "is_ote_zone",
     "latest_dealing_range",
+    # SMT
+    "SmtEvent",
+    "SmtType",
+    "detect_smt_divergence",
     # Structure
     "StructureEvent",
     "StructureType",
