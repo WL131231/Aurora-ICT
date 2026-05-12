@@ -169,20 +169,77 @@ function renderMarkers(payload) {
 }
 
 // ============================================================
-// OHLCV fetch + render (candles + markers)
+// Position 패널 렌더
+// ============================================================
+function _fmt(n, digits = 2) {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  return Number(n).toLocaleString(undefined, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
+function renderPositions(pos) {
+  const tbody = $("positions-tbody");
+  const count = $("positions-count");
+
+  if (!pos || !pos.active) {
+    tbody.innerHTML = '<tr><td colspan="8" class="pos-empty">포지션 없음 — 봇 가동 후 진입 시 표시됩니다</td></tr>';
+    count.textContent = "0 open";
+    return;
+  }
+
+  const sideClass = pos.direction === "long" ? "pos-side-long" : "pos-side-short";
+  const sideLabel = pos.direction === "long" ? "LONG" : "SHORT";
+  const pnlClass = pos.unrealized_pnl >= 0 ? "pos-pnl-pos" : "pos-pnl-neg";
+  const pnlSign = pos.unrealized_pnl >= 0 ? "+" : "";
+
+  tbody.innerHTML = `
+    <tr>
+      <td>
+        <div>${pos.symbol}</div>
+        <div class="${sideClass}" style="font-size:9px; letter-spacing:0.15em">${sideLabel} · ${pos.leverage}×</div>
+      </td>
+      <td>${_fmt(pos.qty, 4)}</td>
+      <td>${_fmt(pos.entry, 2)}</td>
+      <td>${_fmt(pos.mark_price, 2)}</td>
+      <td>${_fmt(pos.liquidation_price, 2)}</td>
+      <td>${_fmt(pos.margin, 2)} USDT</td>
+      <td class="${pnlClass}">
+        ${pnlSign}${_fmt(pos.unrealized_pnl, 2)} USDT
+        <div style="font-size:9px">(${pnlSign}${_fmt(pos.roi_pct, 2)}%)</div>
+      </td>
+      <td>
+        <div class="pos-actions">
+          <button class="pos-btn-close-half" data-fraction="0.5" disabled title="다음 PR 에서 활성화">CLOSE 50%</button>
+          <button class="pos-btn-close-full" data-fraction="1.0" disabled title="다음 PR 에서 활성화">CLOSE ALL</button>
+        </div>
+      </td>
+    </tr>
+  `;
+  count.textContent = "1 open";
+}
+
+// ============================================================
+// OHLCV fetch + render (candles + markers + position)
 // ============================================================
 async function fetchAndRender() {
   try {
     const status = await api("/ict/status");
     renderStatus(status);
-    if (status.state !== "running") return;
+    if (status.state !== "running") {
+      renderPositions(null);
+      return;
+    }
 
-    const [ohlcv, markers] = await Promise.all([
+    const [ohlcv, markers, position] = await Promise.all([
       api("/ict/ohlcv?limit=1000"),
       api("/ict/markers?limit=1000"),
+      api("/ict/position"),
     ]);
     candleSeries.setData(ohlcv.candles);
     renderMarkers(markers);
+    renderPositions(position);
   } catch (e) {
     toast(`API: ${e.message}`, true);
   }
