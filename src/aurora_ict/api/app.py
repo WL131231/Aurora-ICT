@@ -17,11 +17,13 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from aurora_ict.api.markers import to_chart_markers
@@ -148,11 +150,7 @@ def create_app(manager: BotManager) -> FastAPI:
         timeframe: str | None = None,
         limit: int = 200,
     ) -> dict[str, Any]:
-        """OHLCV fetch 박힌 거 박힘 박힘 markers 박힘 박힘.
-
-        bot 박힘 박힘 client 박힘 박힘 박힘 박힘 — manager 박힘 박힘 박힘 박힘 박힘 fetch.
-        박힙 박힘 박힙 박힘 박힘 ``manager.bot`` 박힘 박힘 박힘 박힘 박힘 → 404.
-        """
+        """OHLCV fetch 박힌 거 박힘 박힘 markers 박힘 박힘."""
         bot = manager.bot
         if bot is None:
             raise HTTPException(
@@ -192,6 +190,45 @@ def create_app(manager: BotManager) -> FastAPI:
             },
             "markers": markers.to_dict(),
         }
+
+    @app.get("/ict/ohlcv")
+    async def get_ohlcv(
+        symbol: str | None = None,
+        timeframe: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        """OHLCV 봉 박힘 박힘 박힘 (UI 박힘 박힘 lightweight-charts candles)."""
+        bot = manager.bot
+        if bot is None:
+            raise HTTPException(
+                status_code=404, detail="봇 박힙 박힘 박힘 박힘",
+            )
+        use_symbol = symbol or bot.symbol
+        use_tf = timeframe or bot.timeframe
+        try:
+            rows = await bot.client.fetch_ohlcv(use_symbol, use_tf, limit)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"fetch_ohlcv: {e}") from e
+        candles = [
+            {
+                "time": int(r[0] // 1000),
+                "open": float(r[1]),
+                "high": float(r[2]),
+                "low": float(r[3]),
+                "close": float(r[4]),
+            }
+            for r in rows
+        ]
+        return {"symbol": use_symbol, "timeframe": use_tf, "candles": candles}
+
+    # ============================================================
+    # Static UI mount — ui_ict/ 박힌 거 박힙 박힘 박힙 박힙 박힘
+    # ============================================================
+    # 박힌 거 박힙 박힘 박힙 박힘 박힙 박힘 박힙 박힘 박힙 박힘 박힙 박힙 박힙 박힘 박힙 박힘.
+    # Aurora-ICT 박힌 거 박힘 박힘 박힘 ui_ict/ 박힙 박힘 박힘 박힙 박힘 박힙 박힘 박힙 박힙.
+    _ui_dir = Path(__file__).resolve().parents[3] / "ui_ict"
+    if _ui_dir.is_dir():
+        app.mount("/ui", StaticFiles(directory=str(_ui_dir), html=True), name="ui")
 
     return app
 

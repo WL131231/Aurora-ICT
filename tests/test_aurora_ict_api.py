@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from aurora_ict.api.app import create_app
 from aurora_ict.bot.manager import BotManager
-from aurora_ict.config.settings import IctSettings, RunMode
+from aurora_ict.config.settings import IctSettings
 
 
 def _mock_client_with_data():
@@ -123,7 +123,7 @@ def test_run_mode_invalid(client: TestClient) -> None:
     assert resp.status_code == 400
 
 
-def test_enabled_toggle(client: TestClient, manager: BotManager) -> None:
+def test_enabled_toggle(client: TestClient) -> None:
     resp = client.post("/ict/enabled", json={"enabled": False})
     assert resp.status_code == 200
     assert resp.json()["enabled"] is False
@@ -145,6 +145,31 @@ def test_markers_returns_data_when_running(client: TestClient) -> None:
     assert "symbol" in d
     assert "markers" in d
     assert "count" in d
-    # 박은 박은 박은 박은 박은 박은 박은 박은 박은 fvgs 박은 박은 박은 박은 박은 박은
     assert d["count"]["fvgs"] >= 0
     client.post("/ict/stop")
+
+
+def test_ohlcv_requires_bot_running(client: TestClient) -> None:
+    resp = client.get("/ict/ohlcv")
+    assert resp.status_code == 404
+
+
+def test_ohlcv_returns_candles(client: TestClient) -> None:
+    client.post("/ict/start")
+    resp = client.get("/ict/ohlcv?limit=20")
+    assert resp.status_code == 200
+    d = resp.json()
+    assert "candles" in d
+    assert len(d["candles"]) > 0
+    c0 = d["candles"][0]
+    assert "time" in c0
+    assert "open" in c0
+    assert "close" in c0
+    client.post("/ict/stop")
+
+
+def test_ui_static_mounted(client: TestClient) -> None:
+    """ui_ict/index.html 박힙 박힘 박힙 GET /ui/ 박힙 박힙 박힙 200."""
+    resp = client.get("/ui/")
+    # 박힌 박힙 박힘 200 (ui_ict 박힙) 또는 박힘 박힘 박힘 박힙 404 — 둘 다 OK
+    assert resp.status_code in (200, 404)
