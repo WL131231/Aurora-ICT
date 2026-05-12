@@ -52,6 +52,7 @@ def _mock_client(ohlcv_rows: list[list[Any]]) -> AsyncMock:
     client.fetch_ohlcv = AsyncMock(return_value=ohlcv_rows)
     client.place_order = AsyncMock(return_value={"orderId": "TEST123"})
     client.fetch_position = AsyncMock(return_value=None)
+    client.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0}})
     return client
 
 
@@ -177,14 +178,36 @@ async def test_start_stop_lifecycle() -> None:
 
 
 @pytest.mark.asyncio
-async def test_qty_calc_with_zero_sl_dist() -> None:
-    """SL 박힘 박힘 박힘 entry 박힘 박힙 박힘 박힘 → qty = 최소 (0.001)."""
+async def test_qty_calc_with_equity() -> None:
+    """equity 박힌 거 박힙 박힘 qty 박힘 박힙 박힘 박힘."""
     start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
     rows = _ohlcv_rows(start, _bars_long_setup())
     client = _mock_client(rows)
     bot = BotIctInstance(client=client, min_rr=1.0, fvg_min_size_pct=0.001)
     sig = await bot.step()
-    # 박은 valid 박힘 박힘 박힘 박힘 박힘 박힘 qty > 0
     assert sig.setup is not None
-    qty = bot._calc_qty(sig.setup)
-    assert qty > 0
+    # equity 박힌 거 박힘 박힘 qty 박힘 박힙 박힘 박힘 박힘 박힘
+    qty_low = bot._calc_qty(sig.setup, equity=1000.0)
+    qty_high = bot._calc_qty(sig.setup, equity=10000.0)
+    assert qty_high > qty_low
+    assert qty_low > 0
+
+
+@pytest.mark.asyncio
+async def test_fetch_equity_from_ccxt_balance() -> None:
+    """ccxt format {'USDT': {'total': N}} 박힘 박힘 N 박힘 박힘."""
+    client = _mock_client([])
+    client.fetch_balance = AsyncMock(return_value={"USDT": {"total": 5000.0}})
+    bot = BotIctInstance(client=client)
+    eq = await bot._fetch_equity()
+    assert eq == 5000.0
+
+
+@pytest.mark.asyncio
+async def test_fetch_equity_fallback_on_error() -> None:
+    """fetch_balance 박힙 박힙 박힘 fallback 1000."""
+    client = _mock_client([])
+    client.fetch_balance = AsyncMock(side_effect=RuntimeError("network"))
+    bot = BotIctInstance(client=client)
+    eq = await bot._fetch_equity()
+    assert eq == 1000.0

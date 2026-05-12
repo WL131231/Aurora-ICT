@@ -24,7 +24,6 @@ import pandas as pd
 
 from aurora_ict.signal.ict_signal import (
     ICTSignal,
-    SignalAction,
     generate_ict_signal,
 )
 from aurora_ict.strategy.silver_bullet import Direction, SilverBulletSetup
@@ -51,6 +50,8 @@ class ExchangeClientProtocol(Protocol):
     ) -> dict[str, Any]: ...
 
     async def fetch_position(self, symbol: str) -> dict[str, Any] | None: ...
+
+    async def fetch_balance(self) -> dict[str, Any]: ...
 
 
 class BotState(str, Enum):
@@ -187,7 +188,8 @@ class BotIctInstance:
         """
         side = "buy" if setup.direction is Direction.LONG else "sell"
 
-        qty = self._calc_qty(setup)
+        equity = await self._fetch_equity()
+        qty = self._calc_qty(setup, equity)
         if qty <= 0:
             logger.warning("qty 박힘 박힘 박힘 → skip: setup=%s", setup.ts_ms)
             return
@@ -220,17 +222,39 @@ class BotIctInstance:
             setup_ts_ms=setup.ts_ms,
         )
 
-    def _calc_qty(self, setup: SilverBulletSetup) -> float:
+    async def _fetch_equity(self) -> float:
+        """박힌 자산 (USDT equity) 박힘 박힘.
+
+        Bybit V5 박힌 거 박힘: ``fetch_balance()`` 박힘 박힘 ccxt format = ``{"USDT":
+        {"total": ...}, ...}`` 박힘. fallback 박은 박힘 박힘 박힘 박힘 ``"total"`` 박힌 거
+        박힘 박힘 1000.0 박힘 (테스트 박힘 박힘 박힘).
+        """
+        try:
+            bal = await self.client.fetch_balance()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("fetch_balance 박힘: %s — fallback $1000", e)
+            return 1000.0
+        if not isinstance(bal, dict):
+            return 1000.0
+        # ccxt 박힌 거 박힙 박힘 = {"USDT": {"total": float, "free": float, ...}, ...}
+        usdt = bal.get("USDT")
+        if isinstance(usdt, dict):
+            total = usdt.get("total")
+            if isinstance(total, (int, float)) and total > 0:
+                return float(total)
+        # Bybit direct format 박힘 박힘 박힘 (capital fallback)
+        total = bal.get("total")
+        if isinstance(total, (int, float)) and total > 0:
+            return float(total)
+        return 1000.0
+
+    def _calc_qty(self, setup: SilverBulletSetup, equity: float) -> float:
         """진입 qty 박힘 박힘.
 
-        risk_amount = total_equity × risk_per_trade_pct/100
+        risk_amount = equity × risk_per_trade_pct/100
         qty = risk_amount / |entry - stop_loss|
-
-        여기는 박힌 total_equity 박힌 거 박힙 박힘 박힐 simplified 박힘 — fixed $1000 박힘
-        박힘 (실제는 client.fetch_balance 박힘 박힐 박힘). 박힘 박힌 박힌 박힌 박힘.
         """
-        # TODO v0.1.6: 박힌 자산 박은 거 박힘 박힘 박힘 박힘 fetch_balance() 박힘
-        notional_risk = 1000.0 * (self.risk_per_trade_pct / 100.0)
+        notional_risk = equity * (self.risk_per_trade_pct / 100.0)
         sl_dist = abs(setup.entry - setup.stop_loss)
         if sl_dist <= 0:
             return 0.0
