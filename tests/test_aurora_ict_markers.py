@@ -153,6 +153,58 @@ def test_markers_to_dict_json_serializable() -> None:
     assert "killzones" in decoded
 
 
+def test_markers_includes_order_blocks() -> None:
+    """OB indicator 결과가 markers.order_blocks 로 노출."""
+    start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
+    # bearish 봉 (idx=1) → 이후 close 가 bearish high 돌파 → Bullish OB
+    df = _make_df_ny(start, [
+        (100, 102, 99, 101),
+        (101, 102, 95, 96),     # bearish, high=102
+        (96, 108, 95, 107),     # close 107 > 102 → bullish OB at idx=1
+        (107, 109, 106, 108),
+        (108, 110, 107, 109),
+    ])
+    markers = to_chart_markers(df, fvg_min_size_pct=None)
+    bull = [o for o in markers.order_blocks if o.type == "bullish"]
+    assert len(bull) >= 1
+    assert bull[0].open == 101
+    assert bull[0].close == 96
+
+
+def test_markers_includes_macros() -> None:
+    """NY 09:50–10:10 안의 봉 → am_macro_2 macro 마커."""
+    # NY 09:55 시작 → 9봉 박으면 10:04 까지 = am_macro_2 (9:50-10:10) 구간 안
+    start = datetime(2026, 5, 12, 9, 55, tzinfo=NY)
+    df = _make_df_ny(start, [
+        (100, 102, 99, 101),
+        (101, 103, 100, 102),
+        (102, 104, 101, 103),
+        (103, 105, 102, 104),
+        (104, 106, 103, 105),
+        (105, 107, 104, 106),
+        (106, 108, 105, 107),
+        (107, 109, 106, 108),
+        (108, 110, 107, 109),
+    ])
+    markers = to_chart_markers(df, fvg_min_size_pct=None)
+    names = [m.name for m in markers.macros]
+    assert any("am_macro_2" == n for n in names)
+
+
+def test_markers_to_dict_includes_new_keys() -> None:
+    """to_dict 결과에 order_blocks / macros 키 포함."""
+    df = _make_df_ny(datetime(2026, 5, 12, 10, 0, tzinfo=NY), [
+        (100, 102, 99, 101),
+        (101, 103, 100, 102),
+        (102, 104, 101, 103),
+    ])
+    d = to_chart_markers(df, fvg_min_size_pct=None).to_dict()
+    assert "order_blocks" in d
+    assert "macros" in d
+    assert isinstance(d["order_blocks"], list)
+    assert isinstance(d["macros"], list)
+
+
 def test_markers_swept_flag_propagated() -> None:
     """sweep 박힌 swing 박힌 거 박힌 swept=True 박힘 박힘 markers.swings 박힘 박힘."""
     start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)

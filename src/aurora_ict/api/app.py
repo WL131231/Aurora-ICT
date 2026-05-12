@@ -412,6 +412,8 @@ def create_app(manager: BotManager) -> FastAPI:
                 "swings": len(markers.swings),
                 "killzones": len(markers.killzones),
                 "setups": len(markers.setups),
+                "order_blocks": len(markers.order_blocks),
+                "macros": len(markers.macros),
             },
             "markers": markers.to_dict(),
         }
