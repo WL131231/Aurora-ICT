@@ -1,5 +1,6 @@
 """Aurora-ICT API — UI 박힌 거 박힘 박힘 marker DTO + REST 박힘."""
 
+from aurora_ict.api.app import create_app
 from aurora_ict.api.markers import (
     ChartMarkers,
     FVGMarker,
@@ -19,5 +20,6 @@ __all__ = [
     "StructureMarker",
     "SweepMarker",
     "SwingMarker",
+    "create_app",
     "to_chart_markers",
 ]
