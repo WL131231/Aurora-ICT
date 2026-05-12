@@ -13,6 +13,9 @@ BLOCK_CIPHER = None
 PROJECT_ROOT = Path(SPECPATH).resolve()
 SRC = PROJECT_ROOT / "src"
 UI_DIR = PROJECT_ROOT / "ui_ict"
+ASSETS_DIR = PROJECT_ROOT / "assets"
+ICON_WIN = ASSETS_DIR / "aurora.ico"
+ICON_MAC = ASSETS_DIR / "aurora.icns"
 
 a = Analysis(
     [str(SRC / "aurora_ict_launcher" / "__main__.py")],
@@ -75,6 +78,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=str(ICON_WIN) if ICON_WIN.exists() else None,
 )
 
 # macOS .app bundle (sys.platform == "darwin" 일 때만 PyInstaller 가 자동 사용)
@@ -83,7 +87,7 @@ if sys.platform == "darwin":
     app = BUNDLE(
         exe,
         name="Aurora-ICT.app",
-        icon=None,
+        icon=str(ICON_MAC) if ICON_MAC.exists() else None,
         bundle_identifier="com.aurora.ict",
         info_plist={
             "CFBundleName": "Aurora-ICT",
