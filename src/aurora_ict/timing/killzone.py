@@ -78,6 +78,23 @@ SILVER_BULLET_WINDOWS: tuple[tuple[str, time, time], ...] = (
     ("pm_sb", time(14, 0), time(15, 0)),
 )
 
+# Macros — Silver Bullet 안의 더 정밀한 sub-window (20-30분).
+# ICT 자료(Lumi Traders ICT Killzones cheat sheet) 기준 — 이 시간대에 setup 트리거
+# 정밀도가 가장 높음 (변동성 + 진입 빈도). Silver Bullet 의 좁은 sub-window.
+MACRO_WINDOWS: tuple[tuple[str, time, time], ...] = (
+    # London session — Silver Bullet (03:00-04:00) 안팎의 2개 sub-window
+    ("london_macro_1", time(2, 33), time(3, 0)),
+    ("london_macro_2", time(4, 3),  time(4, 30)),
+    # NY AM session — Silver Bullet (10:00-11:00) 전후 3개
+    ("am_macro_1",     time(8, 50),  time(9, 10)),
+    ("am_macro_2",     time(9, 50),  time(10, 10)),
+    ("am_macro_3",     time(10, 50), time(11, 10)),
+    # NY Lunch + PM
+    ("lunch_macro",    time(11, 50), time(12, 10)),
+    ("pm_macro_1",     time(13, 10), time(13, 40)),
+    ("pm_macro_2",     time(15, 15), time(15, 45)),
+)
+
 
 def _to_ny_time(ts_ms: int) -> datetime:
     """UTC ms → NY local datetime (DST 자동 박힘)."""
@@ -128,7 +145,22 @@ def in_silver_bullet(ts_ms: int) -> str | None:
     return None
 
 
+def in_macro(ts_ms: int) -> str | None:
+    """Macro 윈도우 (Silver Bullet 안의 정밀 sub-window).
+
+    Returns:
+        매칭되는 macro 이름 (``"london_macro_1"``, ``"am_macro_2"`` 등),
+        없으면 ``None``.
+    """
+    ny = _to_ny_time(ts_ms).time()
+    for name, start, end in MACRO_WINDOWS:
+        if _within(ny, start, end):
+            return name
+    return None
+
+
 __all__ = [
+    "MACRO_WINDOWS",
     "Killzone",
     "KillzoneName",
     "NY_TZ",
@@ -136,5 +168,6 @@ __all__ = [
     "STANDARD_KILLZONES",
     "classify_killzone",
     "in_killzone",
+    "in_macro",
     "in_silver_bullet",
 ]
