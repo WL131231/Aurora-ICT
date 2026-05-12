@@ -21,10 +21,15 @@ import pandas as pd
 
 from aurora_ict.indicators.fvg import detect_fvgs
 from aurora_ict.indicators.liquidity import detect_liquidity_sweeps
+from aurora_ict.indicators.order_block import detect_order_blocks
 from aurora_ict.indicators.structure import detect_structure_events
 from aurora_ict.indicators.swing_points import detect_swing_points
 from aurora_ict.strategy.silver_bullet import detect_silver_bullet_setups
-from aurora_ict.timing.killzone import classify_killzone, in_silver_bullet
+from aurora_ict.timing.killzone import (
+    classify_killzone,
+    in_macro,
+    in_silver_bullet,
+)
 
 
 @dataclass(slots=True)
@@ -93,6 +98,28 @@ class SetupMarker:
 
 
 @dataclass(slots=True)
+class OrderBlockMarker:
+    """Order Block marker — body 영역 (open/close) + 방향 + mitigation 상태."""
+
+    ts_ms: int
+    type: str        # "bullish" / "bearish"
+    open: float
+    high: float
+    low: float
+    close: float
+    mitigated: bool
+
+
+@dataclass(slots=True)
+class MacroMarker:
+    """Macro window marker — Silver Bullet 안의 정밀 sub-window (20~30분)."""
+
+    start_ms: int
+    end_ms: int
+    name: str        # "london_macro_1" / "am_macro_2" / "lunch_macro" 등
+
+
+@dataclass(slots=True)
 class ChartMarkers:
     """전체 marker bundle — UI 한 번 호출로 받아갈 결과 묶음."""
 
@@ -102,6 +129,8 @@ class ChartMarkers:
     swings: list[SwingMarker] = field(default_factory=list)
     killzones: list[KillzoneMarker] = field(default_factory=list)
     setups: list[SetupMarker] = field(default_factory=list)
+    order_blocks: list[OrderBlockMarker] = field(default_factory=list)
+    macros: list[MacroMarker] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-serializable dict 변환."""
@@ -112,6 +141,8 @@ class ChartMarkers:
             "swings": [asdict(s) for s in self.swings],
             "killzones": [asdict(k) for k in self.killzones],
             "setups": [asdict(s) for s in self.setups],
+            "order_blocks": [asdict(o) for o in self.order_blocks],
+            "macros": [asdict(m) for m in self.macros],
         }
 
 
@@ -197,6 +228,19 @@ def to_chart_markers(
             broken_level=ev.broken_level,
         ))
 
+    # 4-b. Order Blocks
+    obs = detect_order_blocks(df, displacement_bars=3, mark_mitigation=True)
+    for ob in obs:
+        markers.order_blocks.append(OrderBlockMarker(
+            ts_ms=ob.ts_ms,
+            type=ob.type.value,
+            open=ob.open,
+            high=ob.high,
+            low=ob.low,
+            close=ob.close,
+            mitigated=ob.mitigated,
+        ))
+
     # 5. Killzones — 봉 단위로 killzone 변경 시점을 모아 (start_ms, end_ms) 구간으로
     # 압축한다.
     if len(df) > 0:
@@ -226,6 +270,30 @@ def to_chart_markers(
                 is_silver_bullet=in_silver_bullet(zone_start_ms) is not None,
             ))
 
+    # 5-b. Macros — Silver Bullet 안의 정밀 sub-window (봉 단위 grouping)
+    if len(df) > 0:
+        prev_macro: str | None = None
+        macro_start_ms: int | None = None
+        for i in range(len(df)):
+            ts_ms = _ts_at_idx(df, i)
+            m_name = in_macro(ts_ms)
+            if m_name != prev_macro:
+                if prev_macro is not None and macro_start_ms is not None:
+                    markers.macros.append(MacroMarker(
+                        start_ms=macro_start_ms,
+                        end_ms=ts_ms,
+                        name=prev_macro,
+                    ))
+                prev_macro = m_name
+                macro_start_ms = ts_ms if m_name is not None else None
+        if prev_macro is not None and macro_start_ms is not None:
+            last_ts = _ts_at_idx(df, len(df) - 1)
+            markers.macros.append(MacroMarker(
+                start_ms=macro_start_ms,
+                end_ms=last_ts,
+                name=prev_macro,
+            ))
+
     # 6. Silver Bullet setups
     if include_setups:
         setups = detect_silver_bullet_setups(
@@ -251,6 +319,8 @@ __all__ = [
     "ChartMarkers",
     "FVGMarker",
     "KillzoneMarker",
+    "MacroMarker",
+    "OrderBlockMarker",
     "SetupMarker",
     "StructureMarker",
     "SweepMarker",

@@ -111,6 +111,8 @@ function renderMarkers(payload) {
   $("c-swings").textContent = payload.count.swings;
   $("c-kz").textContent = payload.count.killzones;
   $("c-setups").textContent = payload.count.setups;
+  if ($("c-obs")) $("c-obs").textContent = payload.count.order_blocks ?? 0;
+  if ($("c-macros")) $("c-macros").textContent = payload.count.macros ?? 0;
 
   // 단순 marker 렌더 — 각 FVG 별 사각형 대신 setMarkers 일괄 표시.
   const markers = [];
@@ -159,6 +161,18 @@ function renderMarkers(payload) {
       color: s.direction === "long" ? "#34d399" : "#fb7185",
       shape: s.direction === "long" ? "arrowUp" : "arrowDown",
       text: `${s.direction.toUpperCase()} RR=${s.risk_reward.toFixed(1)}`,
+    });
+  });
+
+  // Order Blocks — bullish=teal, bearish=pink. mitigated 는 옅게 표시 (글자만)
+  (m.order_blocks ?? []).forEach(ob => {
+    const isBull = ob.type === "bullish";
+    markers.push({
+      time: tsToTimeSec(ob.ts_ms),
+      position: isBull ? "belowBar" : "aboveBar",
+      color: isBull ? "#2dd4bf" : "#f472b6",
+      shape: "square",
+      text: ob.mitigated ? "OB·m" : "OB",
     });
   });
 
