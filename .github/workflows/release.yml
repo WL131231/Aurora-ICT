@@ -47,7 +47,7 @@ jobs:
         include:
           - os: windows-latest
             asset_name: Aurora-ICT-windows.exe
-            artifact_path: dist/Aurora-ICT.exe
+            artifact_path: dist/Aurora-ICT-windows.exe
             artifact_name: aurora-ict-windows
           - os: macos-14
             asset_name: Aurora-ICT-macOS.zip
@@ -112,6 +112,8 @@ jobs:
           }
           $size = (Get-Item "dist/Aurora-ICT.exe").Length / 1MB
           Write-Host "Aurora-ICT.exe size: $([math]::Round($size, 1)) MB"
+          # 사이트 다운로드 링크와 일치하도록 rename (Aurora-ICT-windows.exe)
+          Move-Item -Path "dist/Aurora-ICT.exe" -Destination "dist/Aurora-ICT-windows.exe" -Force
         shell: pwsh
 
       - name: ad-hoc codesign macOS .app
@@ -157,7 +159,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           target_commitish: main
-          files: dist/Aurora-ICT.exe
+          files: dist/Aurora-ICT-windows.exe
           generate_release_notes: false
           body: |
             Aurora-ICT ${{ github.ref_name }} release.
@@ -193,7 +195,7 @@ jobs:
           RELEASES_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Aurora-ICT.exe
+          files: dist/Aurora-ICT-windows.exe
           generate_release_notes: true
 
       - name: Attach macOS files (self)
