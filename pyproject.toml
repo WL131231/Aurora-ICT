@@ -1,8 +1,8 @@
 [project]
-name = "aurora"
+name = "aurora-ict"
 version = "0.1.0"
-description = "고빈도 룰 기반 자동매매 봇 — 멀티 거래소 / 멀티 페어 / 고배율"
-authors = [{name = "Aurora Team"}]
+description = "Aurora-ICT — ICT (Inner Circle Trader) 기반 자동매매 봇. Smart Money Concepts (FVG / Liquidity Sweep / MSS / Silver Bullet)."
+authors = [{name = "Aurora-ICT Team"}]
 requires-python = ">=3.11"
 readme = "README.md"
 
