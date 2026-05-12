@@ -221,14 +221,20 @@ def create_app(manager: BotManager) -> FastAPI:
         ]
         return {"symbol": use_symbol, "timeframe": use_tf, "candles": candles}
 
-    # ============================================================
-    # Static UI mount — ui_ict/ 박힌 거 박힙 박힘 박힙 박힙 박힘
-    # ============================================================
-    # 박힌 거 박힙 박힘 박힙 박힘 박힙 박힘 박힙 박힘 박힙 박힘 박힙 박힙 박힙 박힘 박힙 박힘.
-    # Aurora-ICT 박힌 거 박힘 박힘 박힘 ui_ict/ 박힙 박힘 박힘 박힙 박힘 박힙 박힘 박힙 박힙.
-    _ui_dir = Path(__file__).resolve().parents[3] / "ui_ict"
-    if _ui_dir.is_dir():
-        app.mount("/ui", StaticFiles(directory=str(_ui_dir), html=True), name="ui")
+    # Static UI mount — frozen (PyInstaller) 환경 대응:
+    # - dev: <repo_root>/ui_ict/
+    # - frozen: sys._MEIPASS/ui_ict/ (PyInstaller spec datas 로 묶임)
+    import sys
+    candidates = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "ui_ict")
+    candidates.append(Path(__file__).resolve().parents[3] / "ui_ict")
+    for ui_dir in candidates:
+        if ui_dir.is_dir():
+            app.mount("/ui", StaticFiles(directory=str(ui_dir), html=True), name="ui")
+            logger.info("UI mounted from %s", ui_dir)
+            break
 
     return app
 
