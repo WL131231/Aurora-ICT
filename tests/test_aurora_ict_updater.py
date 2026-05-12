@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import pytest
-import urllib.error
 
 from aurora_ict import updater
 
