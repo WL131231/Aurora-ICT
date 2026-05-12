@@ -49,6 +49,12 @@ class CredentialsRequest(BaseModel):
     api_secret: str
 
 
+class PositionCloseRequest(BaseModel):
+    """Close By 수동 청산 — fraction 1.0 = 전체, 0.5 = 50%."""
+
+    fraction: float = 1.0  # (0, 1]
+
+
 def _env_path() -> Path:
     """`.env` 위치 — frozen(.exe 옆) / dev(cwd) 분기."""
     if getattr(sys, "frozen", False):
@@ -211,6 +217,55 @@ def create_app(manager: BotManager) -> FastAPI:
             manager.settings.live_api_secret = SecretStr(req.api_secret.strip())
         logger.info("credentials 갱신 — mode=%s, env=%s", req.mode, env_path)
         return _settings_safe_dict(manager.settings)
+
+    @app.post("/ict/position/close")
+    async def close_position(req: PositionCloseRequest) -> dict[str, Any]:
+        """Close By 수동 청산 — 반대 방향 시장가 주문 + active_position 갱신.
+
+        Args:
+            req.fraction: 0 < fraction ≤ 1. 1.0 = 전체 청산, 0.5 = 50% 부분 청산.
+
+        Returns:
+            ``{"closed_qty": ..., "remaining_qty": ..., "active": bool}``
+        """
+        if not (0.0 < req.fraction <= 1.0):
+            raise HTTPException(
+                status_code=400,
+                detail=f"fraction은 (0, 1] 범위 — 받은 값: {req.fraction}",
+            )
+        bot = manager.bot
+        if bot is None or bot.active_position is None:
+            raise HTTPException(status_code=404, detail="active position 없음")
+
+        ap = bot.active_position
+        close_qty = ap.qty * req.fraction
+        # 반대 방향 시장가 청산 (long → sell, short → buy)
+        close_side = "sell" if ap.direction is Direction.LONG else "buy"
+        try:
+            await bot.client.place_order(
+                symbol=bot.symbol,
+                side=close_side,
+                qty=close_qty,
+                # market 청산 — price/SL/TP 없음
+                price=None,
+                stop_loss=None,
+                take_profit=None,
+            )
+        except Exception as e:  # noqa: BLE001 — 사용자에게 그대로 전달
+            logger.exception("close_position place_order 실패: %s", e)
+            raise HTTPException(status_code=502, detail=f"청산 주문 실패: {e}") from e
+
+        remaining = ap.qty - close_qty
+        if req.fraction >= 1.0 or remaining <= 1e-9:
+            bot.active_position = None
+            logger.info("전체 청산 완료 — qty=%.6f", close_qty)
+            return {"closed_qty": close_qty, "remaining_qty": 0.0, "active": False}
+
+        ap.qty = remaining
+        logger.info(
+            "부분 청산 — closed=%.6f remaining=%.6f", close_qty, remaining,
+        )
+        return {"closed_qty": close_qty, "remaining_qty": remaining, "active": True}
 
     @app.get("/ict/position")
     async def get_position() -> dict[str, Any]:

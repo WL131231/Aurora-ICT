@@ -211,8 +211,8 @@ function renderPositions(pos) {
       </td>
       <td>
         <div class="pos-actions">
-          <button class="pos-btn-close-half" data-fraction="0.5" disabled title="다음 PR 에서 활성화">CLOSE 50%</button>
-          <button class="pos-btn-close-full" data-fraction="1.0" disabled title="다음 PR 에서 활성화">CLOSE ALL</button>
+          <button class="pos-btn-close-half" data-fraction="0.5">CLOSE 50%</button>
+          <button class="pos-btn-close-full" data-fraction="1.0">CLOSE ALL</button>
         </div>
       </td>
     </tr>
@@ -286,6 +286,28 @@ $("btn-save-cred").onclick = async () => {
     await fetchAndRender();
   } catch (e) { toast(e.message, true); }
 };
+
+// Close By 버튼 (이벤트 위임 — render 후 매번 다시 박은 버튼에도 동작)
+$("positions-tbody").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-fraction]");
+  if (!btn) return;
+  const fraction = parseFloat(btn.dataset.fraction);
+  const label = fraction >= 1.0 ? "전체" : `${Math.round(fraction * 100)}%`;
+  if (!confirm(`포지션을 ${label} 청산하시겠습니까? (시장가)`)) return;
+  btn.disabled = true;
+  try {
+    const result = await api("/ict/position/close", "POST", { fraction });
+    if (result.active) {
+      toast(`${label} 청산 완료 — 남은 ${_fmt(result.remaining_qty, 4)}`);
+    } else {
+      toast("전체 청산 완료");
+    }
+    await fetchAndRender();
+  } catch (e) {
+    toast(e.message, true);
+    btn.disabled = false;
+  }
+});
 
 $("btn-toggle-enabled").onclick = async () => {
   const currentlyOn = $("btn-toggle-enabled").classList.contains("on");

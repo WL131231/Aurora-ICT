@@ -255,6 +255,132 @@ def test_position_liquidation_long_below_entry(manager: BotManager) -> None:
 
 
 # ============================================================
+# POST /ict/position/close — Close By 수동 청산
+# ============================================================
+
+
+def test_position_close_no_active_returns_404(client: TestClient) -> None:
+    """active position 없음 → 404."""
+    resp = client.post("/ict/position/close", json={"fraction": 1.0})
+    assert resp.status_code == 404
+
+
+def test_position_close_invalid_fraction(manager: BotManager) -> None:
+    """fraction (0, 1] 범위 밖 → 400."""
+    from aurora_ict.bot.bot_ict_instance import BotIctInstance, _ActivePosition
+    from aurora_ict.strategy.silver_bullet import Direction
+
+    bot = BotIctInstance(client=_mock_client_with_data(), symbol="BTCUSDT")
+    bot.active_position = _ActivePosition(
+        direction=Direction.LONG, entry=100.0, stop_loss=95.0,
+        take_profit=110.0, qty=1.0, setup_ts_ms=1778598000000,
+    )
+    manager._bot = bot
+    c = TestClient(create_app(manager))
+
+    assert c.post("/ict/position/close", json={"fraction": 0.0}).status_code == 400
+    assert c.post("/ict/position/close", json={"fraction": 1.5}).status_code == 400
+    assert c.post("/ict/position/close", json={"fraction": -0.5}).status_code == 400
+
+
+def test_position_close_full(manager: BotManager) -> None:
+    """fraction=1.0 → 전체 청산, active_position=None, place_order 호출."""
+    from aurora_ict.bot.bot_ict_instance import BotIctInstance, _ActivePosition
+    from aurora_ict.strategy.silver_bullet import Direction
+
+    mock_client = _mock_client_with_data()
+    bot = BotIctInstance(client=mock_client, symbol="BTCUSDT")
+    bot.active_position = _ActivePosition(
+        direction=Direction.LONG, entry=100.0, stop_loss=95.0,
+        take_profit=110.0, qty=1.0, setup_ts_ms=1778598000000,
+    )
+    manager._bot = bot
+    c = TestClient(create_app(manager))
+
+    resp = c.post("/ict/position/close", json={"fraction": 1.0})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["active"] is False
+    assert body["closed_qty"] == 1.0
+    assert body["remaining_qty"] == 0.0
+    # 반대 방향 (sell) 시장가 주문 호출 확인
+    mock_client.place_order.assert_awaited_once()
+    call_kwargs = mock_client.place_order.call_args.kwargs
+    assert call_kwargs["side"] == "sell"
+    assert call_kwargs["qty"] == 1.0
+    # market 청산 — price/SL/TP None
+    assert call_kwargs.get("price") is None
+    # active_position cleared
+    assert bot.active_position is None
+
+
+def test_position_close_partial(manager: BotManager) -> None:
+    """fraction=0.5 → 50% 청산, 남은 qty=0.5, active 유지."""
+    from aurora_ict.bot.bot_ict_instance import BotIctInstance, _ActivePosition
+    from aurora_ict.strategy.silver_bullet import Direction
+
+    mock_client = _mock_client_with_data()
+    bot = BotIctInstance(client=mock_client, symbol="BTCUSDT")
+    bot.active_position = _ActivePosition(
+        direction=Direction.LONG, entry=100.0, stop_loss=95.0,
+        take_profit=110.0, qty=1.0, setup_ts_ms=1778598000000,
+    )
+    manager._bot = bot
+    c = TestClient(create_app(manager))
+
+    resp = c.post("/ict/position/close", json={"fraction": 0.5})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["active"] is True
+    assert body["closed_qty"] == 0.5
+    assert body["remaining_qty"] == 0.5
+    assert bot.active_position is not None
+    assert bot.active_position.qty == 0.5
+
+
+def test_position_close_short_uses_buy_side(manager: BotManager) -> None:
+    """SHORT 포지션 청산 → buy 시장가."""
+    from aurora_ict.bot.bot_ict_instance import BotIctInstance, _ActivePosition
+    from aurora_ict.strategy.silver_bullet import Direction
+
+    mock_client = _mock_client_with_data()
+    bot = BotIctInstance(client=mock_client, symbol="BTCUSDT")
+    bot.active_position = _ActivePosition(
+        direction=Direction.SHORT, entry=100.0, stop_loss=105.0,
+        take_profit=90.0, qty=2.0, setup_ts_ms=1778598000000,
+    )
+    manager._bot = bot
+    c = TestClient(create_app(manager))
+
+    resp = c.post("/ict/position/close", json={"fraction": 1.0})
+    assert resp.status_code == 200
+    call_kwargs = mock_client.place_order.call_args.kwargs
+    assert call_kwargs["side"] == "buy"
+
+
+def test_position_close_order_failure_returns_502(manager: BotManager) -> None:
+    """place_order 예외 → 502 + active_position 변경 안 됨."""
+    from aurora_ict.bot.bot_ict_instance import BotIctInstance, _ActivePosition
+    from aurora_ict.strategy.silver_bullet import Direction
+
+    mock_client = _mock_client_with_data()
+    mock_client.place_order = AsyncMock(side_effect=RuntimeError("exchange down"))
+    bot = BotIctInstance(client=mock_client, symbol="BTCUSDT")
+    bot.active_position = _ActivePosition(
+        direction=Direction.LONG, entry=100.0, stop_loss=95.0,
+        take_profit=110.0, qty=1.0, setup_ts_ms=1778598000000,
+    )
+    manager._bot = bot
+    c = TestClient(create_app(manager))
+
+    resp = c.post("/ict/position/close", json={"fraction": 1.0})
+    assert resp.status_code == 502
+    assert "exchange down" in resp.json()["detail"]
+    # 주문 실패 시 active_position 그대로
+    assert bot.active_position is not None
+
+
+# ============================================================
 # POST /ict/credentials (온보딩)
 # ============================================================
 
