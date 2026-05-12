@@ -15,7 +15,7 @@ bot_ict_instance 박힌 거 박힌 거 박은 거:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 import pandas as pd
 
@@ -27,7 +27,7 @@ from aurora_ict.strategy.silver_bullet import (
 )
 
 
-class SignalAction(str, Enum):
+class SignalAction(StrEnum):
     """bot 박힐 박은 action 박힌 거."""
 
     NO_ACTION = "no_action"

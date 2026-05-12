@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Protocol
 
 import pandas as pd
@@ -54,7 +54,7 @@ class ExchangeClientProtocol(Protocol):
     async def fetch_balance(self) -> dict[str, Any]: ...
 
 
-class BotState(str, Enum):
+class BotState(StrEnum):
     """봇 상태."""
 
     STOPPED = "stopped"

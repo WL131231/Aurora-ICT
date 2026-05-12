@@ -19,14 +19,14 @@ ICT 박은 정의:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 import pandas as pd
 
 from aurora_ict.indicators.swing_points import SwingPoint, SwingType
 
 
-class StructureType(str, Enum):
+class StructureType(StrEnum):
     """구조 이벤트 박힌 거 종류."""
 
     BOS_BULLISH = "bos_bullish"      # uptrend 박힘 박힘 swing high 박힘 박힘
@@ -35,7 +35,7 @@ class StructureType(str, Enum):
     CHOCH_BEARISH = "choch_bearish"  # uptrend → downtrend 박힘 (MSS down)
 
 
-class TrendDirection(str, Enum):
+class TrendDirection(StrEnum):
     """추세 방향."""
 
     UP = "up"

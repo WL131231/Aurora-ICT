@@ -34,8 +34,8 @@ def _mock_client_with_data():
         (118, 122, 115, 121),
     ]
     rows = []
-    for i, (o, h, l, cl) in enumerate(bars):
-        rows.append([start_ms + i * 60_000, o, h, l, cl, 100.0])
+    for i, (o, h, lo, cl) in enumerate(bars):
+        rows.append([start_ms + i * 60_000, o, h, lo, cl, 100.0])
     c.fetch_ohlcv = AsyncMock(return_value=rows)
     c.place_order = AsyncMock(return_value={"orderId": "X1"})
     c.fetch_position = AsyncMock(return_value=None)

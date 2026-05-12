@@ -15,8 +15,8 @@ from aurora_ict.indicators.premium_discount import (
 )
 from aurora_ict.indicators.swing_points import SwingPoint, SwingType
 from aurora_ict.timing.killzone import (
-    KillzoneName,
     STANDARD_KILLZONES,
+    KillzoneName,
     classify_killzone,
     in_killzone,
     in_silver_bullet,

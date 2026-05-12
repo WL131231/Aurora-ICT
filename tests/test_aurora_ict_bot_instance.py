@@ -39,10 +39,10 @@ def _bars_long_setup() -> list[tuple[float, float, float, float]]:
 def _ohlcv_rows(start_ny: datetime, bars: list[tuple[float, float, float, float]]) -> list[list[Any]]:
     """ccxt-style OHLCV rows: [ts_ms, o, h, l, c, v]."""
     rows = []
-    for i, (o, h, l, c) in enumerate(bars):
+    for i, (o, h, lo, c) in enumerate(bars):
         t = start_ny + timedelta(minutes=i)
         ts_ms = int(t.timestamp() * 1000)
-        rows.append([ts_ms, o, h, l, c, 100.0])
+        rows.append([ts_ms, o, h, lo, c, 100.0])
     return rows
 
 

@@ -22,7 +22,7 @@ from aurora_ict.indicators.swing_points import (
 
 
 def _make_df(bars: list[tuple[float, float, float, float]]) -> pd.DataFrame:
-    rows = [{"open": o, "high": h, "low": l, "close": c} for o, h, l, c in bars]
+    rows = [{"open": o, "high": h, "low": lo, "close": c} for o, h, lo, c in bars]
     df = pd.DataFrame(rows)
     df.index = [i * 60_000 for i in range(len(rows))]
     return df
@@ -169,7 +169,7 @@ def test_equal_highs() -> None:
     ])
     swings = detect_swing_points(df)
     levels = detect_equal_levels(swings, tolerance_pct=0.001)
-    eqhs = [l for l in levels if l.type is SwingType.HIGH]
+    eqhs = [lvl for lvl in levels if lvl.type is SwingType.HIGH]
     assert len(eqhs) == 1
     assert abs(eqhs[0].price - 108.025) < 0.01
     assert len(eqhs[0].indices) == 2

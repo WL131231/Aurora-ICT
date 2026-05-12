@@ -28,14 +28,14 @@ EDT 박힘 박힘 (3월 둘째 일요일 ~ 11월 첫째 일요일). zoneinfo 박
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
-from enum import Enum
+from datetime import UTC, datetime, time
+from enum import StrEnum
 from zoneinfo import ZoneInfo
 
 NY_TZ = ZoneInfo("America/New_York")
 
 
-class KillzoneName(str, Enum):
+class KillzoneName(StrEnum):
     """Killzone 박힌 거 이름."""
 
     ASIAN = "asian"
@@ -81,7 +81,7 @@ SILVER_BULLET_WINDOWS: tuple[tuple[str, time, time], ...] = (
 
 def _to_ny_time(ts_ms: int) -> datetime:
     """UTC ms → NY local datetime (DST 자동 박힘)."""
-    return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).astimezone(NY_TZ)
+    return datetime.fromtimestamp(ts_ms / 1000, tz=UTC).astimezone(NY_TZ)
 
 
 def _within(t: time, start: time, end: time) -> bool:

@@ -16,14 +16,14 @@ env 박힌 거 박힘 박힘 prefix = ``AURORA_ICT_``. 예:
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class RunMode(str, Enum):
+class RunMode(StrEnum):
     """봇 박힘 박힌 모드."""
 
     DEMO = "demo"

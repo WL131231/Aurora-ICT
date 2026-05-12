@@ -21,12 +21,12 @@ N봉 박힘 박힘). 그래서 별도 박음.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 import pandas as pd
 
 
-class SwingType(str, Enum):
+class SwingType(StrEnum):
     """Swing 방향."""
 
     HIGH = "high"
@@ -92,33 +92,33 @@ def detect_swing_points(
 
     swings: list[SwingPoint] = []
     for i in range(left, len(df) - right):
-        h = highs[i]
-        l = lows[i]
+        hi = highs[i]
+        lo = lows[i]
 
-        # Swing high — 양옆 봉 high 박은 거보다 strictly 높음
+        # Swing high — 양옆 봉 high 보다 strictly 높음
         is_swing_high = (
-            all(h > highs[i - k] for k in range(1, left + 1))
-            and all(h > highs[i + k] for k in range(1, right + 1))
+            all(hi > highs[i - k] for k in range(1, left + 1))
+            and all(hi > highs[i + k] for k in range(1, right + 1))
         )
         if is_swing_high:
             swings.append(SwingPoint(
                 ts_ms=int(ts_arr[i]),
                 type=SwingType.HIGH,
-                price=float(h),
+                price=float(hi),
                 idx=i,
             ))
-            continue  # 같은 봉이 swing high + low 동시 박힘 X
+            continue  # 같은 봉이 swing high + low 동시 성립 X
 
-        # Swing low — 양옆 봉 low 박은 거보다 strictly 낮음
+        # Swing low — 양옆 봉 low 보다 strictly 낮음
         is_swing_low = (
-            all(l < lows[i - k] for k in range(1, left + 1))
-            and all(l < lows[i + k] for k in range(1, right + 1))
+            all(lo < lows[i - k] for k in range(1, left + 1))
+            and all(lo < lows[i + k] for k in range(1, right + 1))
         )
         if is_swing_low:
             swings.append(SwingPoint(
                 ts_ms=int(ts_arr[i]),
                 type=SwingType.LOW,
-                price=float(l),
+                price=float(lo),
                 idx=i,
             ))
 

@@ -24,12 +24,12 @@ Key threshold:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 import pandas as pd
 
 
-class FVGType(str, Enum):
+class FVGType(StrEnum):
     """FVG 방향."""
 
     BULLISH = "bullish"  # BISI

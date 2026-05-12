@@ -19,7 +19,7 @@ ICT 박힌 핵심 entry model 박힘. 매일 3개 1시간 윈도우 박힌 거 �
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 import pandas as pd
 
@@ -33,7 +33,7 @@ from aurora_ict.indicators.swing_points import SwingPoint, SwingType, detect_swi
 from aurora_ict.timing.killzone import in_silver_bullet
 
 
-class Direction(str, Enum):
+class Direction(StrEnum):
     """Trade 방향."""
 
     LONG = "long"

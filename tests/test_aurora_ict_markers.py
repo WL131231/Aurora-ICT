@@ -13,7 +13,7 @@ NY = ZoneInfo("America/New_York")
 
 
 def _make_df_ny(start_ny: datetime, bars: list[tuple[float, float, float, float]]) -> pd.DataFrame:
-    rows = [{"open": o, "high": h, "low": l, "close": c} for o, h, l, c in bars]
+    rows = [{"open": o, "high": h, "low": lo, "close": c} for o, h, lo, c in bars]
     df = pd.DataFrame(rows)
     times = [start_ny + timedelta(minutes=i) for i in range(len(rows))]
     df.index = pd.DatetimeIndex(times)

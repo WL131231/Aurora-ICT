@@ -25,6 +25,7 @@ ENV/
 dist/
 build/
 *.spec
+!Aurora-ICT.spec   # 빌드 정의 파일은 추적 (CI에서 PyInstaller 가 읽음)
 
 # ===== Node.js =====
 node_modules/

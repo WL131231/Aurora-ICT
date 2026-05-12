@@ -15,8 +15,8 @@ from aurora_ict.indicators.fvg import (
 def _make_df(bars: list[tuple[float, float, float, float]]) -> pd.DataFrame:
     """OHLC 박은 tuple list → DataFrame. ts ms = idx × 60000 (1m 박은 거)."""
     rows = []
-    for i, (o, h, l, c) in enumerate(bars):
-        rows.append({"open": o, "high": h, "low": l, "close": c})
+    for _i, (o, h, lo, c) in enumerate(bars):
+        rows.append({"open": o, "high": h, "low": lo, "close": c})
     df = pd.DataFrame(rows)
     df.index = [i * 60_000 for i in range(len(rows))]
     return df

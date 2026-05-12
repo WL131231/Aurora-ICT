@@ -21,14 +21,14 @@ ICT 박힌 가정: smart money 박은 박힌 게 옛 swing point 박은 위/아�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 import pandas as pd
 
 from aurora_ict.indicators.swing_points import SwingPoint, SwingType
 
 
-class SweepType(str, Enum):
+class SweepType(StrEnum):
     """Sweep 방향."""
 
     BULLISH = "bullish"  # SSL sweep (옛 swing low 박힘 → 박은 후 long 박힘)

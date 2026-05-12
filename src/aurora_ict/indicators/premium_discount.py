@@ -15,12 +15,12 @@ ICT 박힌 원칙: **buy at discount, sell at premium**.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from aurora_ict.indicators.swing_points import SwingPoint, SwingType
 
 
-class PDZone(str, Enum):
+class PDZone(StrEnum):
     """Premium / Discount 박힌 zone."""
 
     PREMIUM = "premium"
