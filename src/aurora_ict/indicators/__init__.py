@@ -13,6 +13,12 @@ from aurora_ict.indicators.liquidity import (
     detect_equal_levels,
     detect_liquidity_sweeps,
 )
+from aurora_ict.indicators.premium_discount import (
+    DealingRange,
+    PDZone,
+    is_ote_zone,
+    latest_dealing_range,
+)
 from aurora_ict.indicators.structure import (
     StructureEvent,
     StructureType,
@@ -37,6 +43,11 @@ __all__ = [
     "SweepType",
     "detect_equal_levels",
     "detect_liquidity_sweeps",
+    # Premium/Discount
+    "DealingRange",
+    "PDZone",
+    "is_ote_zone",
+    "latest_dealing_range",
     # Structure
     "StructureEvent",
     "StructureType",
