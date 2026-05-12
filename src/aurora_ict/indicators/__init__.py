@@ -13,6 +13,11 @@ from aurora_ict.indicators.liquidity import (
     detect_equal_levels,
     detect_liquidity_sweeps,
 )
+from aurora_ict.indicators.order_block import (
+    OrderBlock,
+    OrderBlockType,
+    detect_order_blocks,
+)
 from aurora_ict.indicators.premium_discount import (
     DealingRange,
     PDZone,
@@ -48,6 +53,10 @@ __all__ = [
     "SweepType",
     "detect_equal_levels",
     "detect_liquidity_sweeps",
+    # Order Block
+    "OrderBlock",
+    "OrderBlockType",
+    "detect_order_blocks",
     # Premium/Discount
     "DealingRange",
     "PDZone",
