@@ -1,17 +1,19 @@
 name: Release
 
 # tag push 시 Windows + macOS 동시 빌드 → GitHub Release 자동 첨부.
-# 사용자 = releases/latest/download/<file> URL 로 즉시 다운로드.
 #
-# v0.2.20: 코드 repo (Aurora) 측 private 박힘 + release artifact 측 별도 public
-# repo (Aurora-releases) 측 push. RELEASES_REPO_TOKEN secret 측 fine-grained PAT
-# 박힘 (Aurora-releases 측 Contents:write).
+# 코드 repo (Aurora-ICT) 는 private. release artifact 는 별도 public repo
+# (Aurora-ICT-releases) 로 push — RELEASES_REPO_TOKEN secret = fine-grained PAT
+# (Contents: write 권한 on Aurora-ICT-releases).
+#
+# secret 박혀있지 않을 때는 같은 repo 자체 release 로 fallback.
 #
 # 사용법:
-#   git tag v0.2.20 && git push origin v0.2.20
-#   → ~10분 후 https://github.com/WL131231/Aurora-releases/releases/latest 에 자동 첨부:
-#     · Aurora-windows.exe  (Windows 단일 실행파일)
-#     · Aurora-macOS.zip    (macOS .app 번들 zip)
+#   git tag v0.3.1 && git push origin v0.3.1
+#   → ~10분 후 release 에 자동 첨부:
+#     · Aurora-ICT-windows.exe
+#     · Aurora-ICT-macOS.zip
+#     · Aurora-ICT-macOS.dmg
 on:
   push:
     tags:
@@ -19,33 +21,17 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (예: v0.1.0)'
+        description: 'Release tag (예: v0.3.1)'
         required: true
         type: string
 
-# 같은 tag 새 push 시 이전 빌드 자동 취소
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: true
 
-# GITHUB_TOKEN 권한 — Release 생성 + asset 첨부 시 contents: write 필수.
-# (default permissions 가 read-only 인 경우 'Resource not accessible by integration' 에러)
 permissions:
   contents: write
 
-# Windows runner 의 cp1252 stdout 가 한글 인코딩 X → 전역 PYTHONIOENCODING=utf-8
-# (build_exe.py 의 한글 print 회피, 봇 런타임 한글 로그도 안전)
-#
-# v0.1.74 (ChoYoon Claude #133 12th cycle fix N+N'+O+Q): macOS 13 minimum 호환.
-#   - fix N: runner macos-13 박음 (NumPy 2.4.x wheel = 14.0 min → 13 호환 wheel 선택)
-#   - fix N': MACOSX_DEPLOYMENT_TARGET=13.0 (자체 빌드 binary minimum)
-#   - fix O: Info.plist LSMinimumSystemVersion=13.0 (build_exe.py 후처리)
-#   - fix Q: numpy<2.4 (defense in depth)
-#
-# v0.1.75 (ChoYoon #133 13th cycle case B fix R): runner macos-13 → macos-14.
-# Why: macos-13 runner 17분+ queued (assignment X) — retirement 진입 가능성 ↑.
-# macos-14 (arm64, 사용자 huihu M2 정합) + numpy<2.4 박힘으로 NumPy 2.3.x wheel
-# (macOS 11+ 호환) 자동 선택 → macOS 13/14/15 모두 호환 본질 유지.
 env:
   PYTHONIOENCODING: utf-8
   MACOSX_DEPLOYMENT_TARGET: "13.0"
@@ -60,38 +46,33 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            asset_name: Aurora-windows.exe
-            artifact_path: dist/Aurora.exe
-            artifact_name: aurora-windows
+            asset_name: Aurora-ICT-windows.exe
+            artifact_path: dist/Aurora-ICT.exe
+            artifact_name: aurora-ict-windows
           - os: macos-14
-            asset_name: Aurora-macOS.zip
-            artifact_path: dist/Aurora-macOS.zip
-            artifact_name: aurora-macos
+            asset_name: Aurora-ICT-macOS.zip
+            artifact_path: dist/Aurora-ICT-macOS.zip
+            artifact_name: aurora-ict-macos
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # tag 에서 version 추출 → src/aurora/__init__.py 의 __version__ 갱신.
-      # Why: __version__ 이 소스에 hardcoded "0.1.0" 으로 박혀있으면 자동 업데이터가
-      # 자기 자신을 새 버전으로 오인 → .exe.new 무한 다운 + swap 루프 발생.
-      # 매 release 마다 PR 로 bumping 하지 않고 빌드 시점 자동 갱신.
       - name: Bump __version__ from tag
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
-          VERSION="${GITHUB_REF##*/v}"   # refs/tags/v0.1.4 → 0.1.4
-          echo "Bumping __version__ to $VERSION (본체 + launcher)"
-          # 본체 + launcher 모두 갱신 (v0.1.19 launcher self-update 의 is_newer 비교용).
-          for f in src/aurora/__init__.py src/aurora_launcher/__init__.py; do
-              sed -i.bak 's/__version__ = ".*"/__version__ = "'"$VERSION"'"/' "$f"
-              rm -f "$f.bak"
-              echo "--- $f ---"
-              cat "$f"
+          VERSION="${GITHUB_REF##*/v}"
+          echo "Bumping __version__ to $VERSION"
+          for f in src/aurora_ict/__init__.py src/aurora_ict_launcher/__init__.py; do
+              if [ -f "$f" ]; then
+                  sed -i.bak 's/__version__ = ".*"/__version__ = "'"$VERSION"'"/' "$f"
+                  rm -f "$f.bak"
+                  echo "--- $f ---"
+                  cat "$f"
+              fi
           done
 
-      # setup-python 의 출력 path 를 명시 사용 — macOS PATH 우선순위 이슈 회피
-      # (system Python 이 PATH 우선 잡혀 hostedtoolcache 의 PyInstaller 못 찾던 문제)
       - name: Setup Python 3.11
         id: setup
         uses: actions/setup-python@v5
@@ -105,390 +86,116 @@ jobs:
         run: |
           PY="${{ steps.setup.outputs.python-path }}"
           "$PY" -m pip install --upgrade pip
-          # requirements-dev.txt = requirements.txt + pyinstaller / pytest / ruff
-          # (빌드는 PyInstaller 필요, generate_icon.py 는 Pillow 필요)
           "$PY" -m pip install -r requirements-dev.txt
-          "$PY" -m pip install Pillow              # generate_icon.py 의 PIL (requirements-dev.txt 미포함, 빌드 한정)
+          "$PY" -m pip install pyinstaller
           "$PY" -m pip install -e .
 
-      # aiodns 는 Windows aiohttp DNS 충돌 (memory project_user_onboarding.md).
-      # macOS 도 일관성 위해 양 OS 모두 제거.
-      - name: Remove aiodns (DNS 호환)
+      - name: Remove aiodns
         shell: bash
         run: |
           "${{ steps.setup.outputs.python-path }}" -m pip uninstall -y aiodns
         continue-on-error: true
 
-      - name: Generate app icon (옵션, 없으면 skip)
+      - name: Build (PyInstaller spec)
         shell: bash
         run: |
-          "${{ steps.setup.outputs.python-path }}" scripts/generate_icon.py
-        continue-on-error: true
+          PY="${{ steps.setup.outputs.python-path }}"
+          "$PY" -m PyInstaller Aurora-ICT.spec --clean --noconfirm
 
-      - name: Build (PyInstaller --onefile)
-        shell: bash
-        run: |
-          "${{ steps.setup.outputs.python-path }}" scripts/build_exe.py --onefile
-
-      # ===== Windows 검증 =====
       - name: Verify Windows artifact
         if: matrix.os == 'windows-latest'
         run: |
-          if (-not (Test-Path "dist/Aurora.exe")) {
-              Write-Error "dist/Aurora.exe 생성 실패"
+          if (-not (Test-Path "dist/Aurora-ICT.exe")) {
+              Write-Error "dist/Aurora-ICT.exe missing"
+              Get-ChildItem dist
               exit 1
           }
-          $size = (Get-Item "dist/Aurora.exe").Length / 1MB
-          Write-Host "Aurora.exe size: $([math]::Round($size, 1)) MB"
+          $size = (Get-Item "dist/Aurora-ICT.exe").Length / 1MB
+          Write-Host "Aurora-ICT.exe size: $([math]::Round($size, 1)) MB"
         shell: pwsh
 
-      # ===== macOS 검증 + ad-hoc codesign + zip =====
-      # v0.1.110 (ChoYoon 권장 d): ad-hoc codesign 박음 — Gatekeeper 측 \"identified
-      # developer X\" 거부 회피 + xattr -dr 측 사용자 manual 단계 자동화.
-      # `codesign -s -` 측 ad-hoc (free, no Apple Developer cert) — Notarize X 측
-      # quarantine 측 사용자 측 처음 실행 시 \"확인 안 된 개발자\" 경고 박힘 측 동일하지만
-      # NumPy 등 dylib 측 sign 박힘 시 ImportError 측 fix 가능.
-      - name: ad-hoc codesign macOS .app (ChoYoon 권장 d)
+      - name: ad-hoc codesign macOS .app
         if: matrix.os == 'macos-14'
         shell: bash
         run: |
-          if [ -d "dist/Aurora.app" ]; then
-              echo "ad-hoc codesign 박음: dist/Aurora.app"
-              codesign --force --deep --sign - dist/Aurora.app
-              codesign --verify --verbose=2 dist/Aurora.app || echo "verify warning (계속 진행)"
-          else
-              echo "Aurora.app 측 X — codesign skip"
+          if [ -d "dist/Aurora-ICT.app" ]; then
+              codesign --force --deep --sign - dist/Aurora-ICT.app
+              codesign --verify --verbose=2 dist/Aurora-ICT.app || echo "verify warning"
           fi
 
-      - name: Verify + zip macOS .app bundle
+      - name: Zip macOS .app
         if: matrix.os == 'macos-14'
         shell: bash
         run: |
-          if [ ! -d "dist/Aurora.app" ] && [ ! -f "dist/Aurora" ]; then
-              echo "macOS artifact missing (Aurora.app not found)"
+          if [ ! -d "dist/Aurora-ICT.app" ]; then
+              echo "macOS artifact missing"
               ls -la dist/
               exit 1
           fi
-          if [ -d "dist/Aurora.app" ]; then
-              cd dist
-              zip -r -y Aurora-macOS.zip Aurora.app
-              echo "Aurora-macOS.zip size: $(du -h Aurora-macOS.zip | cut -f1)"
-          else
-              cd dist
-              zip -y Aurora-macOS.zip Aurora
-              echo "Aurora-macOS.zip size (single binary): $(du -h Aurora-macOS.zip | cut -f1)"
-          fi
+          cd dist
+          zip -r -y Aurora-ICT-macOS.zip Aurora-ICT.app
+          echo "Aurora-ICT-macOS.zip size: $(du -h Aurora-ICT-macOS.zip | cut -f1)"
 
-      # v0.1.69: macOS DMG 빌드 — 사용자 manual 다운로드 표준 UX (Applications 드래그).
-      # zip 은 launcher 자가 update 흐름 유지 (단순 풀음). DMG 는 외부 사용자 진입 시
-      # AppTranslocation 회피 + Finder 표준 흐름. ChoYoon Claude #133 P2 사용자 huihu 제안 1.
-      - name: Build macOS DMG (사용자 manual 다운로드용)
+      - name: Build macOS DMG
         if: matrix.os == 'macos-14' && startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
           cd dist
-          if [ -d "Aurora.app" ]; then
-              hdiutil create -volname "Aurora" \
-                -srcfolder Aurora.app \
-                -ov -format UDZO \
-                Aurora-macOS.dmg
-              echo "Aurora-macOS.dmg size: $(du -h Aurora-macOS.dmg | cut -f1)"
-          fi
+          hdiutil create -volname "Aurora-ICT" \
+            -srcfolder Aurora-ICT.app \
+            -ov -format UDZO \
+            Aurora-ICT-macOS.dmg
+          echo "Aurora-ICT-macOS.dmg size: $(du -h Aurora-ICT-macOS.dmg | cut -f1)"
 
-      - name: Attach DMG to release
-        if: matrix.os == 'macos-14' && startsWith(github.ref, 'refs/tags/v')
+      # external repo (Aurora-ICT-releases) — RELEASES_REPO_TOKEN 박혀있을 때
+      - name: Attach Windows .exe (external repo)
+        if: matrix.os == 'windows-latest' && startsWith(github.ref, 'refs/tags/v') && env.RELEASES_TOKEN != ''
+        env:
+          RELEASES_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Aurora-macOS.dmg
+          files: dist/Aurora-ICT.exe
           generate_release_notes: true
-          draft: false
-          prerelease: false
-          # v0.2.20: artifact 측 별도 public repo (Aurora-releases) 측 push.
-          # 코드 repo (Aurora) 측 private 박힘 → release artifact 만 public.
-          repository: WL131231/Aurora-releases
+          repository: WL131231/Aurora-ICT-releases
           token: ${{ secrets.RELEASES_REPO_TOKEN }}
 
-      - name: Upload artifact (workflow 결과)
-        # v0.2.23 (사용자 보고 2026-05-11): artifact storage quota hit 시 본 step
-        # 측 fail 박혀 후속 release attach step 측 skip 박힘 → 사용자 측 자동
-        # update 차단. continue-on-error 박아 release attach 측 별개 동작.
+      - name: Attach macOS files (external repo)
+        if: matrix.os == 'macos-14' && startsWith(github.ref, 'refs/tags/v') && env.RELEASES_TOKEN != ''
+        env:
+          RELEASES_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Aurora-ICT-macOS.zip
+            dist/Aurora-ICT-macOS.dmg
+          generate_release_notes: true
+          repository: WL131231/Aurora-ICT-releases
+          token: ${{ secrets.RELEASES_REPO_TOKEN }}
+
+      # self repo (Aurora-ICT) — secret 박혀있지 않을 때 fallback
+      - name: Attach Windows .exe (self)
+        if: matrix.os == 'windows-latest' && startsWith(github.ref, 'refs/tags/v') && env.RELEASES_TOKEN == ''
+        env:
+          RELEASES_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Aurora-ICT.exe
+          generate_release_notes: true
+
+      - name: Attach macOS files (self)
+        if: matrix.os == 'macos-14' && startsWith(github.ref, 'refs/tags/v') && env.RELEASES_TOKEN == ''
+        env:
+          RELEASES_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Aurora-ICT-macOS.zip
+            dist/Aurora-ICT-macOS.dmg
+          generate_release_notes: true
+
+      - name: Upload artifact
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_path }}
-          retention-days: 30
-
-      - name: Rename for release asset
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-              cp "dist/Aurora.exe" "dist/Aurora-windows.exe"
-          fi
-
-      - name: Create GitHub Release + attach artifact
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/${{ matrix.asset_name }}
-          generate_release_notes: true
-          draft: false
-          prerelease: false
-          # v0.2.20: Aurora-releases (public) 측 push — 코드 repo private 정합.
-          repository: WL131231/Aurora-releases
-          token: ${{ secrets.RELEASES_REPO_TOKEN }}
-
-  # UI 핫 업데이트용 별도 zip — .exe 와 분리, 빠른 빌드 (PR b: UI 핫 업데이트).
-  # webview 가 <exe_dir>/ui_override/ 우선 lookup, 없으면 _MEIPASS bundle fallback.
-  # /update/apply_ui 엔드포인트가 본 zip 다운 → 풀어서 GUI 즉시 갱신 (앱 종료 X).
-  build-ui:
-    name: Build UI zip (Aurora-ui.zip)
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Build Aurora-ui.zip
-        shell: bash
-        run: |
-          # ui/ 폴더 통째 zip — index.html, css/, js/, favicon.svg 등 모두 포함
-          # 별도 manifest 파일 생성 X (단순화) — apply_ui_update 가 통째 swap
-          cd ui
-          zip -r ../Aurora-ui.zip . -x "*.DS_Store" "node_modules/*"
-          cd ..
-          echo "Aurora-ui.zip size: $(du -h Aurora-ui.zip | cut -f1)"
-
-      - name: Attach UI zip to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: Aurora-ui.zip
-          generate_release_notes: true
-          draft: false
-          prerelease: false
-          # v0.2.20: Aurora-releases 측 push
-          repository: WL131231/Aurora-releases
-          token: ${{ secrets.RELEASES_REPO_TOKEN }}
-
-  # Android APK — Chaquopy 임베디드 Python, arm64-v8a + x86_64 fat APK.
-  # apk_updater.py 가 본 asset (Aurora-android.apk) 을 다운로드해 자가 업데이트에 사용.
-  build-android:
-    name: Build Android APK
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      contents: write
-    if: startsWith(github.ref, 'refs/tags/v')
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      # CI 환경 (Ubuntu) 의 Android SDK 경로 → local.properties 덮어쓰기.
-      # Why: local.properties 에 Windows 로컬 경로가 커밋되어 있어 Ubuntu 빌드 실패.
-      #      ANDROID_SDK_ROOT 는 GitHub Actions ubuntu-latest 가 자동 주입.
-      - name: Write local.properties for CI
-        shell: bash
-        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
-
-      # versionName/versionCode 갱신 — apk_updater 버전 비교에 versionName 사용.
-      # versionCode 공식: minor * 10000 + patch * 100 (예: 0.1.41 → 14100)
-      - name: Bump versionName/Code from tag
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF##*/v}"
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
-          PATCH=$(echo "$VERSION" | cut -d. -f3)
-          VERSION_CODE=$((MINOR * 10000 + PATCH * 100))
-          echo "versionName=$VERSION  versionCode=$VERSION_CODE"
-          sed -i "s/versionCode [0-9]*/versionCode $VERSION_CODE/" android/app/build.gradle
-          sed -i "s/versionName \"[^\"]*\"/versionName \"$VERSION\"/" android/app/build.gradle
-          grep -E "versionName|versionCode" android/app/build.gradle
-
-      - name: Make gradlew executable
-        run: chmod +x android/gradlew
-
-      - name: Build debug APK (Chaquopy + Python deps)
-        working-directory: android
-        run: ./gradlew assembleDebug
-
-      - name: Verify APK
-        shell: bash
-        run: |
-          APK=android/app/build/outputs/apk/debug/app-debug.apk
-          if [ ! -f "$APK" ]; then
-            echo "APK 생성 실패"
-            ls -la android/app/build/outputs/apk/ || true
-            exit 1
-          fi
-          echo "app-debug.apk size: $(du -h $APK | cut -f1)"
-
-      - name: Rename APK for release asset
-        shell: bash
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk Aurora-android.apk
-
-      - name: Upload APK artifact (workflow 결과)
-        # v0.2.23: artifact quota hit 측 release attach step 측 영향 X 박음
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: aurora-android
-          path: Aurora-android.apk
-          retention-days: 30
-
-      - name: Attach APK to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: Aurora-android.apk
-          generate_release_notes: true
-          draft: false
-          prerelease: false
-          # v0.2.20: Aurora-releases 측 push
-          repository: WL131231/Aurora-releases
-          token: ${{ secrets.RELEASES_REPO_TOKEN }}
-
-  # Launcher 미니 .exe — 사용자가 launcher 만 다운받아 본체 자동 업데이트.
-  # 본체 (Aurora.exe) 의 자기-swap race condition 회피 + 원신 런처 스타일 UX.
-  build-launcher:
-    name: Build Launcher (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    permissions:
-      contents: write
-    if: startsWith(github.ref, 'refs/tags/v')
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            asset_name: Aurora-launcher.exe
-            artifact_path: dist/Aurora-launcher.exe
-          - os: macos-14
-            asset_name: Aurora-launcher-macOS.zip
-            artifact_path: dist/Aurora-launcher-macOS.zip
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # Bump aurora_launcher __version__ (v0.1.19 self-update — is_newer 비교용)
-      - name: Bump launcher __version__ from tag
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF##*/v}"
-          sed -i.bak 's/__version__ = ".*"/__version__ = "'"$VERSION"'"/' src/aurora_launcher/__init__.py
-          rm -f src/aurora_launcher/__init__.py.bak
-          cat src/aurora_launcher/__init__.py
-
-      - name: Setup Python 3.11
-        id: setup
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install minimal deps (pywebview + pyinstaller + Pillow)
-        shell: bash
-        run: |
-          PY="${{ steps.setup.outputs.python-path }}"
-          "$PY" -m pip install --upgrade pip
-          "$PY" -m pip install pywebview pyinstaller Pillow
-
-      - name: Generate launcher icon (검정 다이아몬드)
-        shell: bash
-        run: |
-          "${{ steps.setup.outputs.python-path }}" scripts/generate_launcher_icon.py
-        continue-on-error: true
-
-      - name: Build Aurora-launcher
-        shell: bash
-        run: |
-          "${{ steps.setup.outputs.python-path }}" scripts/build_launcher.py
-
-      - name: Verify Windows launcher
-        if: matrix.os == 'windows-latest'
-        run: |
-          if (-not (Test-Path "dist/Aurora-launcher.exe")) {
-              Write-Error "dist/Aurora-launcher.exe 생성 실패"
-              exit 1
-          }
-          $size = (Get-Item "dist/Aurora-launcher.exe").Length / 1MB
-          Write-Host "Aurora-launcher.exe size: $([math]::Round($size, 1)) MB"
-        shell: pwsh
-
-      # v0.1.110 (ChoYoon 권장 d): launcher 측도 ad-hoc codesign 박음.
-      - name: ad-hoc codesign macOS launcher
-        if: matrix.os == 'macos-14'
-        shell: bash
-        run: |
-          if [ -d "dist/Aurora-launcher.app" ]; then
-              echo "ad-hoc codesign 박음: dist/Aurora-launcher.app"
-              codesign --force --deep --sign - dist/Aurora-launcher.app
-              codesign --verify --verbose=2 dist/Aurora-launcher.app || echo "verify warning (계속 진행)"
-          else
-              echo "Aurora-launcher.app 측 X — codesign skip"
-          fi
-
-      - name: Verify + zip macOS launcher
-        if: matrix.os == 'macos-14'
-        shell: bash
-        run: |
-          if [ ! -d "dist/Aurora-launcher.app" ] && [ ! -f "dist/Aurora-launcher" ]; then
-              echo "macOS launcher artifact missing"
-              ls -la dist/
-              exit 1
-          fi
-          cd dist
-          if [ -d "Aurora-launcher.app" ]; then
-              zip -r -y Aurora-launcher-macOS.zip Aurora-launcher.app
-          else
-              zip -y Aurora-launcher-macOS.zip Aurora-launcher
-          fi
-
-      # v0.1.69: macOS launcher DMG — 사용자 manual 다운로드 표준 UX.
-      - name: Build macOS launcher DMG (사용자 manual 다운로드용)
-        if: matrix.os == 'macos-14'
-        shell: bash
-        run: |
-          cd dist
-          if [ -d "Aurora-launcher.app" ]; then
-              hdiutil create -volname "Aurora-Launcher" \
-                -srcfolder Aurora-launcher.app \
-                -ov -format UDZO \
-                Aurora-launcher-macOS.dmg
-              echo "Aurora-launcher-macOS.dmg size: $(du -h Aurora-launcher-macOS.dmg | cut -f1)"
-          fi
-
-      - name: Attach launcher DMG to release
-        if: matrix.os == 'macos-14'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/Aurora-launcher-macOS.dmg
-          generate_release_notes: true
-          draft: false
-          prerelease: false
-          # v0.2.20: Aurora-releases 측 push
-          repository: WL131231/Aurora-releases
-          token: ${{ secrets.RELEASES_REPO_TOKEN }}
-
-      - name: Attach launcher to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ matrix.artifact_path }}
-          generate_release_notes: true
-          draft: false
-          prerelease: false
-          # v0.2.20: Aurora-releases 측 push
-          repository: WL131231/Aurora-releases
-          token: ${{ secrets.RELEASES_REPO_TOKEN }}
