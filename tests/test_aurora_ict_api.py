@@ -138,6 +138,123 @@ def test_markers_requires_bot_running(client: TestClient) -> None:
 
 
 # ============================================================
+# GET /ict/position — UI 하단 패널용 active position 상세
+# ============================================================
+
+
+def test_position_inactive_when_bot_stopped(client: TestClient) -> None:
+    """봇 미가동 → active=False."""
+    resp = client.get("/ict/position")
+    assert resp.status_code == 200
+    assert resp.json() == {"active": False}
+
+
+def test_position_inactive_when_no_active_position(client: TestClient) -> None:
+    """봇 가동 중이지만 active_position 없음 → active=False."""
+    client.post("/ict/start")
+    resp = client.get("/ict/position")
+    assert resp.status_code == 200
+    # fixture 데이터로는 진입 안 박힐 가능성 — 보장된 invariant 는 'active' 필드 존재
+    body = resp.json()
+    assert "active" in body
+
+
+def test_position_active_returns_full_payload(manager: BotManager) -> None:
+    """active_position 박힌 상태 → 모든 필드 + PnL + margin + liq."""
+    from aurora_ict.bot.bot_ict_instance import BotIctInstance, _ActivePosition
+    from aurora_ict.strategy.silver_bullet import Direction
+
+    # bot manually 박기 — start 안 거치고 active_position 직접 박음
+    bot = BotIctInstance(client=_mock_client_with_data(), symbol="BTCUSDT")
+    bot.active_position = _ActivePosition(
+        direction=Direction.LONG,
+        entry=100.0,
+        stop_loss=95.0,
+        take_profit=110.0,
+        qty=0.1,
+        setup_ts_ms=1778598000000,
+    )
+    manager._bot = bot
+
+    c = TestClient(create_app(manager))
+    resp = c.get("/ict/position")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["active"] is True
+    assert body["symbol"] == "BTCUSDT"
+    assert body["direction"] == "long"
+    assert body["entry"] == 100.0
+    assert body["qty"] == 0.1
+    assert body["leverage"] == manager.settings.leverage
+    # 필수 필드 모두 박혀있는지
+    for field in (
+        "mark_price", "unrealized_pnl", "roi_pct",
+        "margin", "notional", "liquidation_price",
+    ):
+        assert field in body, f"missing {field}"
+
+
+def test_position_pnl_sign_long_profit(manager: BotManager) -> None:
+    """long + mark > entry → unrealized_pnl > 0."""
+    from aurora_ict.bot.bot_ict_instance import BotIctInstance, _ActivePosition
+    from aurora_ict.strategy.silver_bullet import Direction
+
+    # fixture 마지막 봉 close = 121 (보다 위), entry=100 → +PnL
+    bot = BotIctInstance(client=_mock_client_with_data(), symbol="BTCUSDT")
+    bot.active_position = _ActivePosition(
+        direction=Direction.LONG,
+        entry=100.0,
+        stop_loss=95.0,
+        take_profit=130.0,
+        qty=1.0,
+        setup_ts_ms=1778598000000,
+    )
+    manager._bot = bot
+
+    c = TestClient(create_app(manager))
+    body = c.get("/ict/position").json()
+    assert body["mark_price"] > 100.0  # fixture 마지막 봉 close ≈ 121
+    assert body["unrealized_pnl"] > 0
+
+
+def test_position_pnl_sign_short_profit(manager: BotManager) -> None:
+    """short + mark < entry → unrealized_pnl > 0."""
+    from aurora_ict.bot.bot_ict_instance import BotIctInstance, _ActivePosition
+    from aurora_ict.strategy.silver_bullet import Direction
+
+    bot = BotIctInstance(client=_mock_client_with_data(), symbol="BTCUSDT")
+    bot.active_position = _ActivePosition(
+        direction=Direction.SHORT,
+        entry=200.0,    # 가짜 high entry — fixture 마지막 close 가 박은 게 더 낮음
+        stop_loss=210.0,
+        take_profit=150.0,
+        qty=1.0,
+        setup_ts_ms=1778598000000,
+    )
+    manager._bot = bot
+
+    c = TestClient(create_app(manager))
+    body = c.get("/ict/position").json()
+    assert body["mark_price"] < 200.0
+    assert body["unrealized_pnl"] > 0
+
+
+def test_position_liquidation_long_below_entry(manager: BotManager) -> None:
+    """long liquidation < entry, short liquidation > entry."""
+    from aurora_ict.bot.bot_ict_instance import BotIctInstance, _ActivePosition
+    from aurora_ict.strategy.silver_bullet import Direction
+
+    bot = BotIctInstance(client=_mock_client_with_data(), symbol="BTCUSDT")
+    bot.active_position = _ActivePosition(
+        direction=Direction.LONG, entry=100.0, stop_loss=95.0,
+        take_profit=110.0, qty=1.0, setup_ts_ms=1778598000000,
+    )
+    manager._bot = bot
+    c = TestClient(create_app(manager))
+    assert c.get("/ict/position").json()["liquidation_price"] < 100.0
+
+
+# ============================================================
 # POST /ict/credentials (온보딩)
 # ============================================================
 

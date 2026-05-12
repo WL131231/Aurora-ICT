@@ -30,6 +30,7 @@ from pydantic import BaseModel, SecretStr
 from aurora_ict.api.markers import to_chart_markers
 from aurora_ict.bot.manager import BotManager
 from aurora_ict.config.settings import IctSettings, RunMode
+from aurora_ict.strategy.silver_bullet import Direction
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,65 @@ def create_app(manager: BotManager) -> FastAPI:
             manager.settings.live_api_secret = SecretStr(req.api_secret.strip())
         logger.info("credentials 갱신 — mode=%s, env=%s", req.mode, env_path)
         return _settings_safe_dict(manager.settings)
+
+    @app.get("/ict/position")
+    async def get_position() -> dict[str, Any]:
+        """현재 active position 상세 — UI 하단 패널용.
+
+        Returns:
+            - ``{"active": False}`` 봇 미가동 또는 포지션 없음
+            - ``{"active": True, ...}`` 박힌 active position + mark price + PnL + margin
+        """
+        bot = manager.bot
+        if bot is None or bot.active_position is None:
+            return {"active": False}
+
+        ap = bot.active_position
+        # mark price = 마지막 봉 close (fetch 실패 시 entry 로 fallback)
+        mark_price = ap.entry
+        try:
+            rows = await bot.client.fetch_ohlcv(bot.symbol, bot.timeframe, 2)
+            if rows:
+                mark_price = float(rows[-1][4])
+        except Exception as e:  # noqa: BLE001
+            logger.debug("mark_price fetch 실패 — entry 사용: %s", e)
+
+        # Unrealized PnL = (mark - entry) * qty (long) / (entry - mark) * qty (short)
+        if ap.direction is Direction.LONG:
+            unrealized = (mark_price - ap.entry) * ap.qty
+        else:
+            unrealized = (ap.entry - mark_price) * ap.qty
+
+        # Notional / Margin / Liquidation (대략)
+        lev = manager.settings.leverage
+        notional = ap.entry * ap.qty
+        margin = notional / lev
+        # liquidation = entry × (1 ∓ 1/lev × 0.95) — 0.95 = maintenance margin buffer
+        if ap.direction is Direction.LONG:
+            liq_price = ap.entry * (1.0 - (1.0 / lev) * 0.95)
+        else:
+            liq_price = ap.entry * (1.0 + (1.0 / lev) * 0.95)
+
+        # Unrealized PnL % (ROI on margin)
+        roi_pct = (unrealized / margin * 100.0) if margin > 0 else 0.0
+
+        return {
+            "active": True,
+            "symbol": bot.symbol,
+            "direction": ap.direction.value,
+            "entry": ap.entry,
+            "stop_loss": ap.stop_loss,
+            "take_profit": ap.take_profit,
+            "qty": ap.qty,
+            "setup_ts_ms": ap.setup_ts_ms,
+            "mark_price": mark_price,
+            "unrealized_pnl": unrealized,
+            "roi_pct": roi_pct,
+            "margin": margin,
+            "notional": notional,
+            "liquidation_price": liq_price,
+            "leverage": lev,
+        }
 
     @app.get("/ict/markers")
     async def get_markers(
