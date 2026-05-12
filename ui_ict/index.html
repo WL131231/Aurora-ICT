@@ -106,6 +106,56 @@
     position: relative;
   }
   #chart { width: 100%; height: 100%; }
+  /* 차트 상단 toolbar — TF 토글 */
+  .chart-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--line);
+    flex-shrink: 0;
+  }
+  .tf-toggle {
+    display: flex;
+    gap: 2px;
+    background: var(--surface);
+    border-radius: 4px;
+    padding: 2px;
+    border: 1px solid var(--line);
+  }
+  .tf-toggle button {
+    width: auto;
+    margin: 0;
+    padding: 5px 11px;
+    font-size: 10px;
+    font-weight: 500;
+    background: transparent;
+    border: none;
+    color: var(--text-2);
+    letter-spacing: 0.05em;
+    text-transform: none;
+    border-radius: 3px;
+  }
+  .tf-toggle button:hover {
+    background: rgba(219, 219, 222, 0.06);
+    color: var(--text-1);
+  }
+  .tf-toggle button.active {
+    background: var(--accent);
+    color: var(--bg);
+  }
+  .chart-symbol {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    color: var(--text-2);
+  }
+  /* 연결 상태 표시 (사이드바) */
+  .row .v.conn-ok    { color: #34d399; }
+  .row .v.conn-fail  { color: #fb7185; }
+  .row .v.conn-test  { color: #fbbf24; }
+
   /* 포지션 패널 — 하단 (차트 아래) */
   .positions-panel {
     background: var(--bg-2);
@@ -281,6 +331,10 @@
       <p class="cred-hint">Demo 키 권장 — .env 파일에 저장됩니다</p>
     </div>
 
+    <h2>Connection</h2>
+    <button id="btn-test-conn">TEST CONNECTION</button>
+    <div class="row" style="margin-top:6px"><span class="k">Status</span><span id="conn-status" class="v">—</span></div>
+
     <h2>Bot Enable</h2>
     <button id="btn-toggle-enabled">ENABLE</button>
 
@@ -298,6 +352,19 @@
   </aside>
 
   <main class="main">
+    <div class="chart-toolbar">
+      <div class="tf-toggle" id="tf-toggle">
+        <button data-tf="1m">1m</button>
+        <button data-tf="5m">5m</button>
+        <button data-tf="15m">15m</button>
+        <button data-tf="1h" class="active">1h</button>
+        <button data-tf="2h">2h</button>
+        <button data-tf="4h">4h</button>
+        <button data-tf="1d">1d</button>
+        <button data-tf="1w">1w</button>
+      </div>
+      <span class="chart-symbol" id="chart-symbol-label">—</span>
+    </div>
     <div class="chart-wrap"><div id="chart"></div></div>
 
     <!-- 하단 포지션 패널 — Symbol / Size / Entry / Mark / Liq / Margin / PnL + Close By -->

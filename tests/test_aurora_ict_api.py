@@ -255,6 +255,59 @@ def test_position_liquidation_long_below_entry(manager: BotManager) -> None:
 
 
 # ============================================================
+# POST /ict/test-connection — 거래소 연결 ping
+# ============================================================
+
+
+def test_test_connection_no_credentials() -> None:
+    """API 키 없음 → ok=false."""
+    settings = IctSettings(enabled=True)  # 키 없음
+    mgr = BotManager(client_factory=_factory, settings=settings)
+    c = TestClient(create_app(mgr))
+    body = c.post("/ict/test-connection").json()
+    assert body["ok"] is False
+    assert body["mode"] == "demo"
+    assert "키" in body["error"]
+
+
+def test_test_connection_success_returns_balance(client: TestClient) -> None:
+    """mock client 의 fetch_balance USDT 잔고 → ok=true + balance_usdt 반환."""
+    body = client.post("/ict/test-connection").json()
+    assert body["ok"] is True
+    assert body["mode"] == "demo"
+    # mock fixture 의 fetch_balance return = {"USDT": {"total": 1000.0}}
+    assert body["balance_usdt"] == 1000.0
+
+
+def test_test_connection_fetch_balance_error(manager: BotManager) -> None:
+    """fetch_balance 가 예외 → ok=false."""
+    mock = AsyncMock()
+    mock.fetch_balance = AsyncMock(side_effect=RuntimeError("auth failed"))
+
+    async def factory(_settings):
+        return mock
+
+    manager.client_factory = factory
+    c = TestClient(create_app(manager))
+    body = c.post("/ict/test-connection").json()
+    assert body["ok"] is False
+    assert "auth failed" in body["error"]
+
+
+def test_test_connection_client_factory_error(manager: BotManager) -> None:
+    """client_factory 가 예외 → ok=false + client 생성 실패 메시지."""
+
+    async def factory(_settings):
+        raise RuntimeError("network down")
+
+    manager.client_factory = factory
+    c = TestClient(create_app(manager))
+    body = c.post("/ict/test-connection").json()
+    assert body["ok"] is False
+    assert "client 생성 실패" in body["error"]
+
+
+# ============================================================
 # POST /ict/position/close — Close By 수동 청산
 # ============================================================
 
