@@ -2,6 +2,11 @@
 
 const API = "http://127.0.0.1:8765";
 
+// 현재 선택된 차트 timeframe (localStorage 영속화)
+let currentTimeframe = localStorage.getItem("aurora_ict_tf") || "1h";
+const VALID_TFS = ["1m", "5m", "15m", "1h", "2h", "4h", "1d", "1w"];
+if (!VALID_TFS.includes(currentTimeframe)) currentTimeframe = "1h";
+
 // ============================================================
 // Chart
 // ============================================================
@@ -89,6 +94,10 @@ function renderStatus(s) {
   const btnEn = $("btn-toggle-enabled");
   btnEn.classList.toggle("on", !!s.enabled);
   btnEn.textContent = s.enabled ? "DISABLE" : "ENABLE";
+
+  // 차트 상단 심볼 라벨
+  const lbl = $("chart-symbol-label");
+  if (lbl) lbl.textContent = `${s.symbol} · ${currentTimeframe}`;
 }
 
 // ============================================================
@@ -232,9 +241,10 @@ async function fetchAndRender() {
       return;
     }
 
+    const tf = encodeURIComponent(currentTimeframe);
     const [ohlcv, markers, position] = await Promise.all([
-      api("/ict/ohlcv?limit=1000"),
-      api("/ict/markers?limit=1000"),
+      api(`/ict/ohlcv?timeframe=${tf}&limit=1000`),
+      api(`/ict/markers?timeframe=${tf}&limit=1000`),
       api("/ict/position"),
     ]);
     candleSeries.setData(ohlcv.candles);
@@ -308,6 +318,55 @@ $("positions-tbody").addEventListener("click", async (ev) => {
     btn.disabled = false;
   }
 });
+
+// TF 토글 — 클릭 시 currentTimeframe 갱신 + localStorage 저장 + 즉시 재렌더
+function _updateTfButtons() {
+  document.querySelectorAll("#tf-toggle button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.tf === currentTimeframe);
+  });
+}
+_updateTfButtons();
+
+$("tf-toggle").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-tf]");
+  if (!btn) return;
+  const tf = btn.dataset.tf;
+  if (!VALID_TFS.includes(tf) || tf === currentTimeframe) return;
+  currentTimeframe = tf;
+  localStorage.setItem("aurora_ict_tf", tf);
+  _updateTfButtons();
+  await fetchAndRender();
+});
+
+// 연결 테스트 — 현재 mode 키로 거래소 ping
+$("btn-test-conn").onclick = async () => {
+  const btn = $("btn-test-conn");
+  const status = $("conn-status");
+  btn.disabled = true;
+  status.textContent = "테스트 중...";
+  status.className = "v conn-test";
+  try {
+    const result = await api("/ict/test-connection", "POST");
+    if (result.ok) {
+      const bal = result.balance_usdt !== null && result.balance_usdt !== undefined
+        ? `${_fmt(result.balance_usdt, 2)} USDT`
+        : "(잔고 unknown)";
+      status.textContent = `OK · ${bal}`;
+      status.className = "v conn-ok";
+      toast(`연결 성공 — ${result.mode.toUpperCase()} · ${bal}`);
+    } else {
+      status.textContent = `FAIL: ${result.error?.substring(0, 30) || ""}`;
+      status.className = "v conn-fail";
+      toast(result.error || "연결 실패", true);
+    }
+  } catch (e) {
+    status.textContent = "ERROR";
+    status.className = "v conn-fail";
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+};
 
 $("btn-toggle-enabled").onclick = async () => {
   const currentlyOn = $("btn-toggle-enabled").classList.contains("on");

@@ -192,6 +192,50 @@ def create_app(manager: BotManager) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return _status_dict(manager)
 
+    @app.post("/ict/test-connection")
+    async def test_connection() -> dict[str, Any]:
+        """현재 mode의 API 키로 거래소 연결 테스트.
+
+        client_factory 로 client 생성 → fetch_balance() 호출.
+        성공: {ok: true, balance_usdt, mode}
+        실패: {ok: false, error, mode}
+        """
+        mode = manager.settings.run_mode.value
+        if not manager.settings.has_credentials():
+            return {
+                "ok": False,
+                "mode": mode,
+                "error": f"{mode.upper()} API 키가 등록되어 있지 않음",
+            }
+        try:
+            client = await manager.client_factory(manager.settings)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("test-connection client 생성 실패: %s", e)
+            return {"ok": False, "mode": mode, "error": f"client 생성 실패: {e}"}
+        try:
+            bal = await client.fetch_balance()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("test-connection fetch_balance 실패: %s", e)
+            return {"ok": False, "mode": mode, "error": f"fetch_balance 실패: {e}"}
+
+        # USDT 잔고 추출 (ccxt 형식)
+        usdt_total: float | None = None
+        if isinstance(bal, dict):
+            usdt = bal.get("USDT")
+            if isinstance(usdt, dict):
+                v = usdt.get("total")
+                if isinstance(v, (int, float)):
+                    usdt_total = float(v)
+            if usdt_total is None:
+                v = bal.get("total")
+                if isinstance(v, (int, float)):
+                    usdt_total = float(v)
+        return {
+            "ok": True,
+            "mode": mode,
+            "balance_usdt": usdt_total,
+        }
+
     @app.post("/ict/credentials")
     async def set_credentials(req: CredentialsRequest) -> dict[str, Any]:
         """API 키 등록 — .env 영구 저장 + 메모리 settings 즉시 갱신."""
