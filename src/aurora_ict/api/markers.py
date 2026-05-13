@@ -25,7 +25,10 @@ from aurora_ict.indicators.fvg import (
     mark_filled_and_invalidated,
 )
 from aurora_ict.indicators.liquidity import detect_equal_levels, detect_liquidity_sweeps
-from aurora_ict.indicators.order_block import detect_order_blocks
+from aurora_ict.indicators.order_block import (
+    detect_breaker_blocks,
+    detect_order_blocks,
+)
 from aurora_ict.indicators.structure import detect_structure_events
 from aurora_ict.indicators.swing_points import detect_swing_points
 from aurora_ict.indicators.trailing_extremes import compute_trailing_extremes
@@ -60,6 +63,18 @@ class IFVGMarker:
     high: float
     mean: float
     origin_fvg_ts_ms: int  # 원래 FVG anchor 봉 ts
+
+
+@dataclass(slots=True)
+class BreakerBlockMarker:
+    """Breaker Block box marker — OB 가 close 로 깨진 후 반전 entry zone."""
+
+    ts_ms: int       # break 봉 open time
+    type: str        # 반전된 새 방향 "bullish" / "bearish"
+    low: float
+    high: float
+    mean: float
+    origin_ob_idx: int
 
 
 @dataclass(slots=True)
@@ -178,6 +193,7 @@ class ChartMarkers:
 
     fvgs: list[FVGMarker] = field(default_factory=list)
     ifvgs: list[IFVGMarker] = field(default_factory=list)
+    breakers: list[BreakerBlockMarker] = field(default_factory=list)
     sweeps: list[SweepMarker] = field(default_factory=list)
     structure: list[StructureMarker] = field(default_factory=list)
     swings: list[SwingMarker] = field(default_factory=list)
@@ -201,6 +217,7 @@ class ChartMarkers:
         return {
             "fvgs": [asdict(f) for f in self.fvgs],
             "ifvgs": [asdict(f) for f in self.ifvgs],
+            "breakers": [asdict(b) for b in self.breakers],
             "sweeps": [asdict(s) for s in self.sweeps],
             "structure": [asdict(s) for s in self.structure],
             "swings": [asdict(s) for s in self.swings],
@@ -412,6 +429,18 @@ def to_chart_markers(
             mitigated=ob.mitigated,
         ))
 
+    # 4-c. Breaker Blocks — OB 가 close 로 깨졌을 때 반전 zone
+    breakers = detect_breaker_blocks(obs, df)
+    for bb in breakers:
+        markers.breakers.append(BreakerBlockMarker(
+            ts_ms=bb.ts_ms,
+            type=bb.type.value,
+            low=bb.low,
+            high=bb.high,
+            mean=bb.mean,
+            origin_ob_idx=bb.origin_ob_idx,
+        ))
+
     # 5. Killzones — 봉 단위로 killzone 변경 시점을 모아 (start_ms, end_ms) 구간으로
     # 압축한다.
     if len(df) > 0:
@@ -489,6 +518,7 @@ def to_chart_markers(
 
 
 __all__ = [
+    "BreakerBlockMarker",
     "ChartMarkers",
     "EqualLevelMarker",
     "FVGMarker",
