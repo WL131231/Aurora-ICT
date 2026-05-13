@@ -154,20 +154,33 @@ def test_markers_to_dict_json_serializable() -> None:
 
 
 def test_markers_includes_order_blocks() -> None:
-    """OB indicator 결과가 markers.order_blocks 로 노출 (LuxAlgo 알고리즘 기준)."""
+    """OB indicator 결과가 markers.order_blocks 로 노출 (LuxAlgo 알고리즘 기준).
+
+    LuxAlgo 표준 swing length = 5 — markers.py 는 internal_pivots (left=right=5) 를
+    OB 검출에 사용. 따라서 fixture 는 13봉 이상이어야 swing 형성됨.
+    """
     start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
-    # idx=1 swing high (high=104), idx=2 bearish max range → Bullish OB, idx=4 BOS
     df = _make_df_ny(start, [
-        (100, 101, 99, 100),
-        (100, 104, 99, 103),     # idx=1 swing high (high=104)
-        (103, 103, 95, 96),      # idx=2 bearish, range=8 ← OB
-        (96, 97, 94, 95),        # idx=3 bearish, range=3
-        (95, 110, 94, 109),      # idx=4 close=109 > 104 → BOS_BULLISH
+        (100, 101, 99, 100),    # 0
+        (100, 102, 99, 101),    # 1
+        (101, 103, 100, 102),   # 2
+        (102, 104, 101, 103),   # 3
+        (103, 105, 102, 104),   # 4
+        (104, 110, 103, 109),   # 5
+        (109, 112, 108, 111),   # 6 internal swing high (high=112)
+        (111, 110, 100, 102),   # 7 bearish, range=10
+        (102, 108, 95, 97),     # 8 bearish, range=13 ← OB
+        (97, 105, 95, 96),      # 9 bearish, range=10
+        (96, 105, 95, 96),      # 10
+        (96, 105, 95, 96),      # 11
+        (96, 130, 95, 128),     # 12 close=128 > 112 → CHoCH_BULLISH
     ])
     markers = to_chart_markers(df, fvg_min_size_pct=None)
     bull = [o for o in markers.order_blocks if o.type == "bullish"]
+    # ATR 필터로 가장 큰 range 봉(idx=8, range=13) 은 변동성 과대로 제외 →
+    # 다음 후보 idx=9 (open=97, close=96) 가 채택됨.
     assert len(bull) >= 1
-    assert bull[0].open == 103
+    assert bull[0].open == 97
     assert bull[0].close == 96
 
 
