@@ -32,8 +32,20 @@ class AuroraClientAdapter:
         ccxt_client: Aurora ``CcxtClient`` instance (또는 duck-typed 호환 객체).
     """
 
+    # Aurora 클라이언트는 1h+ timeframe 을 대문자로만 인식 (1H/2H/4H/1D/1W).
+    # 우리 UI / settings 는 소문자 사용 (ccxt 표준). 호출 시 변환.
+    _TF_AURORA_MAP = {
+        "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
+        "1h": "1H", "2h": "2H", "4h": "4H", "6h": "6H", "12h": "12H",
+        "1d": "1D", "1w": "1W",
+    }
+
     def __init__(self, ccxt_client: Any) -> None:
         self._client = ccxt_client
+
+    def _aurora_tf(self, tf: str) -> str:
+        """소문자 timeframe → Aurora 대문자 포맷. 미매핑 시 원본 그대로."""
+        return self._TF_AURORA_MAP.get(tf, tf)
 
     async def fetch_ohlcv(
         self, symbol: str, timeframe: str, limit: int,
@@ -43,7 +55,7 @@ class AuroraClientAdapter:
         Aurora ``fetch_ohlcv``는 DataFrame을 반환하므로
         [ts_ms, o, h, l, c, v] 리스트 형태로 변환해서 돌려준다.
         """
-        df = await self._client.fetch_ohlcv(symbol, timeframe, limit)
+        df = await self._client.fetch_ohlcv(symbol, self._aurora_tf(timeframe), limit)
         if not isinstance(df, pd.DataFrame) or df.empty:
             return []
         rows: list[list[Any]] = []

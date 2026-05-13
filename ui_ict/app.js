@@ -269,6 +269,21 @@ function renderStatus(s) {
   $("btn-demo").classList.toggle("active", s.run_mode === "demo");
   $("btn-live").classList.toggle("active", s.run_mode === "live");
 
+  // API Credentials 폼 ↔ 등록완료 상태 전환
+  const credForm = $("cred-form-block");
+  const credSaved = $("cred-saved-block");
+  const credOkText = $("cred-ok-text");
+  if (credForm && credSaved) {
+    if (s.has_credentials) {
+      credForm.style.display = "none";
+      credSaved.style.display = "flex";
+      if (credOkText) credOkText.textContent = `${s.run_mode.toUpperCase()} 키 등록됨`;
+    } else {
+      credForm.style.display = "flex";
+      credSaved.style.display = "none";
+    }
+  }
+
   // Enable 토글 상태 반영
   const btnEn = $("btn-toggle-enabled");
   btnEn.classList.toggle("on", !!s.enabled);
@@ -664,6 +679,15 @@ $("btn-test-conn").onclick = async () => {
     btn.disabled = false;
   }
 };
+
+// "다시 입력" 클릭 시 — 강제로 입력 폼 보여줌 (status 갱신 전까지 유지)
+if ($("btn-cred-reenter")) {
+  $("btn-cred-reenter").onclick = () => {
+    $("cred-form-block").style.display = "flex";
+    $("cred-saved-block").style.display = "none";
+    $("cred-api-key").focus();
+  };
+}
 
 $("btn-toggle-enabled").onclick = async () => {
   const currentlyOn = $("btn-toggle-enabled").classList.contains("on");

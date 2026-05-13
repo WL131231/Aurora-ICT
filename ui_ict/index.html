@@ -355,6 +355,38 @@
     color: var(--text-3);
     line-height: 1.4;
   }
+  .cred-saved {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .cred-ok {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 10px;
+    background: rgba(52, 211, 153, 0.10);
+    border: 1px solid rgba(52, 211, 153, 0.30);
+    color: #34d399;
+    border-radius: 4px;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+  }
+  .cred-ok-icon {
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .cred-reenter {
+    background: transparent;
+    border: 1px dashed var(--line);
+    color: var(--text-3);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+  }
+  .cred-reenter:hover {
+    color: var(--text-1);
+    border-color: var(--line-strong);
+  }
   #btn-toggle-enabled.on {
     background: var(--accent);
     color: var(--bg);
@@ -408,11 +440,20 @@
     <p class="trade-tf-hint">매매 진입은 1h 이상에서만 실행됩니다</p>
 
     <h2>API Credentials</h2>
-    <div class="cred-form">
+    <!-- 미등록 상태 — 입력 폼 (state: form) -->
+    <div class="cred-form" id="cred-form-block">
       <input id="cred-api-key" type="password" placeholder="API Key" autocomplete="off" />
       <input id="cred-api-secret" type="password" placeholder="API Secret" autocomplete="off" />
       <button id="btn-save-cred">SAVE KEYS</button>
       <p class="cred-hint">Demo 키 권장 — .env 파일에 저장됩니다</p>
+    </div>
+    <!-- 등록 완료 상태 — 상태 표시 + 재등록 버튼 (state: saved) -->
+    <div class="cred-saved" id="cred-saved-block" style="display:none">
+      <div class="cred-ok">
+        <span class="cred-ok-icon">✓</span>
+        <span id="cred-ok-text">키 등록됨</span>
+      </div>
+      <button id="btn-cred-reenter" class="cred-reenter">다시 입력</button>
     </div>
 
     <h2>Connection</h2>
