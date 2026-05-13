@@ -255,6 +255,43 @@ def test_position_liquidation_long_below_entry(manager: BotManager) -> None:
 
 
 # ============================================================
+# POST /ict/timeframe — 매매 timeframe 변경 (1h 이상만 허용)
+# ============================================================
+
+
+def test_timeframe_change_valid(client: TestClient) -> None:
+    """1h → 4h 변경 → 200 + 새 값 반영."""
+    resp = client.post("/ict/timeframe", json={"timeframe": "4h"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["timeframe"] == "4h"
+    assert "1h" in body["allowed"]
+    # status 응답에도 반영
+    s = client.get("/ict/status").json()
+    assert s["timeframe"] == "4h"
+
+
+def test_timeframe_change_rejects_sub_hour(client: TestClient) -> None:
+    """1m / 5m / 15m 박은 거 박은 게 박은 거 — 1h 미만은 400."""
+    for tf in ("1m", "5m", "15m"):
+        resp = client.post("/ict/timeframe", json={"timeframe": tf})
+        assert resp.status_code == 400, f"timeframe '{tf}' 박혀있어도 거부되어야 함"
+
+
+def test_timeframe_change_rejects_unknown(client: TestClient) -> None:
+    """알려지지 않은 timeframe 도 400."""
+    resp = client.post("/ict/timeframe", json={"timeframe": "13h"})
+    assert resp.status_code == 400
+
+
+def test_config_exposes_allowed_timeframes(client: TestClient) -> None:
+    """/ict/config 응답에 allowed_trade_timeframes 리스트 포함."""
+    body = client.get("/ict/config").json()
+    assert "allowed_trade_timeframes" in body
+    assert body["allowed_trade_timeframes"] == ["1h", "2h", "4h", "1d", "1w"]
+
+
+# ============================================================
 # POST /ict/test-connection — 거래소 연결 ping
 # ============================================================
 

@@ -274,9 +274,15 @@ function renderStatus(s) {
   btnEn.classList.toggle("on", !!s.enabled);
   btnEn.textContent = s.enabled ? "DISABLE" : "ENABLE";
 
-  // 차트 상단 심볼 라벨
+  // 차트 상단 심볼 라벨 — 매매 TF 도 함께 표시
   const lbl = $("chart-symbol-label");
-  if (lbl) lbl.textContent = `${s.symbol} · ${currentTimeframe}`;
+  const tradeTf = s.timeframe || "?";
+  if (lbl) lbl.textContent = `${s.symbol} · chart ${currentTimeframe} · trade ${tradeTf}`;
+
+  // 사이드바 매매 TF 토글 active 동기화
+  document.querySelectorAll("#trade-tf-toggle button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.tradeTf === s.timeframe);
+  });
 }
 
 // ============================================================
@@ -591,6 +597,21 @@ function _updateVizButtons() {
   });
 }
 _updateVizButtons();
+
+// 사이드바 매매 TF 토글 — 클릭 시 POST /ict/timeframe
+$("trade-tf-toggle").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-trade-tf]");
+  if (!btn) return;
+  const tf = btn.dataset.tradeTf;
+  if (btn.classList.contains("active")) return;
+  try {
+    const result = await api("/ict/timeframe", "POST", { timeframe: tf });
+    toast(`매매 TF → ${result.timeframe}${result.restarted ? " (봇 재시작)" : ""}`);
+    await fetchAndRender();
+  } catch (e) {
+    toast(e.message, true);
+  }
+});
 
 $("viz-toggle").addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button[data-viz]");

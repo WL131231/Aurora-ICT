@@ -28,7 +28,7 @@ from pydantic import BaseModel, SecretStr
 
 from aurora_ict.api.markers import to_chart_markers
 from aurora_ict.bot.manager import BotManager
-from aurora_ict.config.settings import IctSettings, RunMode
+from aurora_ict.config.settings import TRADE_TIMEFRAMES, IctSettings, RunMode
 from aurora_ict.strategy.silver_bullet import Direction
 
 logger = logging.getLogger(__name__)
@@ -52,6 +52,12 @@ class PositionCloseRequest(BaseModel):
     """Close By 수동 청산 — fraction 1.0 = 전체, 0.5 = 50%."""
 
     fraction: float = 1.0  # (0, 1]
+
+
+class TimeframeRequest(BaseModel):
+    """매매 timeframe 변경 — 1h / 2h / 4h / 1d / 1w 중 하나."""
+
+    timeframe: str
 
 
 def _env_path() -> Path:
@@ -110,6 +116,7 @@ def _settings_safe_dict(settings: IctSettings) -> dict[str, Any]:
             settings.live_api_key.get_secret_value()
             and settings.live_api_secret.get_secret_value(),
         ),
+        "allowed_trade_timeframes": list(TRADE_TIMEFRAMES),
     }
 
 
@@ -121,6 +128,7 @@ def _status_dict(manager: BotManager) -> dict[str, Any]:
         "run_mode": st.run_mode.value,
         "enabled": st.enabled,
         "symbol": st.symbol,
+        "timeframe": manager.settings.timeframe,
         "has_credentials": st.has_credentials,
         "has_active_position": st.has_active_position,
         "last_setup_ts_ms": st.last_setup_ts_ms,
@@ -234,6 +242,33 @@ def create_app(manager: BotManager) -> FastAPI:
             "ok": True,
             "mode": mode,
             "balance_usdt": usdt_total,
+        }
+
+    @app.post("/ict/timeframe")
+    async def set_trade_timeframe(req: TimeframeRequest) -> dict[str, Any]:
+        """매매 timeframe 변경 — 1h/2h/4h/1d/1w 만 허용.
+
+        가동 중인 봇이 있으면 stop → settings 갱신 → start 로 매끄럽게 재시작.
+        """
+        if req.timeframe not in TRADE_TIMEFRAMES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"timeframe '{req.timeframe}' 미지원 — "
+                    f"허용 목록: {list(TRADE_TIMEFRAMES)}"
+                ),
+            )
+        was_running = manager.bot is not None and manager.bot.state.value == "running"
+        if was_running:
+            await manager.stop()
+        manager.settings.timeframe = req.timeframe
+        logger.info("trade timeframe 변경 → %s", req.timeframe)
+        if was_running:
+            await manager.start()
+        return {
+            "timeframe": manager.settings.timeframe,
+            "allowed": list(TRADE_TIMEFRAMES),
+            "restarted": was_running,
         }
 
     @app.post("/ict/credentials")
