@@ -414,6 +414,7 @@ def create_app(manager: BotManager) -> FastAPI:
                 "setups": len(markers.setups),
                 "order_blocks": len(markers.order_blocks),
                 "macros": len(markers.macros),
+                "trailing": 1 if markers.trailing else 0,
             },
             "markers": markers.to_dict(),
         }

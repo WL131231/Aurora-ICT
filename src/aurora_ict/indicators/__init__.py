@@ -40,6 +40,10 @@ from aurora_ict.indicators.swing_points import (
     SwingType,
     detect_swing_points,
 )
+from aurora_ict.indicators.trailing_extremes import (
+    TrailingExtremes,
+    compute_trailing_extremes,
+)
 
 __all__ = [
     # FVG
@@ -75,4 +79,7 @@ __all__ = [
     "SwingPoint",
     "SwingType",
     "detect_swing_points",
+    # Trailing Extremes
+    "TrailingExtremes",
+    "compute_trailing_extremes",
 ]

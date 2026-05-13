@@ -24,6 +24,7 @@ from aurora_ict.indicators.liquidity import detect_liquidity_sweeps
 from aurora_ict.indicators.order_block import detect_order_blocks
 from aurora_ict.indicators.structure import detect_structure_events
 from aurora_ict.indicators.swing_points import detect_swing_points
+from aurora_ict.indicators.trailing_extremes import compute_trailing_extremes
 from aurora_ict.strategy.silver_bullet import detect_silver_bullet_setups
 from aurora_ict.timing.killzone import (
     classify_killzone,
@@ -122,6 +123,18 @@ class MacroMarker:
 
 
 @dataclass(slots=True)
+class TrailingExtremeMarker:
+    """Strong/Weak High & Low — 차트 오른쪽 끝까지 그릴 가로선 한 쌍."""
+
+    top_price: float
+    bottom_price: float
+    top_ts_ms: int
+    bottom_ts_ms: int
+    top_label: str         # "Strong High" / "Weak High" / "High"
+    bottom_label: str      # "Strong Low" / "Weak Low" / "Low"
+
+
+@dataclass(slots=True)
 class ChartMarkers:
     """전체 marker bundle — UI 한 번 호출로 받아갈 결과 묶음."""
 
@@ -133,6 +146,7 @@ class ChartMarkers:
     setups: list[SetupMarker] = field(default_factory=list)
     order_blocks: list[OrderBlockMarker] = field(default_factory=list)
     macros: list[MacroMarker] = field(default_factory=list)
+    trailing: TrailingExtremeMarker | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-serializable dict 변환."""
@@ -145,6 +159,7 @@ class ChartMarkers:
             "setups": [asdict(s) for s in self.setups],
             "order_blocks": [asdict(o) for o in self.order_blocks],
             "macros": [asdict(m) for m in self.macros],
+            "trailing": asdict(self.trailing) if self.trailing else None,
         }
 
 
@@ -229,6 +244,18 @@ def to_chart_markers(
             type=ev.type.value,
             broken_level=ev.broken_level,
         ))
+
+    # 4-a. Trailing extremes (Strong/Weak High & Low) — 단일 객체
+    te = compute_trailing_extremes(df, swings, events)
+    if te is not None:
+        markers.trailing = TrailingExtremeMarker(
+            top_price=te.top,
+            bottom_price=te.bottom,
+            top_ts_ms=te.top_ts_ms,
+            bottom_ts_ms=te.bottom_ts_ms,
+            top_label=te.top_label,
+            bottom_label=te.bottom_label,
+        )
 
     # 4-b. Order Blocks
     obs = detect_order_blocks(df, displacement_bars=3, mark_mitigation=True)
@@ -329,5 +356,6 @@ __all__ = [
     "StructureMarker",
     "SweepMarker",
     "SwingMarker",
+    "TrailingExtremeMarker",
     "to_chart_markers",
 ]
