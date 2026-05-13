@@ -72,7 +72,7 @@ class OrderBlock:
         return min(self.open, self.close)
 
 
-def _atr(highs, lows, closes, period: int) -> "pd.Series":  # noqa: ANN001
+def _atr(highs, lows, closes, period: int) -> pd.Series:  # noqa: ANN001
     """Wilder ATR (period). 짧은 df 에선 simple TR mean fallback."""
     import numpy as np
     n = len(highs)
@@ -207,14 +207,13 @@ def detect_order_blocks(
                     break
 
     if mark_mitigation:
-        _mark_mitigation(obs, opens, closes)
+        _mark_mitigation(obs, closes)
 
     return obs
 
 
 def _mark_mitigation(
     obs: list[OrderBlock],
-    opens,  # numpy array  # noqa: ANN001
     closes,  # numpy array  # noqa: ANN001
 ) -> None:
     """OB 생성 이후 가격이 body 안 close 한 경우 mitigated=True."""
