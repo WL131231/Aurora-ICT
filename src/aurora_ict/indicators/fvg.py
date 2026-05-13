@@ -197,9 +197,107 @@ def mark_filled_and_invalidated(
                     break
 
 
+@dataclass(slots=True)
+class IFVG:
+    """Inversion FVG — invalidated 된 FVG 의 반전 entry zone.
+
+    ICT 핵심: FVG 가 깨지면 (close 가 영역 너머로) 그 FVG 는 IFVG 로 전환.
+    방향이 반전 — 원래 bullish FVG 깨지면 bearish IFVG, vice versa.
+
+    IFVG 영역은 원래 FVG 와 동일 (high/low). 가격이 retest 하러 돌아오면
+    반전 진입 기회.
+
+    Attributes:
+        ts_ms: invalidation 봉 (close 가 FVG 너머로 간 봉) open time.
+        type: 반전된 새 방향 (origin 의 반대).
+        high: 원래 FVG 의 high.
+        low: 원래 FVG 의 low.
+        invalidated_idx: invalidation 봉 idx.
+        origin_fvg_idx: 원래 FVG 봉 idx.
+    """
+
+    ts_ms: int
+    type: FVGType
+    high: float
+    low: float
+    invalidated_idx: int
+    origin_fvg_idx: int
+
+    @property
+    def mean_threshold(self) -> float:
+        return (self.high + self.low) / 2.0
+
+    @property
+    def size(self) -> float:
+        return self.high - self.low
+
+
+def detect_ifvgs(
+    fvgs: list[FVG],
+    df: pd.DataFrame,
+) -> list[IFVG]:
+    """Invalidated FVG 들을 IFVG (반전) 로 변환.
+
+    선행 조건: ``fvgs`` 는 ``mark_filled_and_invalidated`` 가 적용된 상태.
+
+    각 invalidated FVG 마다:
+    - 처음 close 가 FVG 너머로 간 봉 (invalidation 봉) 을 찾아 ts/idx 기록
+    - type 을 반전 (bullish FVG → bearish IFVG, bearish FVG → bullish IFVG)
+
+    Args:
+        fvgs: ``detect_fvgs`` + ``mark_filled_and_invalidated`` 결과.
+        df: 동일 OHLCV DataFrame.
+
+    Returns:
+        IFVG list — 시간순 (invalidation 봉 ts 기준).
+    """
+    if not fvgs or len(df) < 3:
+        return []
+
+    if isinstance(df.index, pd.DatetimeIndex):
+        ts_arr = (df.index.astype("int64") // 10**6).to_numpy()
+    else:
+        ts_arr = df.index.to_numpy()
+
+    closes = df["close"].to_numpy()
+    ifvgs: list[IFVG] = []
+
+    for fvg in fvgs:
+        if not fvg.invalidated:
+            continue
+        # 첫 invalidation 봉 찾기 (close 가 FVG 너머로 간 첫 시점)
+        inv_idx = -1
+        for j in range(fvg.idx + 2, len(df)):
+            if fvg.type is FVGType.BULLISH:
+                if closes[j] < fvg.low:
+                    inv_idx = j
+                    break
+            elif closes[j] > fvg.high:
+                inv_idx = j
+                break
+        if inv_idx < 0:
+            continue
+        inverted_type = (
+            FVGType.BEARISH if fvg.type is FVGType.BULLISH else FVGType.BULLISH
+        )
+        ifvgs.append(IFVG(
+            ts_ms=int(ts_arr[inv_idx]),
+            type=inverted_type,
+            high=fvg.high,
+            low=fvg.low,
+            invalidated_idx=inv_idx,
+            origin_fvg_idx=fvg.idx,
+        ))
+
+    ifvgs.sort(key=lambda f: f.ts_ms)
+    return ifvgs
+
+
 __all__ = [
     "FVG",
+    "IFVG",
     "FVGType",
     "detect_fvgs",
+    "detect_ifvgs",
     "mark_filled_and_invalidated",
 ]

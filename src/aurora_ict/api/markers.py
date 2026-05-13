@@ -19,7 +19,11 @@ from typing import Any
 
 import pandas as pd
 
-from aurora_ict.indicators.fvg import detect_fvgs
+from aurora_ict.indicators.fvg import (
+    detect_fvgs,
+    detect_ifvgs,
+    mark_filled_and_invalidated,
+)
 from aurora_ict.indicators.liquidity import detect_equal_levels, detect_liquidity_sweeps
 from aurora_ict.indicators.order_block import detect_order_blocks
 from aurora_ict.indicators.structure import detect_structure_events
@@ -44,6 +48,18 @@ class FVGMarker:
     mean: float
     filled: bool
     invalidated: bool
+
+
+@dataclass(slots=True)
+class IFVGMarker:
+    """Inversion FVG box marker — invalidated FVG 의 반전 entry zone."""
+
+    ts_ms: int       # invalidation 봉 open time
+    type: str        # 반전된 새 방향 "bullish" / "bearish"
+    low: float
+    high: float
+    mean: float
+    origin_fvg_ts_ms: int  # 원래 FVG anchor 봉 ts
 
 
 @dataclass(slots=True)
@@ -161,6 +177,7 @@ class ChartMarkers:
     """전체 marker bundle — UI 한 번 호출로 받아갈 결과 묶음."""
 
     fvgs: list[FVGMarker] = field(default_factory=list)
+    ifvgs: list[IFVGMarker] = field(default_factory=list)
     sweeps: list[SweepMarker] = field(default_factory=list)
     structure: list[StructureMarker] = field(default_factory=list)
     swings: list[SwingMarker] = field(default_factory=list)
@@ -183,6 +200,7 @@ class ChartMarkers:
         """JSON-serializable dict 변환."""
         return {
             "fvgs": [asdict(f) for f in self.fvgs],
+            "ifvgs": [asdict(f) for f in self.ifvgs],
             "sweeps": [asdict(s) for s in self.sweeps],
             "structure": [asdict(s) for s in self.structure],
             "swings": [asdict(s) for s in self.swings],
@@ -229,8 +247,24 @@ def to_chart_markers(
 
     markers = ChartMarkers()
 
-    # 1. FVG
+    # 1. FVG + IFVG (Inversion FVG — invalidated FVG 반전 zone)
     fvgs = detect_fvgs(df, min_size_pct=fvg_min_size_pct)
+    mark_filled_and_invalidated(fvgs, df)
+    ifvgs = detect_ifvgs(fvgs, df)
+    for ifvg in ifvgs:
+        # IFVG anchor origin FVG ts 룩업
+        origin_ts = next(
+            (f.ts_ms for f in fvgs if f.idx == ifvg.origin_fvg_idx),
+            ifvg.ts_ms,
+        )
+        markers.ifvgs.append(IFVGMarker(
+            ts_ms=ifvg.ts_ms,
+            type=ifvg.type.value,
+            low=ifvg.low,
+            high=ifvg.high,
+            mean=ifvg.mean_threshold,
+            origin_fvg_ts_ms=origin_ts,
+        ))
     for fvg in fvgs:
         markers.fvgs.append(FVGMarker(
             ts_ms=fvg.ts_ms,
@@ -458,6 +492,7 @@ __all__ = [
     "ChartMarkers",
     "EqualLevelMarker",
     "FVGMarker",
+    "IFVGMarker",
     "KillzoneMarker",
     "MacroMarker",
     "OrderBlockMarker",

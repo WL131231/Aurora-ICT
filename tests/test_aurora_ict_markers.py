@@ -372,3 +372,36 @@ def test_markers_swept_flag_propagated() -> None:
     swept = [s for s in markers.swings if s.swept]
     assert len(swept) >= 1
     assert any(s.type == "high" for s in swept)
+
+
+# ============================================================
+# IFVG (Inversion FVG)
+# ============================================================
+
+
+def test_markers_exposes_ifvg() -> None:
+    """bullish FVG 깨지면 bearish IFVG 가 markers.ifvgs 에 박힘."""
+    start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
+    df = _make_df_ny(start, [
+        (95, 100, 94, 99),
+        (99, 115, 99, 114),
+        (114, 116, 105, 115),   # bullish FVG (100~105)
+        (115, 118, 113, 117),
+        (117, 119, 100, 99),    # close=99 < 100 → invalidated → IFVG bearish
+    ])
+    markers = to_chart_markers(df, fvg_min_size_pct=None)
+    assert len(markers.ifvgs) >= 1
+    ifvg = markers.ifvgs[0]
+    assert ifvg.type == "bearish"
+    assert ifvg.low == 100.0
+    assert ifvg.high == 105.0
+
+
+def test_markers_ifvg_dict_serializable() -> None:
+    """to_dict() 결과에 ifvgs key 포함."""
+    start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
+    df = _make_df_ny(start, [(100, 101, 99, 100)] * 5)
+    markers = to_chart_markers(df, fvg_min_size_pct=None)
+    d = markers.to_dict()
+    assert "ifvgs" in d
+    assert isinstance(d["ifvgs"], list)

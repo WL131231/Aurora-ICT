@@ -42,6 +42,8 @@ const candleSeries = chart.addCandlestickSeries({
 let obBoxSeries = [];
 // FVG 박스 — BaselineSeries 풀
 let fvgBoxSeries = [];
+// IFVG (Inversion FVG) 박스 — BaselineSeries 풀 (대시 라인 + 더 진한 fill)
+let ifvgBoxSeries = [];
 // Strong/Weak HL 가로선 (top + bottom 한 쌍)
 let trailingPriceLines = [];
 // BOS / CHoCH 짧은 segment LineSeries pool
@@ -59,6 +61,26 @@ function clearObBoxes() {
 function clearFvgBoxes() {
   fvgBoxSeries.forEach((s) => { try { chart.removeSeries(s); } catch (e) { /* noop */ } });
   fvgBoxSeries = [];
+}
+
+function clearIfvgBoxes() {
+  ifvgBoxSeries.forEach((s) => { try { chart.removeSeries(s); } catch (e) { /* noop */ } });
+  ifvgBoxSeries = [];
+}
+
+function renderIfvgBoxes(ifvgs) {
+  clearIfvgBoxes();
+  if (!lastBarTimeSec) return;
+  // IFVG = 반전 zone — 진한 색으로 차별화
+  const active = (ifvgs || []).slice(-6);
+  active.forEach((ifvg) => {
+    const isBull = ifvg.type === "bullish";
+    const fill = isBull ? "rgba(34, 197, 94, 0.28)" : "rgba(239, 68, 68, 0.28)";
+    const line = isBull ? "rgba(34, 197, 94, 0.75)" : "rgba(239, 68, 68, 0.75)";
+    const startSec = tsToTimeSec(ifvg.ts_ms);
+    if (startSec >= lastBarTimeSec) return;
+    ifvgBoxSeries.push(_addBoxSeries(startSec, lastBarTimeSec, ifvg.high, ifvg.low, fill, line));
+  });
 }
 
 function clearTrailingPriceLines() {
@@ -422,6 +444,7 @@ function renderMarkers(payload) {
   renderObBoxes(m.order_blocks ?? []);
   // 활성 FVG 박스 — BaselineSeries
   renderFvgBoxes(m.fvgs ?? []);
+  renderIfvgBoxes(m.ifvgs ?? []);
 
   // Trailing extremes (Strong/Weak High & Low) — 가로선 한 쌍
   renderTrailingExtremes(m.trailing ?? null);
