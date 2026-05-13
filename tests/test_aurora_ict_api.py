@@ -255,7 +255,7 @@ def test_position_liquidation_long_below_entry(manager: BotManager) -> None:
 
 
 # ============================================================
-# POST /ict/timeframe — 매매 timeframe 변경 (1h 이상만 허용)
+# POST /ict/timeframe — 매매 timeframe 변경 (5m 이상 허용, 1m 제외)
 # ============================================================
 
 
@@ -266,16 +266,22 @@ def test_timeframe_change_valid(client: TestClient) -> None:
     body = resp.json()
     assert body["timeframe"] == "4h"
     assert "1h" in body["allowed"]
-    # status 응답에도 반영
     s = client.get("/ict/status").json()
     assert s["timeframe"] == "4h"
 
 
-def test_timeframe_change_rejects_sub_hour(client: TestClient) -> None:
-    """1m / 5m / 15m 박은 거 박은 게 박은 거 — 1h 미만은 400."""
-    for tf in ("1m", "5m", "15m"):
+def test_timeframe_change_allows_ltf(client: TestClient) -> None:
+    """5m / 15m / 30m → 200 (ICT 정통 LTF entry)."""
+    for tf in ("5m", "15m", "30m"):
         resp = client.post("/ict/timeframe", json={"timeframe": tf})
-        assert resp.status_code == 400, f"timeframe '{tf}' 박혀있어도 거부되어야 함"
+        assert resp.status_code == 200, f"timeframe '{tf}' 허용되어야 함"
+        assert resp.json()["timeframe"] == tf
+
+
+def test_timeframe_change_rejects_1m(client: TestClient) -> None:
+    """1m 은 노이즈 과대로 비허용."""
+    resp = client.post("/ict/timeframe", json={"timeframe": "1m"})
+    assert resp.status_code == 400
 
 
 def test_timeframe_change_rejects_unknown(client: TestClient) -> None:
@@ -288,7 +294,9 @@ def test_config_exposes_allowed_timeframes(client: TestClient) -> None:
     """/ict/config 응답에 allowed_trade_timeframes 리스트 포함."""
     body = client.get("/ict/config").json()
     assert "allowed_trade_timeframes" in body
-    assert body["allowed_trade_timeframes"] == ["1h", "2h", "4h", "1d", "1w"]
+    assert body["allowed_trade_timeframes"] == [
+        "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w",
+    ]
 
 
 # ============================================================
