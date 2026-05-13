@@ -358,12 +358,13 @@ def to_chart_markers(
         )
 
     # 4-b. Order Blocks — LuxAlgo SMC 알고리즘 (BOS 트리거 + swing 구간 max range)
-    # swings/events 는 위에서 이미 계산했으므로 재사용 (효율).
+    # LuxAlgo 표준 swing length = 5 → internal_pivots (left=right=5) 사용.
+    # 작은 swings(left=1) 으로 OB 잡으면 BOS event 너무 많아 OB 도배됨.
     obs = detect_order_blocks(
         df,
         algorithm="luxalgo",
-        swings=swings,
-        events=events,
+        swings=internal_pivots,
+        events=internal_events,
         mark_mitigation=True,
     )
     for ob in obs:
