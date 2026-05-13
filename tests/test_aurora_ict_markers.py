@@ -405,3 +405,18 @@ def test_markers_ifvg_dict_serializable() -> None:
     d = markers.to_dict()
     assert "ifvgs" in d
     assert isinstance(d["ifvgs"], list)
+
+
+# ============================================================
+# Breaker Block
+# ============================================================
+
+
+def test_markers_breakers_dict_serializable() -> None:
+    """to_dict() 결과에 breakers key 포함."""
+    start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
+    df = _make_df_ny(start, [(100, 101, 99, 100)] * 5)
+    markers = to_chart_markers(df, fvg_min_size_pct=None)
+    d = markers.to_dict()
+    assert "breakers" in d
+    assert isinstance(d["breakers"], list)

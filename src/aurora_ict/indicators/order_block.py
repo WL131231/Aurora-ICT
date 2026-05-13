@@ -397,4 +397,98 @@ def _mark_mitigation(
                     break
 
 
-__all__ = ["OrderBlock", "OrderBlockType", "detect_order_blocks"]
+@dataclass(slots=True)
+class BreakerBlock:
+    """Breaker Block — OB 가 close 로 깨졌을 때의 반전 zone.
+
+    ICT 정통: OB 가 단순 wick 침범이 아닌 close 로 영역을 이탈하면 그 OB 는
+    Breaker 로 전환. 방향 반전 — Bullish OB → Bearish Breaker, vice versa.
+    가격이 retest 하러 돌아오면 새 반전 진입 zone.
+
+    IFVG 와 유사한 개념이지만 OB 기반이라 보통 더 큰 zone + 더 강한 신호.
+
+    Attributes:
+        ts_ms: break 봉 (close 가 OB 너머로 간 봉) open time.
+        type: 반전된 새 방향 (origin OB 의 반대).
+        high: 원래 OB 의 high.
+        low: 원래 OB 의 low.
+        broken_idx: break 봉 idx.
+        origin_ob_idx: 원래 OB 봉 idx.
+    """
+
+    ts_ms: int
+    type: OrderBlockType
+    high: float
+    low: float
+    broken_idx: int
+    origin_ob_idx: int
+
+    @property
+    def mean(self) -> float:
+        return (self.high + self.low) / 2.0
+
+
+def detect_breaker_blocks(
+    obs: list[OrderBlock],
+    df: pd.DataFrame,
+) -> list[BreakerBlock]:
+    """OB 가 close 로 깨진 경우 BreakerBlock 으로 변환.
+
+    ICT 정통 strict break — wick 침범은 mitigation 일 뿐이고, close 가 OB
+    영역 너머로 가야 진짜 Breaker.
+
+    Args:
+        obs: ``detect_order_blocks`` 결과.
+        df: 동일 OHLCV DataFrame.
+
+    Returns:
+        BreakerBlock list — 시간순 (break 봉 ts 기준).
+    """
+    if not obs or len(df) < 2:
+        return []
+
+    if isinstance(df.index, pd.DatetimeIndex):
+        ts_arr = (df.index.astype("int64") // 10**6).to_numpy()
+    else:
+        ts_arr = df.index.to_numpy()
+
+    closes = df["close"].to_numpy()
+    bbs: list[BreakerBlock] = []
+
+    for ob in obs:
+        broken_idx = -1
+        for k in range(ob.displacement_idx + 1, len(closes)):
+            if ob.type is OrderBlockType.BULLISH:
+                if closes[k] < ob.low:
+                    broken_idx = k
+                    break
+            elif closes[k] > ob.high:
+                broken_idx = k
+                break
+        if broken_idx < 0:
+            continue
+        inverted = (
+            OrderBlockType.BEARISH
+            if ob.type is OrderBlockType.BULLISH
+            else OrderBlockType.BULLISH
+        )
+        bbs.append(BreakerBlock(
+            ts_ms=int(ts_arr[broken_idx]),
+            type=inverted,
+            high=ob.high,
+            low=ob.low,
+            broken_idx=broken_idx,
+            origin_ob_idx=ob.idx,
+        ))
+
+    bbs.sort(key=lambda b: b.ts_ms)
+    return bbs
+
+
+__all__ = [
+    "BreakerBlock",
+    "OrderBlock",
+    "OrderBlockType",
+    "detect_breaker_blocks",
+    "detect_order_blocks",
+]

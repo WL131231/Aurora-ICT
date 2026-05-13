@@ -44,6 +44,8 @@ let obBoxSeries = [];
 let fvgBoxSeries = [];
 // IFVG (Inversion FVG) 박스 — BaselineSeries 풀 (대시 라인 + 더 진한 fill)
 let ifvgBoxSeries = [];
+// Breaker Block 박스 — BaselineSeries 풀 (보라 계열로 OB/IFVG 와 차별)
+let breakerBoxSeries = [];
 // Strong/Weak HL 가로선 (top + bottom 한 쌍)
 let trailingPriceLines = [];
 // BOS / CHoCH 짧은 segment LineSeries pool
@@ -80,6 +82,27 @@ function renderIfvgBoxes(ifvgs) {
     const startSec = tsToTimeSec(ifvg.ts_ms);
     if (startSec >= lastBarTimeSec) return;
     ifvgBoxSeries.push(_addBoxSeries(startSec, lastBarTimeSec, ifvg.high, ifvg.low, fill, line));
+  });
+}
+
+function clearBreakerBoxes() {
+  breakerBoxSeries.forEach((s) => { try { chart.removeSeries(s); } catch (e) { /* noop */ } });
+  breakerBoxSeries = [];
+}
+
+function renderBreakerBoxes(breakers) {
+  clearBreakerBoxes();
+  if (!lastBarTimeSec) return;
+  // Breaker = OB close break 후 반전 zone — 보라 계열로 OB/IFVG 와 차별
+  const active = (breakers || []).slice(-6);
+  active.forEach((bb) => {
+    const isBull = bb.type === "bullish";
+    // bullish breaker = 자주색-청록 계열, bearish = 자주색-주황 계열
+    const fill = isBull ? "rgba(168, 85, 247, 0.22)" : "rgba(217, 70, 239, 0.22)";
+    const line = isBull ? "rgba(168, 85, 247, 0.70)" : "rgba(217, 70, 239, 0.70)";
+    const startSec = tsToTimeSec(bb.ts_ms);
+    if (startSec >= lastBarTimeSec) return;
+    breakerBoxSeries.push(_addBoxSeries(startSec, lastBarTimeSec, bb.high, bb.low, fill, line));
   });
 }
 
@@ -445,6 +468,7 @@ function renderMarkers(payload) {
   // 활성 FVG 박스 — BaselineSeries
   renderFvgBoxes(m.fvgs ?? []);
   renderIfvgBoxes(m.ifvgs ?? []);
+  renderBreakerBoxes(m.breakers ?? []);
 
   // Trailing extremes (Strong/Weak High & Low) — 가로선 한 쌍
   renderTrailingExtremes(m.trailing ?? null);
