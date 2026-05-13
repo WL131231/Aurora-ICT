@@ -259,6 +259,36 @@ def test_markers_large_scale_requires_long_df() -> None:
     assert markers.large_structure == []
 
 
+def test_markers_includes_equal_levels() -> None:
+    """tolerance 안의 swing high 가 2개 박혀있으면 EQH 로 묶임."""
+    start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
+    # 두 swing high 가 거의 같은 가격 (108 vs 108.05) 박혀있는 fixture
+    df = _make_df_ny(start, [
+        (100, 102, 99, 101),
+        (101, 108, 100, 107),     # swing high 108 (idx=1)
+        (107, 105, 100, 102),
+        (102, 108.05, 101, 105),  # swing high 108.05 (idx=3) — 0.05% 차이
+        (105, 106, 100, 101),
+    ])
+    markers = to_chart_markers(df, fvg_min_size_pct=None)
+    eqh = [e for e in markers.equal_levels if e.type == "high"]
+    assert len(eqh) >= 1
+    # 평균 가격은 108 근처
+    assert abs(eqh[0].price - 108.025) < 0.1
+
+
+def test_markers_equal_levels_in_to_dict() -> None:
+    """to_dict 결과에 equal_levels 키 존재."""
+    df = _make_df_ny(datetime(2026, 5, 12, 10, 0, tzinfo=NY), [
+        (100, 102, 99, 101),
+        (101, 103, 100, 102),
+        (102, 104, 101, 103),
+    ])
+    d = to_chart_markers(df, fvg_min_size_pct=None).to_dict()
+    assert "equal_levels" in d
+    assert isinstance(d["equal_levels"], list)
+
+
 def test_markers_internal_scale_is_subset_of_basic() -> None:
     """left=5 의 swing 은 left=1 보다 보통 적거나 같음 (더 strict)."""
     bars = []
