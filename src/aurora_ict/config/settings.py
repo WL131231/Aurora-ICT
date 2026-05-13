@@ -19,8 +19,11 @@ from __future__ import annotations
 from enum import StrEnum
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 매매 timeframe 허용 목록 — 1h 미만은 ICT setup 정확도 떨어지고 노이즈만 큼
+TRADE_TIMEFRAMES: tuple[str, ...] = ("1h", "2h", "4h", "1d", "1w")
 
 
 class RunMode(StrEnum):
@@ -60,7 +63,18 @@ class IctSettings(BaseSettings):
     enabled: bool = Field(default=False)
 
     symbol: str = Field(default="BTC/USDT:USDT")
-    timeframe: str = Field(default="1m")
+    # 매매 timeframe — 1h 이상만 허용. ICT setup 은 LTF 에서 노이즈가 너무 큼.
+    timeframe: str = Field(default="1h")
+
+    @field_validator("timeframe")
+    @classmethod
+    def _validate_trade_timeframe(cls, v: str) -> str:
+        if v not in TRADE_TIMEFRAMES:
+            raise ValueError(
+                f"timeframe '{v}' 미지원 — 허용 목록: {list(TRADE_TIMEFRAMES)}",
+            )
+        return v
+
     risk_per_trade_pct: float = Field(default=0.5, ge=0.01, le=5.0)
     leverage: int = Field(default=5, ge=1, le=20)
     min_rr: float = Field(default=2.0, ge=1.0)
