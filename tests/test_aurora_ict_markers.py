@@ -259,6 +259,49 @@ def test_markers_large_scale_requires_long_df() -> None:
     assert markers.large_structure == []
 
 
+def test_markers_structure_has_swing_ts() -> None:
+    """StructureMarker 에 swing_ts_ms 가 채워져야 segment 시각화 가능."""
+    start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
+    df = _make_df_ny(start, [
+        (100, 102, 99, 101),
+        (101, 108, 100, 107),   # swing high 108
+        (107, 106, 100, 102),
+        (102, 105, 95, 96),     # swing low 95
+        (96, 110, 95.5, 109),
+        (109, 115, 108, 115),   # close=115 > 108 → BOS bullish
+    ])
+    markers = to_chart_markers(df, fvg_min_size_pct=None, min_rr=0.5)
+    bull = [
+        e for e in markers.structure
+        if e.type in ("bos_bullish", "choch_bullish")
+    ]
+    assert len(bull) >= 1
+    # swing_ts_ms 가 채워져야 함 (0 = 미설정)
+    for ev in bull:
+        assert ev.swing_ts_ms > 0, "swing_ts_ms 가 채워지지 않음 — segment 불가"
+        # 시작 swing 은 돌파 봉보다 이전
+        assert ev.swing_ts_ms < ev.ts_ms
+
+
+def test_markers_equal_levels_swing_ts_list() -> None:
+    """EqualLevelMarker.swing_ts_list 에 각 swing ts 들어있어야 함."""
+    start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
+    df = _make_df_ny(start, [
+        (100, 102, 99, 101),
+        (101, 108.00, 100, 107),
+        (107, 105, 100, 102),
+        (102, 108.05, 101, 105),
+        (105, 106, 100, 101),
+    ])
+    markers = to_chart_markers(df, fvg_min_size_pct=None)
+    eqh = [e for e in markers.equal_levels if e.type == "high"]
+    assert len(eqh) >= 1
+    # 두 swing 이상 박혀있고 ts 도 채워져 있어야 함
+    assert len(eqh[0].swing_ts_list) >= 2
+    # 모든 ts 가 양수
+    assert all(t > 0 for t in eqh[0].swing_ts_list)
+
+
 def test_markers_includes_equal_levels() -> None:
     """tolerance 안의 swing high 가 2개 박혀있으면 EQH 로 묶임."""
     start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)

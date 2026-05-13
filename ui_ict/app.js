@@ -15,6 +15,9 @@ VIZ_KEYS.forEach((k) => {
   vizEnabled[k] = stored === null ? false : stored === "1";
 });
 
+// 마지막 봉 시간 (PD Zone area 끝점에 사용) — fetchAndRender 가 매번 갱신
+let lastBarTimeSec = null;
+
 // ============================================================
 // Chart
 // ============================================================
@@ -57,12 +60,12 @@ const fvgBearSeries = chart.addAreaSeries({
 let obPriceLines = [];
 // Strong/Weak HL 가로선 (top + bottom 한 쌍)
 let trailingPriceLines = [];
-// BOS / CHoCH 가로선
-let bosPriceLines = [];
-// EQH / EQL 가로선
-let eqlPriceLines = [];
-// PD Zone 가로선 (premium top/bottom + equilibrium top/bottom + discount top/bottom)
-let zonePriceLines = [];
+// BOS / CHoCH 짧은 segment LineSeries pool
+let bosSegmentSeries = [];
+// EQH / EQL 짧은 segment LineSeries pool
+let eqlSegmentSeries = [];
+// PD Zone — 3개 AreaSeries (premium / equilibrium / discount)
+let zoneAreaSeries = [];
 
 function clearObPriceLines() {
   obPriceLines.forEach((pl) => {
@@ -78,95 +81,162 @@ function clearTrailingPriceLines() {
   trailingPriceLines = [];
 }
 
-function clearBosPriceLines() {
-  bosPriceLines.forEach((pl) => {
-    try { candleSeries.removePriceLine(pl); } catch (e) { /* noop */ }
+function clearBosSegments() {
+  bosSegmentSeries.forEach((s) => {
+    try { chart.removeSeries(s); } catch (e) { /* noop */ }
   });
-  bosPriceLines = [];
+  bosSegmentSeries = [];
 }
 
-function clearEqlPriceLines() {
-  eqlPriceLines.forEach((pl) => {
-    try { candleSeries.removePriceLine(pl); } catch (e) { /* noop */ }
+function clearEqlSegments() {
+  eqlSegmentSeries.forEach((s) => {
+    try { chart.removeSeries(s); } catch (e) { /* noop */ }
   });
-  eqlPriceLines = [];
+  eqlSegmentSeries = [];
 }
 
-function clearZonePriceLines() {
-  zonePriceLines.forEach((pl) => {
-    try { candleSeries.removePriceLine(pl); } catch (e) { /* noop */ }
+function clearZoneAreas() {
+  zoneAreaSeries.forEach((s) => {
+    try { chart.removeSeries(s); } catch (e) { /* noop */ }
   });
-  zonePriceLines = [];
+  zoneAreaSeries = [];
 }
 
-function renderBosLines(structureMarkers) {
-  clearBosPriceLines();
+// BOS / CHoCH 짧은 segment — swing 시작점부터 돌파봉까지 dashed 라인
+function renderBosSegments(structureList) {
+  clearBosSegments();
   if (!vizEnabled.bos) return;
-  // 최근 N개만 (차트 지저분 방지)
-  const recent = (structureMarkers || []).slice(-8);
+  // 같은 가격 + 같은 시점 중복 segment 방지 (set 으로 dedup)
+  const seen = new Set();
+  const recent = (structureList || []).slice(-15);
   recent.forEach((ev) => {
+    if (!ev.swing_ts_ms || ev.swing_ts_ms <= 0) return;
+    const t1 = tsToTimeSec(ev.swing_ts_ms);
+    const t2 = tsToTimeSec(ev.ts_ms);
+    if (t1 >= t2) return;
+    const key = `${t1}-${t2}-${ev.broken_level}`;
+    if (seen.has(key)) return;
+    seen.add(key);
     const isChoCH = ev.type.startsWith("choch");
-    const isBull = ev.type.endsWith("bullish");
-    const baseColor = isChoCH ? "#a855f7" : "#60a5fa";
-    const pl = candleSeries.createPriceLine({
-      price: ev.broken_level,
-      color: baseColor,
+    const color = isChoCH ? "#a855f7" : "#60a5fa";
+    const series = chart.addLineSeries({
+      color,
       lineWidth: 1,
-      lineStyle: 2,  // dashed
-      axisLabelVisible: true,
-      title: (isChoCH ? "CHoCH" : "BOS") + (isBull ? "↑" : "↓"),
+      lineStyle: 2, // dashed
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
     });
-    bosPriceLines.push(pl);
+    series.setData([
+      { time: t1, value: ev.broken_level },
+      { time: t2, value: ev.broken_level },
+    ]);
+    bosSegmentSeries.push(series);
   });
 }
 
-function renderEqlLines(equalLevels) {
-  clearEqlPriceLines();
+// EQH / EQL 짧은 segment — 두 swing 잇는 dotted 라인
+function renderEqlSegments(equalLevels) {
+  clearEqlSegments();
   if (!vizEnabled.eql) return;
   (equalLevels || []).forEach((lvl) => {
+    const tsList = (lvl.swing_ts_list || []).filter((t) => t > 0).sort((a, b) => a - b);
+    if (tsList.length < 2) return;
+    const t1 = tsToTimeSec(tsList[0]);
+    const t2 = tsToTimeSec(tsList[tsList.length - 1]);
+    if (t1 >= t2) return;
     const isHigh = lvl.type === "high";
-    const pl = candleSeries.createPriceLine({
-      price: lvl.price,
-      color: isHigh ? "#fb7185" : "#34d399",
+    const color = isHigh ? "#fb7185" : "#34d399";
+    const series = chart.addLineSeries({
+      color,
       lineWidth: 1,
-      lineStyle: 1,  // dotted
-      axisLabelVisible: true,
-      title: isHigh ? "EQH" : "EQL",
+      lineStyle: 1, // dotted
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
     });
-    eqlPriceLines.push(pl);
+    series.setData([
+      { time: t1, value: lvl.price },
+      { time: t2, value: lvl.price },
+    ]);
+    eqlSegmentSeries.push(series);
   });
 }
 
-function renderPdZones(trailing) {
-  clearZonePriceLines();
+// PD Zone — 3개 AreaSeries (premium=빨강, equilibrium=회색, discount=초록)
+// 각 zone 의 top/bottom 가격을 그라데이션 박스로 표시. trailing.bottom_ts_ms 시점부터 차트 끝까지 채움.
+function _addZoneArea(startSec, endSec, top, bottom, color) {
+  // 위쪽 line — top, 아래쪽 line — bottom, baseline 박은 게 박은 게 박은 박은 박은 박은 박은 박은 박은
+  // lightweight-charts AreaSeries 는 단일 값 + baseline 박을 게 박은 게 박은 박은 박은 박은 박은 박은
+  // 박은 게 박은 게 박은 박은 박은 박은 박은 박은 박은 박은 — 박은 게 박은 게 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은
+  const series = chart.addAreaSeries({
+    topColor: color,
+    bottomColor: color.replace(/[\d.]+\)$/, "0.05)"),
+    lineColor: color.replace(/[\d.]+\)$/, "0.0)"),
+    lineWidth: 1,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    crosshairMarkerVisible: false,
+  });
+  // top 값으로 fill — 아래는 0 으로 떨어지므로 base 값으로 잘라야 함 → baseLine 박은 거 박은 게 박은 박은 박은 박은
+  // 가장 간단 — top 값만 area, bottom 부분은 별 series 박은 게 박은 게 박은 박은 박은 박은
+  series.setData([
+    { time: startSec, value: top },
+    { time: endSec, value: top },
+  ]);
+  return series;
+}
+
+function renderPdZones(trailing, lastBarTimeSec) {
+  clearZoneAreas();
   if (!vizEnabled.zones || !trailing) return;
   const top = trailing.top_price;
   const bot = trailing.bottom_price;
-  if (top <= bot) return;
+  if (top <= bot || !lastBarTimeSec) return;
   const range = top - bot;
-  // Premium (95-100%), Equilibrium (47.5-52.5%), Discount (0-5%)
-  const premBot = bot + 0.95 * range;
-  const eqTop = bot + 0.525 * range;
-  const eqBot = bot + 0.475 * range;
-  const discTop = bot + 0.05 * range;
-  const lines = [
-    { price: top,     color: "rgba(251, 113, 133, 0.45)", title: "Premium·top" },
-    { price: premBot, color: "rgba(251, 113, 133, 0.45)", title: "Premium·bot" },
-    { price: eqTop,   color: "rgba(135, 139, 148, 0.45)", title: "Eq·top" },
-    { price: eqBot,   color: "rgba(135, 139, 148, 0.45)", title: "Eq·bot" },
-    { price: discTop, color: "rgba(52, 211, 153, 0.45)",  title: "Discount·top" },
-    { price: bot,     color: "rgba(52, 211, 153, 0.45)",  title: "Discount·bot" },
+  // zone 시작 시점 — trailing top/bottom 중 더 이른 시점
+  const startTs = Math.min(trailing.top_ts_ms, trailing.bottom_ts_ms);
+  const startSec = tsToTimeSec(startTs);
+
+  // 6개 priceLine 으로 zone 경계 박는 게 박은 게 박은 박은 박은 박은 박은 — 박은 게 박은 게 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은
+  // (AreaSeries 박은 게 박은 게 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은)
+  const zones = [
+    { topPrice: top,              botPrice: bot + 0.95 * range, color: "rgba(251, 113, 133, 0.20)" },  // Premium
+    { topPrice: bot + 0.525*range, botPrice: bot + 0.475 * range, color: "rgba(135, 139, 148, 0.20)" }, // Equilibrium
+    { topPrice: bot + 0.05*range,  botPrice: bot,                color: "rgba(52, 211, 153, 0.20)" },   // Discount
   ];
-  lines.forEach((l) => {
-    const pl = candleSeries.createPriceLine({
-      price: l.price,
-      color: l.color,
+  zones.forEach((z) => {
+    // 위쪽 area — fill 값 = topPrice, baseline = botPrice
+    const series = chart.addAreaSeries({
+      topColor: z.color,
+      bottomColor: z.color,
+      lineColor: z.color.replace(/[\d.]+\)$/, "0.5)"),
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      // baseValue 박은 게 박은 게 박은 박은 박은 — botPrice 박은 게 박은 박은 박은 박은 박은 박은 박은 박은
+      baseLineColor: "transparent",
+    });
+    series.setData([
+      { time: startSec, value: z.topPrice },
+      { time: lastBarTimeSec, value: z.topPrice },
+    ]);
+    zoneAreaSeries.push(series);
+    // 아래쪽 경계선 (botPrice)
+    const lowSeries = chart.addLineSeries({
+      color: z.color.replace(/[\d.]+\)$/, "0.5)"),
       lineWidth: 1,
       lineStyle: 0,
-      axisLabelVisible: true,
-      title: l.title,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
     });
-    zonePriceLines.push(pl);
+    lowSeries.setData([
+      { time: startSec, value: z.botPrice },
+      { time: lastBarTimeSec, value: z.botPrice },
+    ]);
+    zoneAreaSeries.push(lowSeries);
   });
 }
 
@@ -225,9 +295,9 @@ function clearOverlays() {
   candleSeries.setMarkers([]);
   clearObPriceLines();
   clearTrailingPriceLines();
-  clearBosPriceLines();
-  clearEqlPriceLines();
-  clearZonePriceLines();
+  clearBosSegments();
+  clearEqlSegments();
+  clearZoneAreas();
 }
 
 function tsToTimeSec(ts_ms) { return Math.floor(ts_ms / 1000); }
@@ -349,55 +419,8 @@ function renderMarkers(payload) {
     });
   });
 
-  // Structure (BOS/CHoCH) — 기본 (left=1) 스케일
-  m.structure.forEach(ev => {
-    const isChoCH = ev.type.startsWith("choch");
-    const isBull = ev.type.endsWith("bullish");
-    markers.push({
-      time: tsToTimeSec(ev.ts_ms),
-      position: isBull ? "belowBar" : "aboveBar",
-      color: isChoCH ? "#a855f7" : "#60a5fa",
-      shape: "circle",
-      text: isChoCH ? "MSS" : "BOS",
-    });
-  });
-
-  // Internal structure (left=5) — 옅은 색 + 작은 라벨
-  (m.internal_structure ?? []).forEach(ev => {
-    const isChoCH = ev.type.startsWith("choch");
-    const isBull = ev.type.endsWith("bullish");
-    markers.push({
-      time: tsToTimeSec(ev.ts_ms),
-      position: isBull ? "belowBar" : "aboveBar",
-      color: isChoCH ? "rgba(168, 85, 247, 0.45)" : "rgba(96, 165, 250, 0.45)",
-      shape: "circle",
-      text: isChoCH ? "iMSS" : "iBOS",
-    });
-  });
-
-  // Large structure (left=50) — 진한 색 + 굵은 라벨
-  (m.large_structure ?? []).forEach(ev => {
-    const isChoCH = ev.type.startsWith("choch");
-    const isBull = ev.type.endsWith("bullish");
-    markers.push({
-      time: tsToTimeSec(ev.ts_ms),
-      position: isBull ? "belowBar" : "aboveBar",
-      color: isChoCH ? "#7c3aed" : "#2563eb",
-      shape: "arrowUp",
-      text: isChoCH ? "MSS↑↑" : "BOS↑↑",
-    });
-  });
-
-  // Large swings (left=50) — 박은 큰 swing pivot 만 마커 (작은 swing 은 차트 지저분 방지로 생략)
-  (m.large_swings ?? []).forEach(sw => {
-    markers.push({
-      time: tsToTimeSec(sw.ts_ms),
-      position: sw.type === "high" ? "aboveBar" : "belowBar",
-      color: sw.type === "high" ? "#fb7185" : "#34d399",
-      shape: "circle",
-      text: sw.type === "high" ? "HH" : "LL",
-    });
-  });
+  // Structure / Internal / Large 박은 마커는 LineSeries segment 로 박혀있어
+  // 차트 위 텍스트 마커는 제거 — 도배 방지 (renderBosSegments 가 segment+label 박음)
 
   // Setups
   m.setups.forEach(s => {
@@ -412,15 +435,16 @@ function renderMarkers(payload) {
     });
   });
 
-  // Order Blocks — bullish=teal, bearish=pink. mitigated 는 옅게 표시 (글자만)
+  // Order Blocks — 미mitigated 만 마커 (mitigated 은 priceLine 만, 마커 도배 방지)
   (m.order_blocks ?? []).forEach(ob => {
+    if (ob.mitigated) return;
     const isBull = ob.type === "bullish";
     markers.push({
       time: tsToTimeSec(ob.ts_ms),
       position: isBull ? "belowBar" : "aboveBar",
       color: isBull ? "#2dd4bf" : "#f472b6",
       shape: "square",
-      text: ob.mitigated ? "OB·m" : "OB",
+      text: "OB",
     });
   });
 
@@ -430,15 +454,16 @@ function renderMarkers(payload) {
   // Trailing extremes (Strong/Weak High & Low) — 가로선 한 쌍
   renderTrailingExtremes(m.trailing ?? null);
 
-  // BOS/CHoCH 가로선 (viz 토글) — 기본 + large structure 둘 다 표시
+  // BOS/CHoCH — swing 시작점부터 돌파봉까지 짧은 dashed segment (LuxAlgo 스타일)
+  // basic + large 둘 다, internal 은 너무 많아 토글 켜도 표시 안 함 (도배 방지)
   const allStructure = [...(m.structure ?? []), ...(m.large_structure ?? [])];
-  renderBosLines(allStructure);
+  renderBosSegments(allStructure);
 
-  // EQH/EQL 가로선 (viz 토글)
-  renderEqlLines(m.equal_levels ?? []);
+  // EQH/EQL — 두 swing 잇는 짧은 dotted segment
+  renderEqlSegments(m.equal_levels ?? []);
 
-  // Premium/Discount Zone (viz 토글, Trailing top/bottom 기준)
-  renderPdZones(m.trailing ?? null);
+  // Premium/Discount Zone — AreaSeries 박스 (마지막 봉 ts 까지 채움)
+  renderPdZones(m.trailing ?? null, lastBarTimeSec);
 
   // 시간순 정렬
   markers.sort((a, b) => a.time - b.time);
@@ -526,6 +551,10 @@ async function fetchAndRender() {
       api("/ict/position"),
     ]);
     candleSeries.setData(ohlcv.candles);
+    // 마지막 봉 시간 — PD Zone area 끝점에 사용
+    if (ohlcv.candles && ohlcv.candles.length > 0) {
+      lastBarTimeSec = ohlcv.candles[ohlcv.candles.length - 1].time;
+    }
     renderMarkers(markers);
     renderPositions(position);
   } catch (e) {
