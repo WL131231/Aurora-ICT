@@ -80,8 +80,9 @@ def test_trailing_bullish_bias_labels() -> None:
         ts_ms=0,
         type=StructureType.BOS_BULLISH,
         broken_level=105.0,
-        trend_before=TrendDirection.NONE,
         idx=0,
+        broken_swing_idx=0,
+        trend_before=TrendDirection.NONE,
     )
     te = compute_trailing_extremes(df, [], [fake_event])
     assert te is not None

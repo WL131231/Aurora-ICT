@@ -114,21 +114,26 @@ def compute_trailing_extremes(
         if last_swing_high_ts is not None and last_swing_low_ts is not None:
             break
 
-    # top 후보 범위 — last swing low 이후의 봉 (없으면 전체)
+    # top 후보 범위 — last swing low 봉 이후 (swing 봉 자체 제외)
     top_start_idx = 0
     if last_swing_low_ts is not None:
         for i, t in enumerate(ts_arr):
-            if t >= last_swing_low_ts:
+            if t > last_swing_low_ts:
                 top_start_idx = i
                 break
+        else:
+            # swing low 이후 봉이 없으면 — extreme 박을 데이터 없음, 전체 사용
+            top_start_idx = 0
 
-    # bottom 후보 범위 — last swing high 이후
+    # bottom 후보 범위 — last swing high 봉 이후 (swing 봉 자체 제외)
     bot_start_idx = 0
     if last_swing_high_ts is not None:
         for i, t in enumerate(ts_arr):
-            if t >= last_swing_high_ts:
+            if t > last_swing_high_ts:
                 bot_start_idx = i
                 break
+        else:
+            bot_start_idx = 0
 
     top_slice = highs[top_start_idx:]
     bot_slice = lows[bot_start_idx:]
