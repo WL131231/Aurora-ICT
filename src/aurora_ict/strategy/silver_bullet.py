@@ -35,7 +35,11 @@ from aurora_ict.indicators.structure import (
     detect_structure_events,
 )
 from aurora_ict.indicators.swing_points import SwingPoint, SwingType, detect_swing_points
-from aurora_ict.timing.killzone import in_macro, in_silver_bullet
+from aurora_ict.timing.killzone import (
+    in_macro,
+    in_silver_bullet,
+    macro_priority,
+)
 
 
 class Direction(StrEnum):
@@ -297,8 +301,17 @@ def detect_silver_bullet_setups(
 
         macro_name = in_macro(fvg.ts_ms)
         if macro_name is not None:
-            score += 1
-            confluences.append(f"macro={macro_name}")
+            # 기본 +1, high priority macro (예: am_macro_2 9:50-10:10) 는 +2.
+            priority = macro_priority(macro_name)
+            if priority == "high":
+                score += 2
+                confluences.append(f"macro_high={macro_name}")
+            elif priority == "low":
+                # low priority 는 confluence 만 기록, score 가산 없음.
+                confluences.append(f"macro_low={macro_name}")
+            else:
+                score += 1
+                confluences.append(f"macro={macro_name}")
 
         if _sweep_confluence(df, swings, direction, fvg.ts_ms):
             score += 1

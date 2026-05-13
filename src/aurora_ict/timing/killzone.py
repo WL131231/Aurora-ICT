@@ -158,7 +158,38 @@ def in_macro(ts_ms: int) -> str | None:
     return None
 
 
+# Macro 우선순위 — ICT 책 + 시장 변동성 관찰 기반.
+# - high: 가장 강한 신호. 큰 변동성 + 기관 유동성 활성.
+# - medium: 정상 강도. 신호 발생률 ↑, 신뢰도 보통.
+# - low: 약한 macro (lunch / 후반 PM). 노이즈 ↑.
+MACRO_PRIORITY: dict[str, str] = {
+    # AM session — 9:50-10:10 이 ICT 의 가장 핵심 macro
+    "am_macro_2":     "high",
+    "am_macro_1":     "medium",
+    "am_macro_3":     "medium",
+    # London — 새벽 macros 도 강함
+    "london_macro_1": "high",
+    "london_macro_2": "medium",
+    # PM — 14-15시 NY 후반은 강하나 13시는 lunch 영향
+    "pm_macro_2":     "high",
+    "pm_macro_1":     "medium",
+    # Lunch — 노이즈 큼
+    "lunch_macro":    "low",
+}
+
+
+def macro_priority(name: str | None) -> str | None:
+    """Macro 이름 → priority ('high'/'medium'/'low').
+
+    None 또는 미정의 macro 는 None.
+    """
+    if name is None:
+        return None
+    return MACRO_PRIORITY.get(name)
+
+
 __all__ = [
+    "MACRO_PRIORITY",
     "MACRO_WINDOWS",
     "Killzone",
     "KillzoneName",
@@ -169,4 +200,5 @@ __all__ = [
     "in_killzone",
     "in_macro",
     "in_silver_bullet",
+    "macro_priority",
 ]

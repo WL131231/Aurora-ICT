@@ -273,3 +273,37 @@ def test_ote_zone_invalid_bias() -> None:
     dr = DealingRange(high=110, low=90, high_idx=10, low_idx=5)
     with pytest.raises(ValueError, match="invalid bias"):
         is_ote_zone(100, dr, bias="sideways")
+
+
+# ============================================================
+# Macro priority (가중치)
+# ============================================================
+
+
+def test_macro_priority_high() -> None:
+    """9:50-10:10 (am_macro_2) → high priority."""
+    from aurora_ict.timing.killzone import macro_priority
+    assert macro_priority("am_macro_2") == "high"
+    assert macro_priority("london_macro_1") == "high"
+    assert macro_priority("pm_macro_2") == "high"
+
+
+def test_macro_priority_medium() -> None:
+    """대부분의 macros 는 medium priority."""
+    from aurora_ict.timing.killzone import macro_priority
+    assert macro_priority("am_macro_1") == "medium"
+    assert macro_priority("am_macro_3") == "medium"
+    assert macro_priority("london_macro_2") == "medium"
+    assert macro_priority("pm_macro_1") == "medium"
+
+
+def test_macro_priority_low() -> None:
+    """lunch_macro 는 low priority (노이즈 큼)."""
+    from aurora_ict.timing.killzone import macro_priority
+    assert macro_priority("lunch_macro") == "low"
+
+
+def test_macro_priority_unknown_returns_none() -> None:
+    from aurora_ict.timing.killzone import macro_priority
+    assert macro_priority(None) is None
+    assert macro_priority("not_a_macro") is None
