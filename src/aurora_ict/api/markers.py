@@ -58,11 +58,19 @@ class SweepMarker:
 
 @dataclass(slots=True)
 class StructureMarker:
-    """BOS / CHoCH line marker."""
+    """BOS / CHoCH segment marker — swing 시작점 → 돌파 봉.
+
+    Attributes:
+        ts_ms: 돌파 봉 (close 가 swing 가격을 넘은 봉) open time.
+        type: "bos_bullish" / "bos_bearish" / "choch_bullish" / "choch_bearish".
+        broken_level: 돌파된 swing 가격 (segment 의 가격 레벨).
+        swing_ts_ms: 돌파된 swing 봉 open time (segment 시작점).
+    """
 
     ts_ms: int
-    type: str        # "bos_bullish" / "bos_bearish" / "choch_bullish" / "choch_bearish"
+    type: str
     broken_level: float
+    swing_ts_ms: int = 0  # 0 = 미설정 (호환)
 
 
 @dataclass(slots=True)
@@ -136,11 +144,16 @@ class TrailingExtremeMarker:
 
 @dataclass(slots=True)
 class EqualLevelMarker:
-    """EQH (Equal Highs) / EQL (Equal Lows) — 같은 가격대 swing 클러스터."""
+    """EQH (Equal Highs) / EQL (Equal Lows) — 같은 가격대 swing 클러스터.
 
-    type: str              # "high" (EQH) / "low" (EQL)
-    price: float           # 클러스터 평균 가격
-    indices: list[int]     # 클러스터에 포함된 swing 봉 index 리스트
+    swing_ts_list 가 채워져 있으면 첫 swing → 마지막 swing 잇는 짧은 segment
+    형태로 차트에 표시할 수 있다.
+    """
+
+    type: str                       # "high" (EQH) / "low" (EQL)
+    price: float                    # 클러스터 평균 가격
+    indices: list[int]              # 클러스터 swing 봉 index (df 안)
+    swing_ts_list: list[int] = field(default_factory=list)  # 각 swing ts (ms)
 
 
 @dataclass(slots=True)
@@ -258,13 +271,16 @@ def to_chart_markers(
         for sw in swings
     ]
 
-    # 4. Structure events
+    # 4. Structure events — swing 시작점 ts 함께 채움 (segment 시각화용)
     events = detect_structure_events(df, swings)
+    # swing.idx → swing.ts_ms 룩업 dict (broken_swing_idx 에서 ts 박을 거)
+    swing_ts_by_idx = {sw.idx: sw.ts_ms for sw in swings}
     for ev in events:
         markers.structure.append(StructureMarker(
             ts_ms=ev.ts_ms,
             type=ev.type.value,
             broken_level=ev.broken_level,
+            swing_ts_ms=swing_ts_by_idx.get(ev.broken_swing_idx, ev.ts_ms),
         ))
 
     # 4-b. Internal scale (left=right=5) — 작은 swing / 짧은 구조 변화
@@ -277,11 +293,13 @@ def to_chart_markers(
             swept=sw.swept,
         ))
     internal_events = detect_structure_events(df, internal_pivots)
+    internal_ts_by_idx = {sw.idx: sw.ts_ms for sw in internal_pivots}
     for ev in internal_events:
         markers.internal_structure.append(StructureMarker(
             ts_ms=ev.ts_ms,
             type=ev.type.value,
             broken_level=ev.broken_level,
+            swing_ts_ms=internal_ts_by_idx.get(ev.broken_swing_idx, ev.ts_ms),
         ))
 
     # 4-c. Large scale (left=right=50) — 큰 swing / 장기 구조 변화
@@ -294,20 +312,26 @@ def to_chart_markers(
             swept=sw.swept,
         ))
     large_events = detect_structure_events(df, large_pivots)
+    large_ts_by_idx = {sw.idx: sw.ts_ms for sw in large_pivots}
     for ev in large_events:
         markers.large_structure.append(StructureMarker(
             ts_ms=ev.ts_ms,
             type=ev.type.value,
             broken_level=ev.broken_level,
+            swing_ts_ms=large_ts_by_idx.get(ev.broken_swing_idx, ev.ts_ms),
         ))
 
     # 4-d. EQH / EQL — 같은 가격대 swing 클러스터 (liquidity)
     eql_levels = detect_equal_levels(swings, tolerance_pct=0.001, min_count=2)
     for lvl in eql_levels:
+        ts_list = [
+            swing_ts_by_idx[idx] for idx in lvl.indices if idx in swing_ts_by_idx
+        ]
         markers.equal_levels.append(EqualLevelMarker(
             type=lvl.type.value,
             price=lvl.price,
             indices=list(lvl.indices),
+            swing_ts_list=ts_list,
         ))
 
     # 4-a. Trailing extremes (Strong/Weak High & Low) — 단일 객체
