@@ -145,6 +145,37 @@
     background: var(--accent);
     color: var(--bg);
   }
+  /* Viz toggle — tf-toggle 과 동일 스타일, 살짝 다른 active 색 */
+  .viz-toggle {
+    display: flex;
+    gap: 2px;
+    background: var(--surface);
+    border-radius: 4px;
+    padding: 2px;
+    border: 1px solid var(--line);
+    margin-left: 12px;
+  }
+  .viz-toggle button {
+    width: auto;
+    margin: 0;
+    padding: 5px 11px;
+    font-size: 10px;
+    font-weight: 500;
+    background: transparent;
+    border: none;
+    color: var(--text-2);
+    letter-spacing: 0.05em;
+    text-transform: none;
+    border-radius: 3px;
+  }
+  .viz-toggle button:hover {
+    background: rgba(219, 219, 222, 0.06);
+    color: var(--text-1);
+  }
+  .viz-toggle button.active {
+    background: rgba(96, 165, 250, 0.20);
+    color: #60a5fa;
+  }
   .chart-symbol {
     font-family: 'JetBrains Mono', monospace;
     font-size: 11px;
@@ -371,6 +402,11 @@
         <button data-tf="4h">4h</button>
         <button data-tf="1d">1d</button>
         <button data-tf="1w">1w</button>
+      </div>
+      <div class="viz-toggle" id="viz-toggle">
+        <button data-viz="bos">BOS</button>
+        <button data-viz="eql">EQH/EQL</button>
+        <button data-viz="zones">PD Zones</button>
       </div>
       <span class="chart-symbol" id="chart-symbol-label">—</span>
     </div>

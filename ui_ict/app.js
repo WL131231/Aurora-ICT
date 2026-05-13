@@ -7,6 +7,14 @@ let currentTimeframe = localStorage.getItem("aurora_ict_tf") || "1h";
 const VALID_TFS = ["1m", "5m", "15m", "1h", "2h", "4h", "1d", "1w"];
 if (!VALID_TFS.includes(currentTimeframe)) currentTimeframe = "1h";
 
+// 시각화 토글 (BOS / EQH-EQL / PD Zones) — localStorage 영속화
+const VIZ_KEYS = ["bos", "eql", "zones"];
+const vizEnabled = {};
+VIZ_KEYS.forEach((k) => {
+  const stored = localStorage.getItem(`aurora_ict_viz_${k}`);
+  vizEnabled[k] = stored === null ? false : stored === "1";
+});
+
 // ============================================================
 // Chart
 // ============================================================
@@ -49,6 +57,12 @@ const fvgBearSeries = chart.addAreaSeries({
 let obPriceLines = [];
 // Strong/Weak HL 가로선 (top + bottom 한 쌍)
 let trailingPriceLines = [];
+// BOS / CHoCH 가로선
+let bosPriceLines = [];
+// EQH / EQL 가로선
+let eqlPriceLines = [];
+// PD Zone 가로선 (premium top/bottom + equilibrium top/bottom + discount top/bottom)
+let zonePriceLines = [];
 
 function clearObPriceLines() {
   obPriceLines.forEach((pl) => {
@@ -62,6 +76,98 @@ function clearTrailingPriceLines() {
     try { candleSeries.removePriceLine(pl); } catch (e) { /* noop */ }
   });
   trailingPriceLines = [];
+}
+
+function clearBosPriceLines() {
+  bosPriceLines.forEach((pl) => {
+    try { candleSeries.removePriceLine(pl); } catch (e) { /* noop */ }
+  });
+  bosPriceLines = [];
+}
+
+function clearEqlPriceLines() {
+  eqlPriceLines.forEach((pl) => {
+    try { candleSeries.removePriceLine(pl); } catch (e) { /* noop */ }
+  });
+  eqlPriceLines = [];
+}
+
+function clearZonePriceLines() {
+  zonePriceLines.forEach((pl) => {
+    try { candleSeries.removePriceLine(pl); } catch (e) { /* noop */ }
+  });
+  zonePriceLines = [];
+}
+
+function renderBosLines(structureMarkers) {
+  clearBosPriceLines();
+  if (!vizEnabled.bos) return;
+  // 최근 N개만 (차트 지저분 방지)
+  const recent = (structureMarkers || []).slice(-8);
+  recent.forEach((ev) => {
+    const isChoCH = ev.type.startsWith("choch");
+    const isBull = ev.type.endsWith("bullish");
+    const baseColor = isChoCH ? "#a855f7" : "#60a5fa";
+    const pl = candleSeries.createPriceLine({
+      price: ev.broken_level,
+      color: baseColor,
+      lineWidth: 1,
+      lineStyle: 2,  // dashed
+      axisLabelVisible: true,
+      title: (isChoCH ? "CHoCH" : "BOS") + (isBull ? "↑" : "↓"),
+    });
+    bosPriceLines.push(pl);
+  });
+}
+
+function renderEqlLines(equalLevels) {
+  clearEqlPriceLines();
+  if (!vizEnabled.eql) return;
+  (equalLevels || []).forEach((lvl) => {
+    const isHigh = lvl.type === "high";
+    const pl = candleSeries.createPriceLine({
+      price: lvl.price,
+      color: isHigh ? "#fb7185" : "#34d399",
+      lineWidth: 1,
+      lineStyle: 1,  // dotted
+      axisLabelVisible: true,
+      title: isHigh ? "EQH" : "EQL",
+    });
+    eqlPriceLines.push(pl);
+  });
+}
+
+function renderPdZones(trailing) {
+  clearZonePriceLines();
+  if (!vizEnabled.zones || !trailing) return;
+  const top = trailing.top_price;
+  const bot = trailing.bottom_price;
+  if (top <= bot) return;
+  const range = top - bot;
+  // Premium (95-100%), Equilibrium (47.5-52.5%), Discount (0-5%)
+  const premBot = bot + 0.95 * range;
+  const eqTop = bot + 0.525 * range;
+  const eqBot = bot + 0.475 * range;
+  const discTop = bot + 0.05 * range;
+  const lines = [
+    { price: top,     color: "rgba(251, 113, 133, 0.45)", title: "Premium·top" },
+    { price: premBot, color: "rgba(251, 113, 133, 0.45)", title: "Premium·bot" },
+    { price: eqTop,   color: "rgba(135, 139, 148, 0.45)", title: "Eq·top" },
+    { price: eqBot,   color: "rgba(135, 139, 148, 0.45)", title: "Eq·bot" },
+    { price: discTop, color: "rgba(52, 211, 153, 0.45)",  title: "Discount·top" },
+    { price: bot,     color: "rgba(52, 211, 153, 0.45)",  title: "Discount·bot" },
+  ];
+  lines.forEach((l) => {
+    const pl = candleSeries.createPriceLine({
+      price: l.price,
+      color: l.color,
+      lineWidth: 1,
+      lineStyle: 0,
+      axisLabelVisible: true,
+      title: l.title,
+    });
+    zonePriceLines.push(pl);
+  });
 }
 
 function renderTrailingExtremes(trailing) {
@@ -119,6 +225,9 @@ function clearOverlays() {
   candleSeries.setMarkers([]);
   clearObPriceLines();
   clearTrailingPriceLines();
+  clearBosPriceLines();
+  clearEqlPriceLines();
+  clearZonePriceLines();
 }
 
 function tsToTimeSec(ts_ms) { return Math.floor(ts_ms / 1000); }
@@ -300,6 +409,16 @@ function renderMarkers(payload) {
   // Trailing extremes (Strong/Weak High & Low) — 가로선 한 쌍
   renderTrailingExtremes(m.trailing ?? null);
 
+  // BOS/CHoCH 가로선 (viz 토글) — 기본 + large structure 둘 다 표시
+  const allStructure = [...(m.structure ?? []), ...(m.large_structure ?? [])];
+  renderBosLines(allStructure);
+
+  // EQH/EQL 가로선 (viz 토글)
+  renderEqlLines(m.equal_levels ?? []);
+
+  // Premium/Discount Zone (viz 토글, Trailing top/bottom 기준)
+  renderPdZones(m.trailing ?? null);
+
   // 시간순 정렬
   markers.sort((a, b) => a.time - b.time);
   candleSeries.setMarkers(markers);
@@ -464,6 +583,25 @@ function _updateTfButtons() {
   });
 }
 _updateTfButtons();
+
+// Viz 토글 — 클릭 시 vizEnabled[key] 반전 + localStorage 저장 + 즉시 재렌더
+function _updateVizButtons() {
+  document.querySelectorAll("#viz-toggle button").forEach((b) => {
+    b.classList.toggle("active", !!vizEnabled[b.dataset.viz]);
+  });
+}
+_updateVizButtons();
+
+$("viz-toggle").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-viz]");
+  if (!btn) return;
+  const key = btn.dataset.viz;
+  if (!VIZ_KEYS.includes(key)) return;
+  vizEnabled[key] = !vizEnabled[key];
+  localStorage.setItem(`aurora_ict_viz_${key}`, vizEnabled[key] ? "1" : "0");
+  _updateVizButtons();
+  await fetchAndRender();
+});
 
 $("tf-toggle").addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button[data-tf]");

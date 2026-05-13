@@ -20,7 +20,7 @@ from typing import Any
 import pandas as pd
 
 from aurora_ict.indicators.fvg import detect_fvgs
-from aurora_ict.indicators.liquidity import detect_liquidity_sweeps
+from aurora_ict.indicators.liquidity import detect_equal_levels, detect_liquidity_sweeps
 from aurora_ict.indicators.order_block import detect_order_blocks
 from aurora_ict.indicators.structure import detect_structure_events
 from aurora_ict.indicators.swing_points import detect_swing_points
@@ -135,6 +135,15 @@ class TrailingExtremeMarker:
 
 
 @dataclass(slots=True)
+class EqualLevelMarker:
+    """EQH (Equal Highs) / EQL (Equal Lows) — 같은 가격대 swing 클러스터."""
+
+    type: str              # "high" (EQH) / "low" (EQL)
+    price: float           # 클러스터 평균 가격
+    indices: list[int]     # 클러스터에 포함된 swing 봉 index 리스트
+
+
+@dataclass(slots=True)
 class ChartMarkers:
     """전체 marker bundle — UI 한 번 호출로 받아갈 결과 묶음."""
 
@@ -153,6 +162,8 @@ class ChartMarkers:
     # Large scale (left=right=50) — 큰 swing / 장기 구조 변화
     large_swings: list[SwingMarker] = field(default_factory=list)
     large_structure: list[StructureMarker] = field(default_factory=list)
+    # Equal Highs / Equal Lows (같은 가격대 swing 클러스터)
+    equal_levels: list[EqualLevelMarker] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-serializable dict 변환."""
@@ -170,6 +181,7 @@ class ChartMarkers:
             "internal_structure": [asdict(s) for s in self.internal_structure],
             "large_swings": [asdict(s) for s in self.large_swings],
             "large_structure": [asdict(s) for s in self.large_structure],
+            "equal_levels": [asdict(e) for e in self.equal_levels],
         }
 
 
@@ -289,6 +301,15 @@ def to_chart_markers(
             broken_level=ev.broken_level,
         ))
 
+    # 4-d. EQH / EQL — 같은 가격대 swing 클러스터 (liquidity)
+    eql_levels = detect_equal_levels(swings, tolerance_pct=0.001, min_count=2)
+    for lvl in eql_levels:
+        markers.equal_levels.append(EqualLevelMarker(
+            type=lvl.type.value,
+            price=lvl.price,
+            indices=list(lvl.indices),
+        ))
+
     # 4-a. Trailing extremes (Strong/Weak High & Low) — 단일 객체
     te = compute_trailing_extremes(df, swings, events)
     if te is not None:
@@ -392,6 +413,7 @@ def to_chart_markers(
 
 __all__ = [
     "ChartMarkers",
+    "EqualLevelMarker",
     "FVGMarker",
     "KillzoneMarker",
     "MacroMarker",
