@@ -382,10 +382,10 @@ function renderMarkers(payload) {
 
   // FVG 박스 (BaselineSeries) 가 시각 자체이므로 텍스트 마커는 제거 (renderFvgBoxes)
 
-  // Sweep markers — 같은 봉의 같은 위치(아래/위)에서 sweep 여러 개면 1개만 표시
-  // (큰 TF 차트에서 한 봉에 wick 여러 swing 한 번에 sweep 하면 도배되는 문제)
+  // Sweep markers — large swing (50봉) 기준만 표시 (LuxAlgo 동일).
+  // 작은 swing(left=1) sweep 은 도배라 표시 안 함. + 같은 봉/위치 dedup.
   const sweepSeen = new Set();
-  m.sweeps.forEach(s => {
+  (m.large_sweeps ?? []).forEach(s => {
     const t = tsToTimeSec(s.ts_ms);
     const pos = s.type === "bearish" ? "aboveBar" : "belowBar";
     const key = `${t}-${pos}`;
@@ -426,10 +426,8 @@ function renderMarkers(payload) {
   // Trailing extremes (Strong/Weak High & Low) — 가로선 한 쌍
   renderTrailingExtremes(m.trailing ?? null);
 
-  // BOS/CHoCH — swing 시작점부터 돌파봉까지 짧은 dashed segment (LuxAlgo 스타일)
-  // basic + large 둘 다, internal 은 너무 많아 토글 켜도 표시 안 함 (도배 방지)
-  const allStructure = [...(m.structure ?? []), ...(m.large_structure ?? [])];
-  renderBosSegments(allStructure);
+  // BOS/CHoCH — large swing (50봉) 기준만 표시 (LuxAlgo 동일, 도배 방지)
+  renderBosSegments(m.large_structure ?? []);
 
   // EQH/EQL — 두 swing 잇는 짧은 dotted segment
   renderEqlSegments(m.equal_levels ?? []);

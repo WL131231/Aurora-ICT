@@ -175,6 +175,7 @@ class ChartMarkers:
     # Large scale (left=right=50) — 큰 swing / 장기 구조 변화
     large_swings: list[SwingMarker] = field(default_factory=list)
     large_structure: list[StructureMarker] = field(default_factory=list)
+    large_sweeps: list[SweepMarker] = field(default_factory=list)
     # Equal Highs / Equal Lows (같은 가격대 swing 클러스터)
     equal_levels: list[EqualLevelMarker] = field(default_factory=list)
 
@@ -194,6 +195,7 @@ class ChartMarkers:
             "internal_structure": [asdict(s) for s in self.internal_structure],
             "large_swings": [asdict(s) for s in self.large_swings],
             "large_structure": [asdict(s) for s in self.large_structure],
+            "large_sweeps": [asdict(s) for s in self.large_sweeps],
             "equal_levels": [asdict(e) for e in self.equal_levels],
         }
 
@@ -319,6 +321,15 @@ def to_chart_markers(
             type=ev.type.value,
             broken_level=ev.broken_level,
             swing_ts_ms=large_ts_by_idx.get(ev.broken_swing_idx, ev.ts_ms),
+        ))
+    # 4-c2. Large sweeps — 50봉 swing 의 wick sweep (작은 swing 무관)
+    large_sweeps = detect_liquidity_sweeps(df, large_pivots)
+    for sw in large_sweeps:
+        markers.large_sweeps.append(SweepMarker(
+            ts_ms=sw.ts_ms,
+            type=sw.type.value,
+            swept_price=sw.swept_price,
+            wick_price=sw.wick_price,
         ))
 
     # 4-d. EQH / EQL — 같은 가격대 swing 클러스터 (liquidity)

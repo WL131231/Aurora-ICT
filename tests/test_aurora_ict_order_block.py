@@ -122,13 +122,13 @@ def test_ob_bearish_basic() -> None:
 
 
 def test_ob_mitigation_marked() -> None:
-    """Bullish OB 생성 후 가격이 body 안 close → mitigated=True."""
+    """Bullish OB 생성 후 wick low 가 OB low 미만 → mitigated=True (LuxAlgo wick 기준)."""
     df = _make_df([
         (100, 102, 99, 101),     # idx=0
-        (101, 102, 95, 96),      # idx=1  bearish OB candidate (body 96-101)
+        (101, 102, 95, 96),      # idx=1  bearish OB candidate (low=95)
         (96, 108, 95, 107),      # idx=2  bullish (close=107 > 102) → displacement
         (107, 109, 106, 108),    # idx=3
-        (108, 110, 95, 98),      # idx=4  close=98 박힘 body (96-101) 안 ✓
+        (108, 110, 94, 98),      # idx=4  wick low=94 < OB low=95 → mitigated
     ])
     obs = detect_order_blocks(df, displacement_bars=3, mark_mitigation=True)
     bull = next(o for o in obs if o.type is OrderBlockType.BULLISH and o.idx == 1)
