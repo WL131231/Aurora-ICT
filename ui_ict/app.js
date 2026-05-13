@@ -47,12 +47,48 @@ const fvgBearSeries = chart.addAreaSeries({
 
 // OB top/bottom 가로선 관리 — render 시마다 재생성
 let obPriceLines = [];
+// Strong/Weak HL 가로선 (top + bottom 한 쌍)
+let trailingPriceLines = [];
 
 function clearObPriceLines() {
   obPriceLines.forEach((pl) => {
     try { candleSeries.removePriceLine(pl); } catch (e) { /* noop */ }
   });
   obPriceLines = [];
+}
+
+function clearTrailingPriceLines() {
+  trailingPriceLines.forEach((pl) => {
+    try { candleSeries.removePriceLine(pl); } catch (e) { /* noop */ }
+  });
+  trailingPriceLines = [];
+}
+
+function renderTrailingExtremes(trailing) {
+  clearTrailingPriceLines();
+  if (!trailing) return;
+
+  // Strong = 진한 라인, Weak = 옅은 라인 (LuxAlgo 식)
+  const isStrongTop = trailing.top_label === "Strong High";
+  const isStrongBot = trailing.bottom_label === "Strong Low";
+
+  const topPl = candleSeries.createPriceLine({
+    price: trailing.top_price,
+    color: isStrongTop ? "#fb7185" : "rgba(251, 113, 133, 0.45)",
+    lineWidth: isStrongTop ? 2 : 1,
+    lineStyle: 0,           // solid
+    axisLabelVisible: true,
+    title: trailing.top_label,
+  });
+  const botPl = candleSeries.createPriceLine({
+    price: trailing.bottom_price,
+    color: isStrongBot ? "#34d399" : "rgba(52, 211, 153, 0.45)",
+    lineWidth: isStrongBot ? 2 : 1,
+    lineStyle: 0,
+    axisLabelVisible: true,
+    title: trailing.bottom_label,
+  });
+  trailingPriceLines.push(topPl, botPl);
 }
 
 function renderObPriceLines(obs) {
@@ -82,6 +118,7 @@ function clearOverlays() {
   fvgBearSeries.setData([]);
   candleSeries.setMarkers([]);
   clearObPriceLines();
+  clearTrailingPriceLines();
 }
 
 function tsToTimeSec(ts_ms) { return Math.floor(ts_ms / 1000); }
@@ -146,6 +183,12 @@ function renderMarkers(payload) {
   $("c-setups").textContent = payload.count.setups;
   if ($("c-obs")) $("c-obs").textContent = payload.count.order_blocks ?? 0;
   if ($("c-macros")) $("c-macros").textContent = payload.count.macros ?? 0;
+  if ($("c-trailing")) {
+    const t = m.trailing;
+    $("c-trailing").textContent = t
+      ? `${t.top_label.replace(" ", "·")} / ${t.bottom_label.replace(" ", "·")}`
+      : "—";
+  }
 
   // 단순 marker 렌더 — 각 FVG 별 사각형 대신 setMarkers 일괄 표시.
   const markers = [];
@@ -213,6 +256,9 @@ function renderMarkers(payload) {
 
   // 활성 OB top/bottom 가로 priceLine — 최대 5개
   renderObPriceLines(m.order_blocks ?? []);
+
+  // Trailing extremes (Strong/Weak High & Low) — 가로선 한 쌍
+  renderTrailingExtremes(m.trailing ?? null);
 
   // 시간순 정렬
   markers.sort((a, b) => a.time - b.time);
