@@ -415,6 +415,10 @@ def create_app(manager: BotManager) -> FastAPI:
                 "order_blocks": len(markers.order_blocks),
                 "macros": len(markers.macros),
                 "trailing": 1 if markers.trailing else 0,
+                "internal_swings": len(markers.internal_swings),
+                "internal_structure": len(markers.internal_structure),
+                "large_swings": len(markers.large_swings),
+                "large_structure": len(markers.large_structure),
             },
             "markers": markers.to_dict(),
         }

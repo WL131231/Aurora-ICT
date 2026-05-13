@@ -147,6 +147,12 @@ class ChartMarkers:
     order_blocks: list[OrderBlockMarker] = field(default_factory=list)
     macros: list[MacroMarker] = field(default_factory=list)
     trailing: TrailingExtremeMarker | None = None
+    # Internal scale (left=right=5) — 작은 swing / 짧은 구조 변화
+    internal_swings: list[SwingMarker] = field(default_factory=list)
+    internal_structure: list[StructureMarker] = field(default_factory=list)
+    # Large scale (left=right=50) — 큰 swing / 장기 구조 변화
+    large_swings: list[SwingMarker] = field(default_factory=list)
+    large_structure: list[StructureMarker] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-serializable dict 변환."""
@@ -160,6 +166,10 @@ class ChartMarkers:
             "order_blocks": [asdict(o) for o in self.order_blocks],
             "macros": [asdict(m) for m in self.macros],
             "trailing": asdict(self.trailing) if self.trailing else None,
+            "internal_swings": [asdict(s) for s in self.internal_swings],
+            "internal_structure": [asdict(s) for s in self.internal_structure],
+            "large_swings": [asdict(s) for s in self.large_swings],
+            "large_structure": [asdict(s) for s in self.large_structure],
         }
 
 
@@ -240,6 +250,40 @@ def to_chart_markers(
     events = detect_structure_events(df, swings)
     for ev in events:
         markers.structure.append(StructureMarker(
+            ts_ms=ev.ts_ms,
+            type=ev.type.value,
+            broken_level=ev.broken_level,
+        ))
+
+    # 4-b. Internal scale (left=right=5) — 작은 swing / 짧은 구조 변화
+    internal_pivots = detect_swing_points(df, left=5, right=5)
+    for sw in internal_pivots:
+        markers.internal_swings.append(SwingMarker(
+            ts_ms=sw.ts_ms,
+            type=sw.type.value,
+            price=sw.price,
+            swept=sw.swept,
+        ))
+    internal_events = detect_structure_events(df, internal_pivots)
+    for ev in internal_events:
+        markers.internal_structure.append(StructureMarker(
+            ts_ms=ev.ts_ms,
+            type=ev.type.value,
+            broken_level=ev.broken_level,
+        ))
+
+    # 4-c. Large scale (left=right=50) — 큰 swing / 장기 구조 변화
+    large_pivots = detect_swing_points(df, left=50, right=50)
+    for sw in large_pivots:
+        markers.large_swings.append(SwingMarker(
+            ts_ms=sw.ts_ms,
+            type=sw.type.value,
+            price=sw.price,
+            swept=sw.swept,
+        ))
+    large_events = detect_structure_events(df, large_pivots)
+    for ev in large_events:
+        markers.large_structure.append(StructureMarker(
             ts_ms=ev.ts_ms,
             type=ev.type.value,
             broken_level=ev.broken_level,
