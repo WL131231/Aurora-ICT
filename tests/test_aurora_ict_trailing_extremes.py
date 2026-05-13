@@ -100,8 +100,9 @@ def test_trailing_bearish_bias_labels() -> None:
         ts_ms=0,
         type=StructureType.BOS_BEARISH,
         broken_level=95.0,
-        trend_before=TrendDirection.NONE,
         idx=0,
+        broken_swing_idx=0,
+        trend_before=TrendDirection.NONE,
     )
     te = compute_trailing_extremes(df, [], [fake_event])
     assert te is not None
@@ -116,8 +117,9 @@ def test_trailing_choch_bullish_labels() -> None:
         ts_ms=0,
         type=StructureType.CHOCH_BULLISH,
         broken_level=100.0,
-        trend_before=TrendDirection.DOWN,
         idx=0,
+        broken_swing_idx=0,
+        trend_before=TrendDirection.DOWN,
     )
     te = compute_trailing_extremes(df, [], [fake_event])
     assert te is not None
