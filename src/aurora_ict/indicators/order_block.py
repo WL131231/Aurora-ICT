@@ -210,22 +210,34 @@ def detect_order_blocks(
                     break
 
     if mark_mitigation:
-        _mark_mitigation(obs, closes)
+        _mark_mitigation(obs, highs, lows)
 
     return obs
 
 
 def _mark_mitigation(
     obs: list[OrderBlock],
-    closes,  # numpy array  # noqa: ANN001
+    highs,  # numpy array  # noqa: ANN001
+    lows,   # numpy array  # noqa: ANN001
 ) -> None:
-    """OB 생성 이후 가격이 body 안 close 한 경우 mitigated=True."""
+    """OB 생성 이후 가격이 OB 영역을 wick 으로라도 침범하면 mitigated=True (LuxAlgo 방식).
+
+    - Bullish OB: wick low 가 OB low 미만 → mitigated
+    - Bearish OB: wick high 가 OB high 초과 → mitigated
+
+    LuxAlgo 의 'High/Low' mitigation mode 와 동일. 보수적 (한 번 wick 으로
+    찌르면 즉시 청소) 라 차트에 남는 OB 수가 줄어 깔끔.
+    """
     for ob in obs:
-        for k in range(ob.displacement_idx + 1, len(closes)):
-            close_k = closes[k]
-            if ob.body_bottom <= close_k <= ob.body_top:
-                ob.mitigated = True
-                break
+        for k in range(ob.displacement_idx + 1, len(highs)):
+            if ob.type is OrderBlockType.BULLISH:
+                if lows[k] < ob.low:
+                    ob.mitigated = True
+                    break
+            else:  # BEARISH
+                if highs[k] > ob.high:
+                    ob.mitigated = True
+                    break
 
 
 __all__ = ["OrderBlock", "OrderBlockType", "detect_order_blocks"]
