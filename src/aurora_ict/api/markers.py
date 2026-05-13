@@ -19,6 +19,7 @@ from typing import Any
 
 import pandas as pd
 
+from aurora_ict.indicators.dol import compute_dol
 from aurora_ict.indicators.fvg import (
     detect_fvgs,
     detect_ifvgs,
@@ -75,6 +76,16 @@ class BreakerBlockMarker:
     high: float
     mean: float
     origin_ob_idx: int
+
+
+@dataclass(slots=True)
+class DOLMarker:
+    """Draw On Liquidity — 다음 sweep target 가로선."""
+
+    type: str        # "bullish" (위쪽 BSL) / "bearish" (아래쪽 SSL)
+    price: float
+    ts_ms: int       # 그 swing 의 ts (segment 시작점)
+    distance: float  # 현재가에서 DOL 까지 가격 거리
 
 
 @dataclass(slots=True)
@@ -194,6 +205,7 @@ class ChartMarkers:
     fvgs: list[FVGMarker] = field(default_factory=list)
     ifvgs: list[IFVGMarker] = field(default_factory=list)
     breakers: list[BreakerBlockMarker] = field(default_factory=list)
+    dols: list[DOLMarker] = field(default_factory=list)
     sweeps: list[SweepMarker] = field(default_factory=list)
     structure: list[StructureMarker] = field(default_factory=list)
     swings: list[SwingMarker] = field(default_factory=list)
@@ -218,6 +230,7 @@ class ChartMarkers:
             "fvgs": [asdict(f) for f in self.fvgs],
             "ifvgs": [asdict(f) for f in self.ifvgs],
             "breakers": [asdict(b) for b in self.breakers],
+            "dols": [asdict(d) for d in self.dols],
             "sweeps": [asdict(s) for s in self.sweeps],
             "structure": [asdict(s) for s in self.structure],
             "swings": [asdict(s) for s in self.swings],
@@ -429,6 +442,15 @@ def to_chart_markers(
             mitigated=ob.mitigated,
         ))
 
+    # 4-c-2. DOL — 현재가 기준 위/아래 가장 가까운 unswept swing
+    for dol in compute_dol(df, swings):
+        markers.dols.append(DOLMarker(
+            type=dol.type,
+            price=dol.price,
+            ts_ms=dol.ts_ms,
+            distance=dol.distance,
+        ))
+
     # 4-c. Breaker Blocks — OB 가 close 로 깨졌을 때 반전 zone
     breakers = detect_breaker_blocks(obs, df)
     for bb in breakers:
@@ -520,6 +542,7 @@ def to_chart_markers(
 __all__ = [
     "BreakerBlockMarker",
     "ChartMarkers",
+    "DOLMarker",
     "EqualLevelMarker",
     "FVGMarker",
     "IFVGMarker",
