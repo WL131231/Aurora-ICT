@@ -283,9 +283,12 @@ def test_silver_bullet_macro_confluence_when_inside_macro() -> None:
     setups = detect_silver_bullet_setups(
         df, bias=TrendDirection.UP, fvg_min_size_pct=0.001, min_rr=1.0,
     )
-    # 적어도 한 setup 에 macro confluence 가 있어야 함
+    # 적어도 한 setup 에 macro confluence (any priority) 가 있어야 함.
+    # macro_priority 도입 후 prefix 가 'macro=' / 'macro_high=' / 'macro_low=' 셋 다 가능.
     has_macro = any(
-        "macro=" in c for s in setups for c in s.confluences
+        c.startswith(("macro=", "macro_high=", "macro_low="))
+        for s in setups
+        for c in s.confluences
     )
     assert has_macro, f"macro confluence 없음. confluences={[s.confluences for s in setups]}"
 
