@@ -55,8 +55,11 @@ class SilverBulletSetup:
         window: ``"london_sb"`` / ``"am_sb"`` / ``"pm_sb"``.
         entry: limit order 가격 (FVG mean threshold).
         stop_loss: SL 가격.
-        take_profit: TP 가격 (next liquidity target).
-        risk_reward: TP / SL ratio (절대값).
+        take_profit: TP final 가격 (next liquidity target — 가변).
+        risk_reward: TP final / SL ratio (절대값).
+        tp1: 1R partial TP (entry ± 1R) — ICT 정통 첫 청산점.
+        tp2: 2R partial TP.
+        tp3: 3R partial TP.
         fvg: 트리거 FVG 객체.
         target_swing_idx: TP로 잡은 swing index (없으면 None).
         confluence_score: 같은 시점/방향 보강 지표 수 (0~3). OB/Macro/Sweep 각 +1.
@@ -72,10 +75,24 @@ class SilverBulletSetup:
     take_profit: float
     risk_reward: float
     fvg: FVG
+    tp1: float = 0.0
+    tp2: float = 0.0
+    tp3: float = 0.0
     target_swing_idx: int | None = None
     confluence_score: int = 0
     confluences: list[str] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """tp1/tp2/tp3 자동 계산 — 명시 안 됐을 때 1R/2R/3R 으로 채움."""
+        r = abs(self.entry - self.stop_loss)
+        sign = 1.0 if self.direction is Direction.LONG else -1.0
+        if self.tp1 == 0.0:
+            self.tp1 = self.entry + sign * r
+        if self.tp2 == 0.0:
+            self.tp2 = self.entry + sign * 2 * r
+        if self.tp3 == 0.0:
+            self.tp3 = self.entry + sign * 3 * r
 
 
 def _bias_from_structure(

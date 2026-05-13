@@ -106,6 +106,9 @@ class BotIctInstance:
     ohlcv_limit: int = 200
     fvg_min_size_pct: float = 0.0005
 
+    # Partial TP 분배 — TP1/TP2/TP3 비율 (합 = 1.0). ICT 정통 50/25/25.
+    tp_distribution: tuple[float, float, float] = (0.5, 0.25, 0.25)
+
     state: BotState = field(default=BotState.STOPPED)
     active_position: _ActivePosition | None = field(default=None)
     _task: asyncio.Task[None] | None = field(default=None)
@@ -268,13 +271,14 @@ class BotIctInstance:
         return compute_bias_from_df(df)
 
     async def _execute_setup(self, setup: SilverBulletSetup) -> None:
-        """setup 한 건을 실제 주문으로 실행.
+        """setup 한 건을 실제 주문으로 실행 (ICT 정통 partial TP).
 
-        - limit order로 entry 등록
-        - stop_loss / take_profit 함께 전달 (Bybit conditional)
-        - qty = risk_per_trade_pct 기반 자산 / SL 거리
+        - entry limit order 등록 (SL 만, TP X — 별도 partial 처리)
+        - tp1/tp2/tp3 각각 reduce_only limit (Bybit V5 multiple reduce-only 허용)
+        - qty 는 tp_distribution 비율로 분배
         """
         side = "buy" if setup.direction is Direction.LONG else "sell"
+        exit_side = "sell" if setup.direction is Direction.LONG else "buy"
 
         equity = await self._fetch_equity()
         qty = self._calc_qty(setup, equity)
@@ -282,21 +286,44 @@ class BotIctInstance:
             logger.warning("qty 계산 결과 0 이하 → skip: setup=%s", setup.ts_ms)
             return
 
+        # tp 분배 — 마지막은 나머지로 보정 (rounding 손실 방지)
+        pct1, pct2, _pct3 = self.tp_distribution
+        qty1 = qty * pct1
+        qty2 = qty * pct2
+        qty3 = qty - qty1 - qty2
+
         logger.info(
-            "Execute setup %s %s entry=%.4f sl=%.4f tp=%.4f rr=%.2f qty=%.4f",
+            "Execute setup %s %s entry=%.4f sl=%.4f "
+            "tp1=%.4f tp2=%.4f tp3=%.4f qty=%.4f (%.2f/%.2f/%.2f)",
             self.symbol, side, setup.entry, setup.stop_loss,
-            setup.take_profit, setup.risk_reward, qty,
+            setup.tp1, setup.tp2, setup.tp3, qty, qty1, qty2, qty3,
         )
 
         try:
+            # Entry + SL — TP 는 partial 로 따로 등록
             await self.client.place_order(
                 symbol=self.symbol,
                 side=side,
                 qty=qty,
                 price=setup.entry,
                 stop_loss=setup.stop_loss,
-                take_profit=setup.take_profit,
+                take_profit=None,
             )
+            # Partial TP 3개 (reduce_only limit)
+            for tp_price, tp_qty in (
+                (setup.tp1, qty1),
+                (setup.tp2, qty2),
+                (setup.tp3, qty3),
+            ):
+                if tp_qty <= 0:
+                    continue
+                await self.client.place_order(
+                    symbol=self.symbol,
+                    side=exit_side,
+                    qty=tp_qty,
+                    price=tp_price,
+                    reduce_only=True,
+                )
         except Exception as e:  # noqa: BLE001 — 주문 실패도 봇은 계속 돌아야 함
             logger.exception("place_order 실패: %s", e)
             return
