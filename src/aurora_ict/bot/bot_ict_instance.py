@@ -22,6 +22,7 @@ from typing import Any, Protocol
 
 import pandas as pd
 
+from aurora_ict.indicators.daily_bias import compute_daily_bias
 from aurora_ict.indicators.structure import TrendDirection
 from aurora_ict.signal.ict_signal import (
     ICTSignal,
@@ -143,13 +144,15 @@ class BotIctInstance:
             await asyncio.sleep(self.step_interval_sec)
 
     async def step(self) -> ICTSignal:
-        """단일 step — fetch + HTF bias + signal + execute. 생성된 signal 반환.
+        """단일 step — fetch + HTF/Daily bias + signal + execute. 생성된 signal 반환.
 
         Returns:
             계산된 ``ICTSignal`` (테스트/디버그 용도로 노출).
         """
         df = await self._fetch_ohlcv()
-        bias = await self._compute_htf_bias()
+        htf_bias = await self._compute_htf_bias()
+        daily_bias = await self._compute_daily_bias(df)
+        bias = self._combine_with_daily(htf_bias, daily_bias)
 
         signal = generate_ict_signal(
             df,
@@ -206,6 +209,48 @@ class BotIctInstance:
         bias1 = await self._htf_bias_for_tf(htf1_tf) if htf1_tf else TrendDirection.NONE
         bias2 = await self._htf_bias_for_tf(htf2_tf) if htf2_tf else TrendDirection.NONE
         return combine_bias(bias1, bias2)
+
+    async def _compute_daily_bias(self, ltf_df: pd.DataFrame) -> TrendDirection:
+        """Daily 봉 fetch + 전일 H/L vs 현재가 비교로 daily bias 산출.
+
+        Args:
+            ltf_df: Trade TF DataFrame (마지막 close 가 현재가).
+
+        Returns:
+            - current > PDH → UP
+            - current < PDL → DOWN
+            - 범위 안 또는 일봉 부족 → NONE
+        """
+        if len(ltf_df) == 0:
+            return TrendDirection.NONE
+        # 일봉 20개로 PDH/PDL + 지난 주 월요일 (최대 13일 전) 까지 안전 커버.
+        daily_df = await self._fetch_ohlcv_tf("1d", 20)
+        if len(daily_df) < 2:
+            return TrendDirection.NONE
+        current_close = float(ltf_df["close"].iloc[-1])
+        return compute_daily_bias(daily_df, current_close)
+
+    @staticmethod
+    def _combine_with_daily(
+        htf: TrendDirection | None,
+        daily: TrendDirection,
+    ) -> TrendDirection | None:
+        """HTF bias + Daily bias 결합.
+
+        - HTF None (매핑 없음) → silver_bullet 자동 추정 위임 (None 그대로)
+        - 둘 다 같은 방향 → 그 방향
+        - 한쪽 NONE → 다른쪽 따름
+        - 충돌 → NONE (진입 차단)
+        """
+        if htf is None:
+            return None
+        if htf is TrendDirection.NONE:
+            return daily
+        if daily is TrendDirection.NONE:
+            return htf
+        if htf == daily:
+            return htf
+        return TrendDirection.NONE
 
     async def _htf_bias_for_tf(self, tf: str) -> TrendDirection:
         """단일 HTF bias — 캐시된 봉 재사용, 새 봉 생겼을 때만 재fetch."""

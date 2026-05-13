@@ -268,3 +268,60 @@ async def test_htf_cache_hit_skips_recompute() -> None:
     # — 적어도 2배 늘었어야 (HTF1+HTF2 각 1회)
     assert client.fetch_ohlcv.await_count == n_after_first * 2 - 0 \
         or client.fetch_ohlcv.await_count >= n_after_first
+
+
+# ============================================================
+# Daily Bias 통합
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_compute_daily_bias_up_when_above_pdh() -> None:
+    """전일 high 위 close → daily UP."""
+    daily_rows = [
+        [1, 100, 110, 95, 108, 100],
+        [2, 108, 120, 105, 115, 100],   # 어제 (high=120)
+        [3, 115, 130, 110, 130, 100],   # 오늘
+    ]
+    ltf_rows = [[1000, 125, 131, 124, 130, 50]]
+    client = AsyncMock()
+    client.fetch_ohlcv = AsyncMock(return_value=daily_rows)
+    bot = BotIctInstance(client=client, timeframe="1m")
+    import pandas as pd
+    df = pd.DataFrame(
+        ltf_rows,
+        columns=["ts_ms", "open", "high", "low", "close", "volume"],
+    )
+    df.index = pd.DatetimeIndex(pd.to_datetime(df["ts_ms"], unit="ms", utc=True))
+    bias = await bot._compute_daily_bias(df)
+    # current close=130 > pdh=120 → UP
+    assert bias is TrendDirection.UP
+
+
+def test_combine_with_daily_htf_none_passes_through() -> None:
+    """HTF None (매핑 없음) → None 반환 (silver_bullet 자동 추정 위임)."""
+    assert BotIctInstance._combine_with_daily(None, TrendDirection.UP) is None
+
+
+def test_combine_with_daily_conflict_returns_none_trend() -> None:
+    """HTF UP + Daily DOWN → NONE (진입 차단)."""
+    result = BotIctInstance._combine_with_daily(
+        TrendDirection.UP, TrendDirection.DOWN,
+    )
+    assert result is TrendDirection.NONE
+
+
+def test_combine_with_daily_agreement() -> None:
+    """HTF UP + Daily UP → UP."""
+    result = BotIctInstance._combine_with_daily(
+        TrendDirection.UP, TrendDirection.UP,
+    )
+    assert result is TrendDirection.UP
+
+
+def test_combine_with_daily_one_none() -> None:
+    """HTF NONE + Daily UP → UP."""
+    result = BotIctInstance._combine_with_daily(
+        TrendDirection.NONE, TrendDirection.UP,
+    )
+    assert result is TrendDirection.UP
