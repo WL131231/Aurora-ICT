@@ -22,8 +22,10 @@ from pathlib import Path
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# 매매 timeframe 허용 목록 — 1h 미만은 ICT setup 정확도 떨어지고 노이즈만 큼
-TRADE_TIMEFRAMES: tuple[str, ...] = ("1h", "2h", "4h", "1d", "1w")
+# 매매 timeframe 허용 목록 — 5m 이상.
+# LTF (5m/15m/30m) 는 ICT 정통 entry TF (HTF bias + LTF refined entry).
+# 1m 은 노이즈 과대로 비허용.
+TRADE_TIMEFRAMES: tuple[str, ...] = ("5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w")
 
 
 class RunMode(StrEnum):
@@ -63,7 +65,7 @@ class IctSettings(BaseSettings):
     enabled: bool = Field(default=False)
 
     symbol: str = Field(default="BTC/USDT:USDT")
-    # 매매 timeframe — 1h 이상만 허용. ICT setup 은 LTF 에서 노이즈가 너무 큼.
+    # 매매 timeframe — 5m 이상 허용. 1m 은 노이즈 과대로 제외.
     timeframe: str = Field(default="1h")
 
     @field_validator("timeframe")

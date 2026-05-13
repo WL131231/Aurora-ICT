@@ -431,13 +431,16 @@
 
     <h2>Trade Timeframe</h2>
     <div class="trade-tf-toggle" id="trade-tf-toggle">
+      <button data-trade-tf="5m">5m</button>
+      <button data-trade-tf="15m">15m</button>
+      <button data-trade-tf="30m">30m</button>
       <button data-trade-tf="1h" class="active">1h</button>
       <button data-trade-tf="2h">2h</button>
       <button data-trade-tf="4h">4h</button>
       <button data-trade-tf="1d">1d</button>
       <button data-trade-tf="1w">1w</button>
     </div>
-    <p class="trade-tf-hint">매매 진입은 1h 이상에서만 실행됩니다</p>
+    <p class="trade-tf-hint">5m 이상 (1m 은 노이즈 과대로 제외)</p>
 
     <h2>API Credentials</h2>
     <!-- 미등록 상태 — 입력 폼 (state: form) -->
