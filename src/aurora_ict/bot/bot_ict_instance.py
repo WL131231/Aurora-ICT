@@ -22,9 +22,15 @@ from typing import Any, Protocol
 
 import pandas as pd
 
+from aurora_ict.indicators.structure import TrendDirection
 from aurora_ict.signal.ict_signal import (
     ICTSignal,
     generate_ict_signal,
+)
+from aurora_ict.strategy.multi_tf_bias import (
+    combine_bias,
+    compute_bias_from_df,
+    htf_pair,
 )
 from aurora_ict.strategy.silver_bullet import Direction, SilverBulletSetup
 
@@ -103,6 +109,8 @@ class BotIctInstance:
     active_position: _ActivePosition | None = field(default=None)
     _task: asyncio.Task[None] | None = field(default=None)
     _last_setup_ts_ms: int = field(default=0)  # 동일 setup 중복 진입 방지
+    # HTF 봉 캐시 — (tf, last_ts_ms) → DataFrame. 같은 봉이면 재fetch 안 함.
+    _htf_cache: dict[str, tuple[int, pd.DataFrame]] = field(default_factory=dict)
 
     async def start(self) -> None:
         """봇 기동 (background task 생성)."""
@@ -135,16 +143,18 @@ class BotIctInstance:
             await asyncio.sleep(self.step_interval_sec)
 
     async def step(self) -> ICTSignal:
-        """단일 step — fetch + signal + execute. 생성된 signal 반환.
+        """단일 step — fetch + HTF bias + signal + execute. 생성된 signal 반환.
 
         Returns:
             계산된 ``ICTSignal`` (테스트/디버그 용도로 노출).
         """
         df = await self._fetch_ohlcv()
+        bias = await self._compute_htf_bias()
 
         signal = generate_ict_signal(
             df,
             self.symbol,
+            bias=bias,
             min_rr=self.min_rr,
             fvg_min_size_pct=self.fvg_min_size_pct,
         )
@@ -166,11 +176,12 @@ class BotIctInstance:
         return signal
 
     async def _fetch_ohlcv(self) -> pd.DataFrame:
-        """OHLCV fetch + DataFrame 변환."""
-        rows = await self.client.fetch_ohlcv(
-            self.symbol, self.timeframe, self.ohlcv_limit,
-        )
-        # ccxt row 포맷 = [ts_ms, open, high, low, close, volume]
+        """OHLCV fetch + DataFrame 변환 (Trade TF)."""
+        return await self._fetch_ohlcv_tf(self.timeframe, self.ohlcv_limit)
+
+    async def _fetch_ohlcv_tf(self, tf: str, limit: int) -> pd.DataFrame:
+        """임의 timeframe OHLCV fetch + DataFrame 변환."""
+        rows = await self.client.fetch_ohlcv(self.symbol, tf, limit)
         df = pd.DataFrame(
             rows,
             columns=["ts_ms", "open", "high", "low", "close", "volume"],
@@ -178,6 +189,38 @@ class BotIctInstance:
         df.index = pd.DatetimeIndex(pd.to_datetime(df["ts_ms"], unit="ms", utc=True))
         df = df[["open", "high", "low", "close", "volume"]]
         return df
+
+    async def _compute_htf_bias(self) -> TrendDirection | None:
+        """Trade TF 의 상위 HTF1/HTF2 봉을 fetch 해 bias 산출.
+
+        HTF 봉은 LTF 보다 훨씬 느리게 갱신되므로 마지막 봉 ts 기준 캐시 사용.
+
+        Returns:
+            - ``TrendDirection`` (UP/DOWN/NONE) — HTF 매핑이 있을 때.
+            - ``None`` — Trade TF 가 HTF 매핑이 없을 때 (1m, 3m 등 또는 1w).
+              이 경우 silver_bullet 이 같은 df 의 structure 로 자동 추정.
+        """
+        htf1_tf, htf2_tf = htf_pair(self.timeframe)
+        if htf1_tf is None and htf2_tf is None:
+            return None  # 매핑 없음 — 자동 추정 위임
+        bias1 = await self._htf_bias_for_tf(htf1_tf) if htf1_tf else TrendDirection.NONE
+        bias2 = await self._htf_bias_for_tf(htf2_tf) if htf2_tf else TrendDirection.NONE
+        return combine_bias(bias1, bias2)
+
+    async def _htf_bias_for_tf(self, tf: str) -> TrendDirection:
+        """단일 HTF bias — 캐시된 봉 재사용, 새 봉 생겼을 때만 재fetch."""
+        # 마지막 봉 ts 만 빠르게 보기 위해 limit=1 prefetch — 캐시 hit 시 skip
+        # 단순화: 매 step 마다 limit=200 fetch (HTF 1d 라도 1m 1번이라 부담 작음)
+        df = await self._fetch_ohlcv_tf(tf, 200)
+        if len(df) == 0:
+            return TrendDirection.NONE
+        last_ts = int(df.index[-1].value // 10**6)
+        cached = self._htf_cache.get(tf)
+        if cached is not None and cached[0] == last_ts:
+            df = cached[1]
+        else:
+            self._htf_cache[tf] = (last_ts, df)
+        return compute_bias_from_df(df)
 
     async def _execute_setup(self, setup: SilverBulletSetup) -> None:
         """setup 한 건을 실제 주문으로 실행.
