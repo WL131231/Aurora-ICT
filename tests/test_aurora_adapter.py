@@ -13,6 +13,46 @@ from aurora_ict.bot.aurora_adapter import AuroraClientAdapter
 
 
 @pytest.mark.asyncio
+async def test_fetch_ohlcv_timeframe_uppercase_for_hour_and_above() -> None:
+    """Aurora client 는 1h+ 대문자만 인식 — adapter 가 자동 변환."""
+    df = pd.DataFrame(
+        [{"open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}],
+        index=pd.to_datetime(["2026-05-12 00:00"], utc=True),
+    )
+    inner = AsyncMock()
+    inner.fetch_ohlcv = AsyncMock(return_value=df)
+    adapter = AuroraClientAdapter(inner)
+
+    # 소문자로 호출 → Aurora 에는 대문자로 전달
+    for ui_tf, aurora_tf in [
+        ("1h", "1H"), ("2h", "2H"), ("4h", "4H"),
+        ("1d", "1D"), ("1w", "1W"),
+    ]:
+        await adapter.fetch_ohlcv("BTC/USDT:USDT", ui_tf, 10)
+        called_args = inner.fetch_ohlcv.call_args
+        assert called_args.args[1] == aurora_tf, (
+            f"{ui_tf} 호출 시 Aurora 에 {aurora_tf} 전달되어야 함 "
+            f"(받은 값: {called_args.args[1]})"
+        )
+
+
+@pytest.mark.asyncio
+async def test_fetch_ohlcv_timeframe_minute_unchanged() -> None:
+    """1m / 5m / 15m 은 소문자 그대로 전달."""
+    df = pd.DataFrame(
+        [{"open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}],
+        index=pd.to_datetime(["2026-05-12 00:00"], utc=True),
+    )
+    inner = AsyncMock()
+    inner.fetch_ohlcv = AsyncMock(return_value=df)
+    adapter = AuroraClientAdapter(inner)
+
+    for tf in ("1m", "5m", "15m", "30m"):
+        await adapter.fetch_ohlcv("BTC/USDT:USDT", tf, 10)
+        assert inner.fetch_ohlcv.call_args.args[1] == tf
+
+
+@pytest.mark.asyncio
 async def test_fetch_ohlcv_dataframe_to_rows() -> None:
     """Aurora DataFrame 박힌 거 → ccxt raw rows."""
     df = pd.DataFrame([
