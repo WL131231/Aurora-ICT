@@ -8,8 +8,8 @@ import pytest
 from aurora_ict.indicators.structure import (
     StructureEvent,
     StructureType,
-    detect_structure_events,
     TrendDirection,
+    detect_structure_events,
 )
 from aurora_ict.indicators.swing_points import (
     SwingPoint,

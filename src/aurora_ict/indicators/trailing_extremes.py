@@ -29,7 +29,6 @@ import pandas as pd
 from aurora_ict.indicators.structure import StructureEvent, StructureType
 from aurora_ict.indicators.swing_points import SwingPoint, SwingType
 
-
 # 라벨 문자열 — UI 직접 사용
 LABEL_STRONG_HIGH = "Strong High"
 LABEL_WEAK_HIGH = "Weak High"
