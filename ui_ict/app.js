@@ -396,23 +396,36 @@ function renderMarkers(payload) {
   // 단순 marker 렌더 — 각 FVG 별 사각형 대신 setMarkers 일괄 표시.
   const markers = [];
 
-  // FVG markers
+  // FVG markers — 같은 봉/위치에 여러 FVG 면 1개만
+  const fvgSeen = new Set();
   m.fvgs.forEach(f => {
+    const t = tsToTimeSec(f.ts_ms);
+    const pos = f.type === "bullish" ? "belowBar" : "aboveBar";
+    const key = `${t}-${pos}`;
+    if (fvgSeen.has(key)) return;
+    fvgSeen.add(key);
     const color = f.type === "bullish" ? "#34d399" : "#fb7185";
     markers.push({
-      time: tsToTimeSec(f.ts_ms),
-      position: f.type === "bullish" ? "belowBar" : "aboveBar",
+      time: t,
+      position: pos,
       color,
       shape: "square",
       text: `FVG ${f.filled ? "✓" : ""}${f.invalidated ? "✗" : ""}`,
     });
   });
 
-  // Sweep markers (wick-only sweeps)
+  // Sweep markers — 같은 봉의 같은 위치(아래/위)에서 sweep 여러 개면 1개만 표시
+  // (큰 TF 차트에서 한 봉에 wick 여러 swing 한 번에 sweep 하면 도배되는 문제)
+  const sweepSeen = new Set();
   m.sweeps.forEach(s => {
+    const t = tsToTimeSec(s.ts_ms);
+    const pos = s.type === "bearish" ? "aboveBar" : "belowBar";
+    const key = `${t}-${pos}`;
+    if (sweepSeen.has(key)) return;
+    sweepSeen.add(key);
     markers.push({
-      time: tsToTimeSec(s.ts_ms),
-      position: s.type === "bearish" ? "aboveBar" : "belowBar",
+      time: t,
+      position: pos,
       color: "#fbbf24",
       shape: s.type === "bearish" ? "arrowDown" : "arrowUp",
       text: "Sweep",
@@ -435,13 +448,19 @@ function renderMarkers(payload) {
     });
   });
 
-  // Order Blocks — 미mitigated 만 마커 (mitigated 은 priceLine 만, 마커 도배 방지)
+  // Order Blocks — 미mitigated 만, 같은 봉/위치 dedup
+  const obSeen = new Set();
   (m.order_blocks ?? []).forEach(ob => {
     if (ob.mitigated) return;
+    const t = tsToTimeSec(ob.ts_ms);
     const isBull = ob.type === "bullish";
+    const pos = isBull ? "belowBar" : "aboveBar";
+    const key = `${t}-${pos}`;
+    if (obSeen.has(key)) return;
+    obSeen.add(key);
     markers.push({
-      time: tsToTimeSec(ob.ts_ms),
-      position: isBull ? "belowBar" : "aboveBar",
+      time: t,
+      position: pos,
       color: isBull ? "#2dd4bf" : "#f472b6",
       shape: "square",
       text: "OB",
