@@ -154,20 +154,20 @@ def test_markers_to_dict_json_serializable() -> None:
 
 
 def test_markers_includes_order_blocks() -> None:
-    """OB indicator 결과가 markers.order_blocks 로 노출."""
+    """OB indicator 결과가 markers.order_blocks 로 노출 (LuxAlgo 알고리즘 기준)."""
     start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
-    # bearish 봉 (idx=1) → 이후 close 가 bearish high 돌파 → Bullish OB
+    # idx=1 swing high (high=104), idx=2 bearish max range → Bullish OB, idx=4 BOS
     df = _make_df_ny(start, [
-        (100, 102, 99, 101),
-        (101, 102, 95, 96),     # bearish, high=102
-        (96, 108, 95, 107),     # close 107 > 102 → bullish OB at idx=1
-        (107, 109, 106, 108),
-        (108, 110, 107, 109),
+        (100, 101, 99, 100),
+        (100, 104, 99, 103),     # idx=1 swing high (high=104)
+        (103, 103, 95, 96),      # idx=2 bearish, range=8 ← OB
+        (96, 97, 94, 95),        # idx=3 bearish, range=3
+        (95, 110, 94, 109),      # idx=4 close=109 > 104 → BOS_BULLISH
     ])
     markers = to_chart_markers(df, fvg_min_size_pct=None)
     bull = [o for o in markers.order_blocks if o.type == "bullish"]
     assert len(bull) >= 1
-    assert bull[0].open == 101
+    assert bull[0].open == 103
     assert bull[0].close == 96
 
 

@@ -357,8 +357,15 @@ def to_chart_markers(
             bottom_label=te.bottom_label,
         )
 
-    # 4-b. Order Blocks
-    obs = detect_order_blocks(df, displacement_bars=3, mark_mitigation=True)
+    # 4-b. Order Blocks — LuxAlgo SMC 알고리즘 (BOS 트리거 + swing 구간 max range)
+    # swings/events 는 위에서 이미 계산했으므로 재사용 (효율).
+    obs = detect_order_blocks(
+        df,
+        algorithm="luxalgo",
+        swings=swings,
+        events=events,
+        mark_mitigation=True,
+    )
     for ob in obs:
         markers.order_blocks.append(OrderBlockMarker(
             ts_ms=ob.ts_ms,

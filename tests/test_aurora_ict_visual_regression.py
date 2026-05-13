@@ -83,10 +83,13 @@ def test_visual_case2_clear_bullish_ob() -> None:
         (113, 117, 112, 116),
         (116, 118, 115, 117),
     ])
-    obs = detect_order_blocks(df, displacement_bars=3, mark_mitigation=False)
+    # 이 visual case 는 legacy displacement 동작 검증 (luxalgo 는 swing 부족).
+    obs = detect_order_blocks(
+        df, algorithm="legacy", displacement_bars=3, mark_mitigation=False,
+    )
     bullish = [o for o in obs if o.type.value == "bullish" and o.idx == 1]
     assert len(bullish) >= 1, (
-        "명확한 displacement (bearish high=105 → 다음 close=113) 박혀있는데 "
+        "명확한 displacement (bearish high=105 → 다음 close=113) 있는데 "
         "Bullish OB 검출 실패. order_block.py 확인 필요."
     )
 

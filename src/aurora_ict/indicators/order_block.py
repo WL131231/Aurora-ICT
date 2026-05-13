@@ -8,29 +8,40 @@ ICT 정의:
       이후 displacement 봉 안에서 가격이 그 봉의 low 를 break + close 함.
       retest 시 매도 자리.
 
-검출 로직:
-    각 봉 i 에 대해:
-      1. i 가 반대 방향 봉인지 확인 (bullish OB → i 는 bearish, vice versa)
-      2. i+1 ~ i+displacement 봉 중 하나가 i 봉의 high (또는 low) 를
-         돌파하며 close 했는지 검증
-      3. 모두 만족 → OB 1개 생성
+알고리즘 모드 (``algorithm`` 파라미터):
+    - ``"luxalgo"`` (기본): LuxAlgo SMC 표준 — swing pivot 기반 BOS 트리거.
+      BOS/CHoCH 가 발생할 때마다, 돌파된 swing 봉과 BOS 봉 사이 구간에서
+      ATR 필터링된 최대 range 의 반대 방향 봉 1개를 OB 로 채택.
+      장점: false positive 적음, 차트 깔끔.
+    - ``"legacy"``: 봉 단위 displacement 검사. 각 bearish/bullish 봉마다
+      이후 N 봉 안에 high/low break close 가 있는지 본다. 더 촘촘하게 많이
+      잡지만 noise 도 많다.
 
-ATR 필터 (LuxAlgo 패턴):
-    봉의 (high - low) 가 ATR(N) 의 2배 이상이면 변동성 과대 봉으로 보고
-    OB 검출에서 high/low 를 뒤집어 평가한다 (좁은 body 가 OB 의 실제 origin).
-    false positive 감소.
+ATR 필터:
+    - luxalgo: max-range bar 후보의 (high-low) 가 ATR×multiplier 초과면 변동성
+      과대 봉으로 보고 OB 제외.
+    - legacy: (high-low) 가 ATR×multiplier 이상이면 parsed high/low 를 뒤집어
+      평가 (좁은 body 가 OB 의 origin).
 
 Mitigation:
-    OB 생성 후 가격이 OB 봉 body 안으로 close 한 경우 → mitigated=True.
-    Mitigated OB 는 setup 후보에서 제외하는 것이 일반적 (1회용 zone).
+    LuxAlgo 'High/Low' mode — 후속 봉 wick 이 OB low/high 를 침범하면 즉시
+    mitigated=True. Mitigated OB 는 setup 후보에서 제외하는 것이 일반적.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
 
 import pandas as pd
+
+from aurora_ict.indicators.structure import (
+    StructureEvent,
+    StructureType,
+    detect_structure_events,
+)
+from aurora_ict.indicators.swing_points import SwingPoint, detect_swing_points
 
 
 class OrderBlockType(StrEnum):
@@ -49,8 +60,8 @@ class OrderBlock:
         type: BULLISH / BEARISH.
         open / high / low / close: OB 봉 OHLC.
         idx: DataFrame 의 OB 봉 index.
-        displacement_idx: displacement 봉 (high/low 돌파 close) 의 index.
-        mitigated: 이후 가격이 OB body 안 close 했는지 (1회 retest 완료).
+        displacement_idx: BOS/displacement 봉 (high/low 돌파 close) 의 index.
+        mitigated: 이후 가격이 OB 영역을 wick 으로라도 침범했는지.
     """
 
     ts_ms: int
@@ -94,7 +105,7 @@ def _atr(highs, lows, closes, period: int) -> pd.Series:  # noqa: ANN001
         for i in range(1, n):
             atr[i] = (atr[i - 1] * i + tr[i]) / (i + 1)
         return pd.Series(atr)
-    atr[: period - 1] = np.nan
+    atr[: period - 1] = float("nan")
     atr[period - 1] = tr[:period].mean()
     for i in range(period, n):
         atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period
@@ -103,6 +114,11 @@ def _atr(highs, lows, closes, period: int) -> pd.Series:  # noqa: ANN001
 
 def detect_order_blocks(
     df: pd.DataFrame,
+    *,
+    algorithm: Literal["luxalgo", "legacy"] = "luxalgo",
+    swings: list[SwingPoint] | None = None,
+    events: list[StructureEvent] | None = None,
+    swing_length: int = 5,
     displacement_bars: int = 3,
     mark_mitigation: bool = True,
     atr_filter: bool = True,
@@ -114,12 +130,19 @@ def detect_order_blocks(
     Args:
         df: OHLCV DataFrame — index = timestamp (ms 또는 datetime), columns =
             ``open / high / low / close``.
-        displacement_bars: OB 봉 이후 몇 봉 안에 돌파 close 일어나야 OB 로 인정.
-            기본 3. 너무 작으면 noise, 너무 크면 false positive.
-        mark_mitigation: True 면 각 OB 후속 봉을 스캔해 mitigation 마킹.
-        atr_filter: LuxAlgo 패턴 — high-low 가 ATR×multiplier 이상인 봉은
-            변동성 과대로 분류해 parsed high/low 를 뒤집어 OB 검출에 사용.
-            기본 True (false positive 감소).
+        algorithm: ``"luxalgo"`` (기본, BOS 트리거 + swing 구간 max range) 또는
+            ``"legacy"`` (봉별 displacement 검사).
+        swings: ``algorithm="luxalgo"`` 시 사용. None 이면 내부에서
+            ``detect_swing_points(df, left=swing_length, right=swing_length)``
+            로 계산.
+        events: ``algorithm="luxalgo"`` 시 사용. None 이면 내부에서
+            ``detect_structure_events(df, swings)`` 로 계산.
+        swing_length: luxalgo swing pivot left/right window (기본 5).
+        displacement_bars: legacy 모드 전용 — OB 봉 이후 몇 봉 안에 돌파
+            close 일어나야 OB 로 인정.
+        mark_mitigation: True 면 OB 후속 봉을 스캔해 wick mitigation 마킹.
+        atr_filter: ATR 변동성 필터. luxalgo 는 OB 후보의 (high-low) 가
+            ATR×mult 초과면 제외, legacy 는 parsed high/low 뒤집기.
         atr_period: ATR 윈도우 (기본 200).
         atr_multiplier: 변동성 임계 배수 (기본 2.0).
 
@@ -129,13 +152,17 @@ def detect_order_blocks(
     Raises:
         ValueError: df 에 OHLC 컬럼 빠진 경우.
     """
-    if len(df) < displacement_bars + 1:
-        return []
-
     required = {"open", "high", "low", "close"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"df missing columns: {missing}")
+
+    if algorithm == "legacy":
+        if len(df) < displacement_bars + 1:
+            return []
+    elif swings is None and len(df) < 2 * swing_length + 1:
+        # luxalgo: swing 내부 계산 시 최소 봉 조건. 주입된 swings 가 있으면 패스.
+        return []
 
     if isinstance(df.index, pd.DatetimeIndex):
         ts_arr = (df.index.astype("int64") // 10**6).to_numpy()
@@ -147,14 +174,153 @@ def detect_order_blocks(
     lows = df["low"].to_numpy()
     closes = df["close"].to_numpy()
 
-    # ATR 필터 — 변동성 과대 봉(high-low ≥ ATR×mult)이면 parsed high/low 뒤집기
-    # (LuxAlgo: highVolatilityBar ? low : high / highVolatilityBar ? high : low)
+    atr_series = None
     if atr_filter:
-        atr_series = _atr(highs, lows, closes, atr_period).to_numpy()
-        # nan 은 0 으로 — 초기 봉은 필터 미적용
-        atr_series = pd.Series(atr_series).fillna(0.0).to_numpy()
+        atr_arr = _atr(highs, lows, closes, atr_period).to_numpy()
+        atr_series = pd.Series(atr_arr).fillna(0.0).to_numpy()
+
+    if algorithm == "luxalgo":
+        obs = _detect_obs_luxalgo(
+            df=df,
+            ts_arr=ts_arr,
+            opens=opens,
+            highs=highs,
+            lows=lows,
+            closes=closes,
+            swings=swings,
+            events=events,
+            swing_length=swing_length,
+            atr_filter=atr_filter,
+            atr_series=atr_series,
+            atr_multiplier=atr_multiplier,
+        )
+    else:
+        obs = _detect_obs_legacy(
+            ts_arr=ts_arr,
+            opens=opens,
+            highs=highs,
+            lows=lows,
+            closes=closes,
+            n=len(df),
+            displacement_bars=displacement_bars,
+            atr_filter=atr_filter,
+            atr_series=atr_series,
+            atr_multiplier=atr_multiplier,
+        )
+
+    if mark_mitigation:
+        _mark_mitigation(obs, highs, lows)
+
+    return obs
+
+
+def _detect_obs_luxalgo(  # noqa: PLR0913
+    df: pd.DataFrame,
+    ts_arr,  # noqa: ANN001
+    opens,   # noqa: ANN001
+    highs,   # noqa: ANN001
+    lows,    # noqa: ANN001
+    closes,  # noqa: ANN001
+    swings: list[SwingPoint] | None,
+    events: list[StructureEvent] | None,
+    swing_length: int,
+    atr_filter: bool,
+    atr_series,  # noqa: ANN001
+    atr_multiplier: float,
+) -> list[OrderBlock]:
+    """LuxAlgo SMC 표준: BOS/CHoCH 트리거 + swing 구간 ATR 필터 max range bar.
+
+    각 BOS/CHoCH event 마다:
+      - Bullish event (swing high break): [broken_swing_idx, ev.idx) 구간의
+        bearish 봉 중 (high-low) 가 최대인 봉이 Bullish OB.
+      - Bearish event (swing low break): 동일 구간의 bullish 봉 중 max range
+        가 Bearish OB.
+      - ATR 필터: 후보 봉의 (high-low) 가 ATR×mult 초과면 변동성 과대로 제외.
+    """
+    if swings is None:
+        swings = detect_swing_points(df, left=swing_length, right=swing_length)
+    if events is None:
+        events = detect_structure_events(df, swings)
+
+    if not events:
+        return []
+
+    obs: list[OrderBlock] = []
+    for ev in events:
+        lo_idx = ev.broken_swing_idx
+        hi_idx = ev.idx
+        if hi_idx <= lo_idx:
+            continue
+
+        is_bull_event = ev.type in (
+            StructureType.BOS_BULLISH,
+            StructureType.CHOCH_BULLISH,
+        )
+
+        best_idx = -1
+        best_range = -1.0
+        for k in range(lo_idx, hi_idx):
+            # 방향 필터: bullish event → bearish 봉 후보 / bearish event → bullish 봉
+            if is_bull_event:
+                if closes[k] >= opens[k]:
+                    continue
+            else:  # bearish event
+                if closes[k] <= opens[k]:
+                    continue
+
+            rng = float(highs[k] - lows[k])
+            if rng <= 0:
+                continue
+
+            # ATR 필터: 변동성 과대 봉 제외
+            if (
+                atr_filter
+                and atr_series is not None
+                and atr_series[k] > 0
+                and rng > atr_multiplier * atr_series[k]
+            ):
+                continue
+
+            if rng > best_range:
+                best_range = rng
+                best_idx = k
+
+        if best_idx < 0:
+            continue
+
+        obs.append(OrderBlock(
+            ts_ms=int(ts_arr[best_idx]),
+            type=OrderBlockType.BULLISH if is_bull_event else OrderBlockType.BEARISH,
+            open=float(opens[best_idx]),
+            high=float(highs[best_idx]),
+            low=float(lows[best_idx]),
+            close=float(closes[best_idx]),
+            idx=best_idx,
+            displacement_idx=hi_idx,
+        ))
+
+    return obs
+
+
+def _detect_obs_legacy(  # noqa: PLR0913
+    ts_arr,   # noqa: ANN001
+    opens,    # noqa: ANN001
+    highs,    # noqa: ANN001
+    lows,     # noqa: ANN001
+    closes,   # noqa: ANN001
+    n: int,
+    displacement_bars: int,
+    atr_filter: bool,
+    atr_series,  # noqa: ANN001
+    atr_multiplier: float,
+) -> list[OrderBlock]:
+    """Legacy: 봉별 displacement 검사 (구버전 알고리즘, 회귀 호환용).
+
+    각 bearish/bullish 봉 i 에 대해 i+1 ~ i+displacement_bars 안에서
+    high/low 돌파 close 발생하면 OB 채택. ATR 필터는 parsed high/low 뒤집기.
+    """
+    if atr_filter and atr_series is not None:
         high_vol = (highs - lows) >= (atr_multiplier * atr_series)
-        # parsed* 는 LuxAlgo 의 parsedHigh / parsedLow 와 동일 로직
         parsed_highs = pd.Series(highs).where(~high_vol, pd.Series(lows)).to_numpy()
         parsed_lows = pd.Series(lows).where(~high_vol, pd.Series(highs)).to_numpy()
     else:
@@ -162,11 +328,9 @@ def detect_order_blocks(
         parsed_lows = lows
 
     obs: list[OrderBlock] = []
-
-    for i in range(len(df) - displacement_bars):
+    for i in range(n - displacement_bars):
         bar_open = opens[i]
         bar_close = closes[i]
-        # 검출 비교는 parsed 값 사용 (ATR 필터 효과). 저장은 원본 high/low.
         cmp_high = parsed_highs[i]
         cmp_low = parsed_lows[i]
         raw_high = float(highs[i])
@@ -175,11 +339,10 @@ def detect_order_blocks(
         is_bearish_bar = bar_close < bar_open
         is_bullish_bar = bar_close > bar_open
         if not (is_bearish_bar or is_bullish_bar):
-            continue  # doji — skip
+            continue
 
-        # Bullish OB 후보: bearish 봉 + 이후 displacement 안에서 high 돌파 close
         if is_bearish_bar:
-            for j in range(i + 1, min(i + 1 + displacement_bars, len(df))):
+            for j in range(i + 1, min(i + 1 + displacement_bars, n)):
                 if closes[j] > cmp_high:
                     obs.append(OrderBlock(
                         ts_ms=int(ts_arr[i]),
@@ -191,11 +354,9 @@ def detect_order_blocks(
                         idx=i,
                         displacement_idx=j,
                     ))
-                    break  # 첫 displacement 만 인정 (중복 방지)
-
-        # Bearish OB 후보: bullish 봉 + 이후 displacement 안에서 low 돌파 close
+                    break
         elif is_bullish_bar:
-            for j in range(i + 1, min(i + 1 + displacement_bars, len(df))):
+            for j in range(i + 1, min(i + 1 + displacement_bars, n)):
                 if closes[j] < cmp_low:
                     obs.append(OrderBlock(
                         ts_ms=int(ts_arr[i]),
@@ -208,9 +369,6 @@ def detect_order_blocks(
                         displacement_idx=j,
                     ))
                     break
-
-    if mark_mitigation:
-        _mark_mitigation(obs, highs, lows)
 
     return obs
 
@@ -225,8 +383,7 @@ def _mark_mitigation(
     - Bullish OB: wick low 가 OB low 미만 → mitigated
     - Bearish OB: wick high 가 OB high 초과 → mitigated
 
-    LuxAlgo 의 'High/Low' mitigation mode 와 동일. 보수적 (한 번 wick 으로
-    찌르면 즉시 청소) 라 차트에 남는 OB 수가 줄어 깔끔.
+    LuxAlgo 의 'High/Low' mitigation mode 와 동일.
     """
     for ob in obs:
         for k in range(ob.displacement_idx + 1, len(highs)):

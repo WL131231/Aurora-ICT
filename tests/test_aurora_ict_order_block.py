@@ -69,7 +69,9 @@ def test_ob_bullish_basic() -> None:
         (107, 110, 106, 109),    # idx=3
         (109, 111, 108, 110),    # idx=4
     ])
-    obs = detect_order_blocks(df, displacement_bars=3, mark_mitigation=False)
+    obs = detect_order_blocks(
+        df, algorithm="legacy", displacement_bars=3, mark_mitigation=False,
+    )
     bull = [o for o in obs if o.type is OrderBlockType.BULLISH]
     assert any(o.idx == 1 for o in bull)
     # 발견된 bullish OB 의 displacement_idx = 2
@@ -88,8 +90,10 @@ def test_ob_bullish_no_displacement_within_window() -> None:
         (100, 101.5, 99, 101),   # close=101 < 102
         (101, 101.9, 100, 101.5),  # close=101.5 < 102
     ])
-    obs = detect_order_blocks(df, displacement_bars=3, mark_mitigation=False)
-    # idx=1 박힌 bearish 봉 박힌 거 박힌 bullish OB 박힘 X
+    obs = detect_order_blocks(
+        df, algorithm="legacy", displacement_bars=3, mark_mitigation=False,
+    )
+    # idx=1 bearish 봉 이후 displacement 안에 high 돌파 close 없음 → bullish OB X
     assert not any(o.idx == 1 and o.type is OrderBlockType.BULLISH for o in obs)
 
 
@@ -107,7 +111,9 @@ def test_ob_bearish_basic() -> None:
         (96, 97, 90, 92),        # idx=3
         (92, 93, 89, 90),        # idx=4
     ])
-    obs = detect_order_blocks(df, displacement_bars=3, mark_mitigation=False)
+    obs = detect_order_blocks(
+        df, algorithm="legacy", displacement_bars=3, mark_mitigation=False,
+    )
     bear = [o for o in obs if o.type is OrderBlockType.BEARISH]
     assert any(o.idx == 1 for o in bear)
     ob = next(o for o in bear if o.idx == 1)
@@ -130,7 +136,9 @@ def test_ob_mitigation_marked() -> None:
         (107, 109, 106, 108),    # idx=3
         (108, 110, 94, 98),      # idx=4  wick low=94 < OB low=95 → mitigated
     ])
-    obs = detect_order_blocks(df, displacement_bars=3, mark_mitigation=True)
+    obs = detect_order_blocks(
+        df, algorithm="legacy", displacement_bars=3, mark_mitigation=True,
+    )
     bull = next(o for o in obs if o.type is OrderBlockType.BULLISH and o.idx == 1)
     assert bull.mitigated is True
 
@@ -144,7 +152,9 @@ def test_ob_no_mitigation_when_disabled() -> None:
         (107, 109, 106, 108),
         (108, 110, 95, 98),
     ])
-    obs = detect_order_blocks(df, displacement_bars=3, mark_mitigation=False)
+    obs = detect_order_blocks(
+        df, algorithm="legacy", displacement_bars=3, mark_mitigation=False,
+    )
     bull = next(o for o in obs if o.type is OrderBlockType.BULLISH and o.idx == 1)
     assert bull.mitigated is False
 
@@ -156,9 +166,11 @@ def test_ob_no_mitigation_if_price_doesnt_retest() -> None:
         (101, 102, 95, 96),
         (96, 108, 95, 107),
         (107, 115, 106, 114),    # close=114, 박힌 body 위
-        (114, 120, 113, 119),    # close=119, 박힌 body 위
+        (114, 120, 113, 119),    # close=119, OB body 위
     ])
-    obs = detect_order_blocks(df, displacement_bars=3, mark_mitigation=True)
+    obs = detect_order_blocks(
+        df, algorithm="legacy", displacement_bars=3, mark_mitigation=True,
+    )
     bull = next(o for o in obs if o.type is OrderBlockType.BULLISH and o.idx == 1)
     assert bull.mitigated is False
 
@@ -177,9 +189,12 @@ def test_ob_atr_filter_default_on() -> None:
         (107, 109, 106, 108),
         (108, 110, 107, 109),
     ])
-    obs_default = detect_order_blocks(df, displacement_bars=3, mark_mitigation=False)
+    obs_default = detect_order_blocks(
+        df, algorithm="legacy", displacement_bars=3, mark_mitigation=False,
+    )
     obs_off = detect_order_blocks(
-        df, displacement_bars=3, mark_mitigation=False, atr_filter=False,
+        df, algorithm="legacy", displacement_bars=3, mark_mitigation=False,
+        atr_filter=False,
     )
     # 작은 변동성 봉 → ATR filter on/off 결과 (idx, type) 동일해야 함
     assert {(o.idx, o.type) for o in obs_default} == {(o.idx, o.type) for o in obs_off}
@@ -195,7 +210,8 @@ def test_ob_atr_filter_off_keeps_legacy_behavior() -> None:
         (220, 230, 215, 225),
     ])
     obs = detect_order_blocks(
-        df, displacement_bars=3, mark_mitigation=False, atr_filter=False,
+        df, algorithm="legacy", displacement_bars=3, mark_mitigation=False,
+        atr_filter=False,
     )
     # legacy: bar_high=200 → close 215 > 200 OK → bullish OB
     bull = [o for o in obs if o.type is OrderBlockType.BULLISH and o.idx == 1]
@@ -214,10 +230,10 @@ def test_ob_atr_filter_can_be_disabled() -> None:
     ])
     # 두 호출 모두 예외 없이 list 반환
     assert isinstance(
-        detect_order_blocks(df, atr_filter=True), list,
+        detect_order_blocks(df, algorithm="legacy", atr_filter=True), list,
     )
     assert isinstance(
-        detect_order_blocks(df, atr_filter=False), list,
+        detect_order_blocks(df, algorithm="legacy", atr_filter=False), list,
     )
 
 
@@ -233,7 +249,118 @@ def test_ob_body_top_bottom() -> None:
         (107, 109, 106, 108),
         (108, 110, 107, 109),   # 5번째 봉 추가 — range(2) 만족
     ])
-    obs = detect_order_blocks(df, displacement_bars=3, mark_mitigation=False)
+    obs = detect_order_blocks(
+        df, algorithm="legacy", displacement_bars=3, mark_mitigation=False,
+    )
     bull = next(o for o in obs if o.type is OrderBlockType.BULLISH and o.idx == 1)
     assert bull.body_top == 101
     assert bull.body_bottom == 96
+
+
+# ============================================================
+# LuxAlgo 알고리즘 (BOS 트리거 + swing 구간 max range bar)
+# ============================================================
+
+
+def test_ob_luxalgo_bullish_basic() -> None:
+    """LuxAlgo: BOS up 발생 시 swing→BOS 구간의 max range bearish 봉이 Bullish OB."""
+    df = _make_df([
+        (98, 100, 97, 99),       # idx=0
+        (99, 112, 98, 111),      # idx=1  swing high (high=112), bullish
+        (111, 110, 100, 102),    # idx=2  bearish, range=10
+        (102, 108, 95, 97),      # idx=3  bearish, range=13  ← max
+        (97, 105, 95, 96),       # idx=4  bearish, range=10
+        (96, 115, 95, 114),      # idx=5  close=114 > 112 → BOS_BULLISH
+    ])
+    obs = detect_order_blocks(
+        df, algorithm="luxalgo", swing_length=1, mark_mitigation=False,
+        atr_filter=False,
+    )
+    bull = [o for o in obs if o.type is OrderBlockType.BULLISH]
+    assert len(bull) == 1
+    assert bull[0].idx == 3
+    assert bull[0].displacement_idx == 5
+    assert bull[0].high == 108
+    assert bull[0].low == 95
+
+
+def test_ob_luxalgo_bearish_basic() -> None:
+    """LuxAlgo: BOS down 발생 시 swing→BOS 구간의 max range bullish 봉이 Bearish OB."""
+    df = _make_df([
+        (102, 103, 99, 100),     # idx=0
+        (100, 101, 88, 89),      # idx=1  swing low (low=88), bearish
+        (89, 95, 89, 94),        # idx=2  bullish, range=6
+        (94, 100, 90, 99),       # idx=3  bullish, range=10  ← max (첫 등장)
+        (99, 105, 95, 104),      # idx=4  bullish, range=10
+        (104, 105, 80, 81),      # idx=5  close=81 < 88 → BOS_BEARISH
+    ])
+    obs = detect_order_blocks(
+        df, algorithm="luxalgo", swing_length=1, mark_mitigation=False,
+        atr_filter=False,
+    )
+    bear = [o for o in obs if o.type is OrderBlockType.BEARISH]
+    assert len(bear) == 1
+    assert bear[0].idx == 3
+    assert bear[0].displacement_idx == 5
+
+
+def test_ob_luxalgo_no_event_no_ob() -> None:
+    """LuxAlgo: BOS/CHoCH 이벤트 없으면 OB 없음."""
+    df = _make_df([
+        (100, 101, 99, 100),
+        (100, 102, 98, 101),
+        (101, 103, 99, 102),
+        (102, 104, 100, 103),
+        (103, 105, 101, 104),
+    ])
+    obs = detect_order_blocks(
+        df, algorithm="luxalgo", swing_length=1, atr_filter=False,
+    )
+    assert obs == []
+
+
+def test_ob_luxalgo_too_few_bars() -> None:
+    """LuxAlgo: swing_length*2 + 1 미만 → 빈 리스트."""
+    df = _make_df([
+        (100, 102, 99, 101),
+        (101, 102, 95, 96),
+    ])
+    obs = detect_order_blocks(df, algorithm="luxalgo", swing_length=5)
+    assert obs == []
+
+
+def test_ob_luxalgo_uses_provided_swings_events() -> None:
+    """swings/events 명시 주입 시 OB 검출이 그 결과를 사용 (재계산 X)."""
+    df = _make_df([
+        (98, 100, 97, 99),
+        (99, 112, 98, 111),
+        (111, 110, 100, 102),
+        (102, 108, 95, 97),
+        (97, 105, 95, 96),
+        (96, 115, 95, 114),
+    ])
+    # 빈 events 주입 → OB 도 빈 리스트
+    obs_empty = detect_order_blocks(
+        df, algorithm="luxalgo", swings=[], events=[], mark_mitigation=False,
+    )
+    assert obs_empty == []
+
+
+def test_ob_luxalgo_mitigation_wick_based() -> None:
+    """LuxAlgo OB 도 wick mitigation (bullish OB low 미만 wick → mitigated)."""
+    df = _make_df([
+        (98, 100, 97, 99),
+        (99, 112, 98, 111),      # swing high
+        (111, 110, 100, 102),    # bearish OB 후보 (range=10)
+        (102, 108, 95, 97),      # bearish OB 후보 (range=13)  ← OB
+        (97, 105, 95, 96),
+        (96, 115, 95, 114),      # BOS_BULLISH at idx=5
+        (114, 116, 94, 100),     # idx=6 wick low=94 < OB low=95 → mitigated
+    ])
+    obs = detect_order_blocks(
+        df, algorithm="luxalgo", swing_length=1, mark_mitigation=True,
+        atr_filter=False,
+    )
+    bull = next(o for o in obs if o.type is OrderBlockType.BULLISH)
+    assert bull.idx == 3
+    assert bull.mitigated is True
