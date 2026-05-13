@@ -168,6 +168,59 @@ def test_ob_no_mitigation_if_price_doesnt_retest() -> None:
 # ============================================================
 
 
+def test_ob_atr_filter_default_on() -> None:
+    """atr_filter=True 기본 — 정상 봉에서는 결과 동일 (변동성 normal)."""
+    df = _make_df([
+        (100, 102, 99, 101),
+        (101, 102, 95, 96),
+        (96, 108, 95, 107),
+        (107, 109, 106, 108),
+        (108, 110, 107, 109),
+    ])
+    obs_default = detect_order_blocks(df, displacement_bars=3, mark_mitigation=False)
+    obs_off = detect_order_blocks(
+        df, displacement_bars=3, mark_mitigation=False, atr_filter=False,
+    )
+    # 작은 변동성 봉 → ATR filter on/off 결과 (idx, type) 동일해야 함
+    assert {(o.idx, o.type) for o in obs_default} == {(o.idx, o.type) for o in obs_off}
+
+
+def test_ob_atr_filter_off_keeps_legacy_behavior() -> None:
+    """atr_filter=False → 변동성 큰 봉 그대로 판정 (legacy)."""
+    df = _make_df([
+        (100, 105, 95, 100),
+        (100, 200, 50, 60),    # 매우 큰 변동성 봉 (high-low=150)
+        (60, 220, 55, 215),    # close 215 > 200 → bullish OB 후보 (legacy 기준)
+        (215, 225, 210, 220),
+        (220, 230, 215, 225),
+    ])
+    obs = detect_order_blocks(
+        df, displacement_bars=3, mark_mitigation=False, atr_filter=False,
+    )
+    # legacy: bar_high=200 → close 215 > 200 OK → bullish OB
+    bull = [o for o in obs if o.type is OrderBlockType.BULLISH and o.idx == 1]
+    assert len(bull) == 1
+    assert bull[0].high == 200.0
+
+
+def test_ob_atr_filter_can_be_disabled() -> None:
+    """atr_filter 파라미터 noop 케이스 — 결과 list 반환."""
+    df = _make_df([
+        (100, 102, 99, 101),
+        (101, 102, 95, 96),
+        (96, 108, 95, 107),
+        (107, 109, 106, 108),
+        (108, 110, 107, 109),
+    ])
+    # 두 호출 모두 예외 없이 list 반환
+    assert isinstance(
+        detect_order_blocks(df, atr_filter=True), list,
+    )
+    assert isinstance(
+        detect_order_blocks(df, atr_filter=False), list,
+    )
+
+
 def test_ob_body_top_bottom() -> None:
     """body_top = max(open, close) / body_bottom = min(open, close).
 

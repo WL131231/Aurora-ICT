@@ -45,10 +45,43 @@ const fvgBearSeries = chart.addAreaSeries({
   lastValueVisible: false,
 });
 
+// OB top/bottom 가로선 관리 — render 시마다 재생성
+let obPriceLines = [];
+
+function clearObPriceLines() {
+  obPriceLines.forEach((pl) => {
+    try { candleSeries.removePriceLine(pl); } catch (e) { /* noop */ }
+  });
+  obPriceLines = [];
+}
+
+function renderObPriceLines(obs) {
+  clearObPriceLines();
+  // 미mitigated OB 상위 5개만 (chart 지저분 방지)
+  const active = (obs || []).filter((o) => !o.mitigated).slice(-5);
+  active.forEach((ob) => {
+    const color = ob.type === "bullish"
+      ? "rgba(45, 212, 191, 0.45)"
+      : "rgba(244, 114, 182, 0.45)";
+    [ob.high, ob.low].forEach((price) => {
+      const pl = candleSeries.createPriceLine({
+        price,
+        color,
+        lineWidth: 1,
+        lineStyle: 2, // dashed
+        axisLabelVisible: false,
+        title: "",
+      });
+      obPriceLines.push(pl);
+    });
+  });
+}
+
 function clearOverlays() {
   fvgBullSeries.setData([]);
   fvgBearSeries.setData([]);
   candleSeries.setMarkers([]);
+  clearObPriceLines();
 }
 
 function tsToTimeSec(ts_ms) { return Math.floor(ts_ms / 1000); }
@@ -177,6 +210,9 @@ function renderMarkers(payload) {
       text: ob.mitigated ? "OB·m" : "OB",
     });
   });
+
+  // 활성 OB top/bottom 가로 priceLine — 최대 5개
+  renderObPriceLines(m.order_blocks ?? []);
 
   // 시간순 정렬
   markers.sort((a, b) => a.time - b.time);
