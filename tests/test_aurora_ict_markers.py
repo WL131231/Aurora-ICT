@@ -205,6 +205,74 @@ def test_markers_to_dict_includes_new_keys() -> None:
     assert isinstance(d["macros"], list)
 
 
+# ============================================================
+# Internal vs Large scale (LuxAlgo 패턴)
+# ============================================================
+
+
+def test_markers_has_internal_and_large_scale_fields() -> None:
+    """ChartMarkers 와 to_dict 에 두 스케일 필드가 모두 존재."""
+    df = _make_df_ny(datetime(2026, 5, 12, 10, 0, tzinfo=NY), [
+        (100, 102, 99, 101),
+        (101, 103, 100, 102),
+        (102, 104, 101, 103),
+    ])
+    markers = to_chart_markers(df, fvg_min_size_pct=None)
+    # dataclass 필드
+    assert hasattr(markers, "internal_swings")
+    assert hasattr(markers, "internal_structure")
+    assert hasattr(markers, "large_swings")
+    assert hasattr(markers, "large_structure")
+    # to_dict
+    d = markers.to_dict()
+    for key in ("internal_swings", "internal_structure", "large_swings", "large_structure"):
+        assert key in d
+        assert isinstance(d[key], list)
+
+
+def test_markers_internal_scale_detects_small_swings() -> None:
+    """left=right=5 internal scale — 11봉 박은 명확한 swing high 박은 거 검출."""
+    # idx=5 가 11봉 안에서 max high → swing high (left=5, right=5)
+    bars = []
+    for i in range(11):
+        if i == 5:
+            bars.append((100, 200, 99, 199))   # 명확한 peak
+        else:
+            bars.append((100, 105, 99, 104))
+    df = _make_df_ny(datetime(2026, 5, 12, 10, 0, tzinfo=NY), bars)
+    markers = to_chart_markers(df, fvg_min_size_pct=None)
+    internal_highs = [s for s in markers.internal_swings if s.type == "high"]
+    assert len(internal_highs) >= 1
+    assert any(s.price == 200.0 for s in internal_highs)
+
+
+def test_markers_large_scale_requires_long_df() -> None:
+    """left=right=50 large scale — 짧은 df 에서는 large_swings 가 비어있음."""
+    df = _make_df_ny(datetime(2026, 5, 12, 10, 0, tzinfo=NY), [
+        (100, 102, 99, 101),
+        (101, 103, 100, 102),
+        (102, 104, 101, 103),
+    ])
+    markers = to_chart_markers(df, fvg_min_size_pct=None)
+    # 3봉으로는 left+right+1 = 101봉 필요한 large scale 검출 불가
+    assert markers.large_swings == []
+    assert markers.large_structure == []
+
+
+def test_markers_internal_scale_is_subset_of_basic() -> None:
+    """left=5 의 swing 은 left=1 보다 보통 적거나 같음 (더 strict)."""
+    bars = []
+    for i in range(20):
+        if i % 4 == 0:
+            bars.append((100, 110, 95, 105))
+        else:
+            bars.append((100, 102, 99, 101))
+    df = _make_df_ny(datetime(2026, 5, 12, 10, 0, tzinfo=NY), bars)
+    markers = to_chart_markers(df, fvg_min_size_pct=None)
+    # internal (left=5) 는 기본 (left=1) 보다 swing 수가 같거나 적음
+    assert len(markers.internal_swings) <= len(markers.swings)
+
+
 def test_markers_swept_flag_propagated() -> None:
     """sweep 박힌 swing 박힌 거 박힌 swept=True 박힘 박힘 markers.swings 박힘 박힘."""
     start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)

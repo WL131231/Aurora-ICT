@@ -183,6 +183,9 @@ function renderMarkers(payload) {
   $("c-setups").textContent = payload.count.setups;
   if ($("c-obs")) $("c-obs").textContent = payload.count.order_blocks ?? 0;
   if ($("c-macros")) $("c-macros").textContent = payload.count.macros ?? 0;
+  if ($("c-int-struct")) $("c-int-struct").textContent = payload.count.internal_structure ?? 0;
+  if ($("c-lg-struct"))  $("c-lg-struct").textContent  = payload.count.large_structure ?? 0;
+  if ($("c-lg-swings"))  $("c-lg-swings").textContent  = payload.count.large_swings ?? 0;
   if ($("c-trailing")) {
     const t = m.trailing;
     $("c-trailing").textContent = t
@@ -216,7 +219,7 @@ function renderMarkers(payload) {
     });
   });
 
-  // Structure (BOS/CHoCH)
+  // Structure (BOS/CHoCH) — 기본 (left=1) 스케일
   m.structure.forEach(ev => {
     const isChoCH = ev.type.startsWith("choch");
     const isBull = ev.type.endsWith("bullish");
@@ -226,6 +229,43 @@ function renderMarkers(payload) {
       color: isChoCH ? "#a855f7" : "#60a5fa",
       shape: "circle",
       text: isChoCH ? "MSS" : "BOS",
+    });
+  });
+
+  // Internal structure (left=5) — 옅은 색 + 작은 라벨
+  (m.internal_structure ?? []).forEach(ev => {
+    const isChoCH = ev.type.startsWith("choch");
+    const isBull = ev.type.endsWith("bullish");
+    markers.push({
+      time: tsToTimeSec(ev.ts_ms),
+      position: isBull ? "belowBar" : "aboveBar",
+      color: isChoCH ? "rgba(168, 85, 247, 0.45)" : "rgba(96, 165, 250, 0.45)",
+      shape: "circle",
+      text: isChoCH ? "iMSS" : "iBOS",
+    });
+  });
+
+  // Large structure (left=50) — 진한 색 + 굵은 라벨
+  (m.large_structure ?? []).forEach(ev => {
+    const isChoCH = ev.type.startsWith("choch");
+    const isBull = ev.type.endsWith("bullish");
+    markers.push({
+      time: tsToTimeSec(ev.ts_ms),
+      position: isBull ? "belowBar" : "aboveBar",
+      color: isChoCH ? "#7c3aed" : "#2563eb",
+      shape: "arrowUp",
+      text: isChoCH ? "MSS↑↑" : "BOS↑↑",
+    });
+  });
+
+  // Large swings (left=50) — 박은 큰 swing pivot 만 마커 (작은 swing 은 차트 지저분 방지로 생략)
+  (m.large_swings ?? []).forEach(sw => {
+    markers.push({
+      time: tsToTimeSec(sw.ts_ms),
+      position: sw.type === "high" ? "aboveBar" : "belowBar",
+      color: sw.type === "high" ? "#fb7185" : "#34d399",
+      shape: "circle",
+      text: sw.type === "high" ? "HH" : "LL",
     });
   });
 
