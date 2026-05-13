@@ -77,12 +77,16 @@ class IctSettings(BaseSettings):
             )
         return v
 
-    risk_per_trade_pct: float = Field(default=0.5, ge=0.01, le=5.0)
+    # ICT 정통 표준: risk 1% per trade, min_rr 1:3.
+    risk_per_trade_pct: float = Field(default=1.0, ge=0.01, le=5.0)
     leverage: int = Field(default=5, ge=1, le=20)
-    min_rr: float = Field(default=2.0, ge=1.0)
+    min_rr: float = Field(default=3.0, ge=1.0)
     fvg_min_size_pct: float = Field(default=0.0005, ge=0)
     step_interval_sec: int = Field(default=60, ge=10)
     ohlcv_limit: int = Field(default=1000, ge=50, le=1000)
+    # setup stale threshold — FVG 이후 N 봉 안에 retest 없으면 진입 안 함.
+    # Trade TF 5m → 5봉 = 25분. 1h → 5봉 = 5시간. 봉 단위 고정.
+    setup_stale_bars: int = Field(default=5, ge=1, le=50)
 
     demo_api_key: SecretStr = Field(default=SecretStr(""))
     demo_api_secret: SecretStr = Field(default=SecretStr(""))

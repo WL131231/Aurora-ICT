@@ -65,6 +65,7 @@ def generate_ict_signal(
     bias: TrendDirection | None = None,
     min_rr: float = 2.0,
     fvg_min_size_pct: float | None = 0.0005,
+    stale_bars: int = 5,
 ) -> ICTSignal:
     """OHLCV DataFrame으로부터 ICT signal을 한 건 생성.
 
@@ -113,15 +114,15 @@ def generate_ict_signal(
     # 가장 최근 setup만 채택 (마지막 봉 기준) — bot은 시점당 1개 의사결정.
     setup = setups[-1]
 
-    # 마지막 봉에서 setup 봉이 너무 멀면 stale 처리 (within 5 bars 안에서만 신뢰).
+    # 마지막 봉에서 setup 봉이 너무 멀면 stale 처리 (stale_bars 안에서만 신뢰).
     bars_since = len(df) - 1 - setup.fvg.idx
-    if bars_since > 5:
+    if bars_since > stale_bars:
         return ICTSignal(
             action=SignalAction.NO_ACTION,
             setup=None,
             symbol=symbol,
             ts_ms=last_ts_ms,
-            reason=f"setup stale ({bars_since} bars)",
+            reason=f"setup stale ({bars_since} bars > {stale_bars})",
         )
 
     action = (
