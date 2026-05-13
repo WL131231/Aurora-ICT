@@ -166,8 +166,11 @@ def detect_order_blocks(
     for i in range(len(df) - displacement_bars):
         bar_open = opens[i]
         bar_close = closes[i]
-        bar_high = parsed_highs[i]
-        bar_low = parsed_lows[i]
+        # 검출 비교는 parsed 값 사용 (ATR 필터 효과). 저장은 원본 high/low.
+        cmp_high = parsed_highs[i]
+        cmp_low = parsed_lows[i]
+        raw_high = float(highs[i])
+        raw_low = float(lows[i])
 
         is_bearish_bar = bar_close < bar_open
         is_bullish_bar = bar_close > bar_open
@@ -177,13 +180,13 @@ def detect_order_blocks(
         # Bullish OB 후보: bearish 봉 + 이후 displacement 안에서 high 돌파 close
         if is_bearish_bar:
             for j in range(i + 1, min(i + 1 + displacement_bars, len(df))):
-                if closes[j] > bar_high:
+                if closes[j] > cmp_high:
                     obs.append(OrderBlock(
                         ts_ms=int(ts_arr[i]),
                         type=OrderBlockType.BULLISH,
                         open=float(bar_open),
-                        high=float(bar_high),
-                        low=float(bar_low),
+                        high=raw_high,
+                        low=raw_low,
                         close=float(bar_close),
                         idx=i,
                         displacement_idx=j,
@@ -193,13 +196,13 @@ def detect_order_blocks(
         # Bearish OB 후보: bullish 봉 + 이후 displacement 안에서 low 돌파 close
         elif is_bullish_bar:
             for j in range(i + 1, min(i + 1 + displacement_bars, len(df))):
-                if closes[j] < bar_low:
+                if closes[j] < cmp_low:
                     obs.append(OrderBlock(
                         ts_ms=int(ts_arr[i]),
                         type=OrderBlockType.BEARISH,
                         open=float(bar_open),
-                        high=float(bar_high),
-                        low=float(bar_low),
+                        high=raw_high,
+                        low=raw_low,
                         close=float(bar_close),
                         idx=i,
                         displacement_idx=j,

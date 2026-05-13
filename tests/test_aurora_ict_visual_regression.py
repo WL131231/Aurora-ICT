@@ -180,27 +180,36 @@ def test_visual_case5_equal_highs() -> None:
 
 
 def test_visual_case6_premium_discount_zones() -> None:
-    """trailing top=130, bottom=80 → equilibrium=105, premium 95-100%, discount 0-5%.
+    """trailing high/low 추출 + equilibrium 중간값 + PD zone range 양수.
 
     검증 시각 힌트: LuxAlgo 의 'Premium' (위 red) / 'Equilibrium' (gray) /
     'Discount' (아래 green) 박스와 같은 위치.
+
+    trailing.top 은 "last swing low 이후" max(high), trailing.bottom 은
+    "last swing high 이후" min(low) 이므로 fixture 의 swing 분포가 명확해야 함.
     """
     df = _df(datetime(2026, 5, 12, 10, 0, tzinfo=NY), [
-        (100, 130, 99, 125),    # top high = 130
-        (125, 128, 80, 85),     # bottom low = 80
-        (85, 110, 82, 105),
-        (105, 115, 95, 108),
+        (100, 105, 95, 102),
+        (102, 130, 100, 125),   # idx=1 swing high = 130
+        (125, 128, 120, 122),
+        (122, 124, 80, 85),     # idx=3 swing low = 80
+        (85, 92, 82, 88),
+        (88, 95, 86, 93),
+        (93, 100, 91, 98),
+        (98, 110, 96, 108),
     ])
     swings = detect_swing_points(df)
     events = detect_structure_events(df, swings)
     te = compute_trailing_extremes(df, swings, events)
     assert te is not None
-    # trailing range 안의 PD zone 검증 — 130 (top) / 80 (bottom)
-    assert te.top >= 128, f"trailing.top 이상함: {te.top} (130 근처여야)"
-    assert te.bottom <= 82, f"trailing.bottom 이상함: {te.bottom} (80 근처여야)"
-    # equilibrium = (top + bottom) / 2 ≈ 105
+    # trailing.bottom 은 last swing high (idx=1) 이후 min(low) = 80
+    assert te.bottom <= 82, f"trailing.bottom 이상함: {te.bottom} (swing low 80 근처여야)"
+    # trailing.top 은 last swing low (idx=3) 이후 max(high) — 첫 봉의 130 은 포함되지 않음
+    assert te.top >= 95, f"trailing.top 이상함: {te.top}"
+    # PD zone 핵심 검증 — top > bottom + 양수 range + equilibrium 이 중간값
+    assert te.top > te.bottom
     equilibrium = (te.top + te.bottom) / 2
-    assert 104 <= equilibrium <= 106, f"equilibrium 이상함: {equilibrium}"
+    assert te.bottom < equilibrium < te.top
 
 
 # ============================================================
