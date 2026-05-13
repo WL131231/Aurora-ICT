@@ -38,40 +38,27 @@ const candleSeries = chart.addCandlestickSeries({
   wickUpColor: "#34d399", wickDownColor: "#fb7185",
 });
 
-// overlay 시리즈 (FVG line / Killzone band 등)
-const fvgBullSeries = chart.addAreaSeries({
-  topColor: "rgba(52, 211, 153, 0.12)",
-  bottomColor: "rgba(52, 211, 153, 0.02)",
-  lineColor: "rgba(52, 211, 153, 0.4)",
-  lineWidth: 1,
-  priceLineVisible: false,
-  lastValueVisible: false,
-});
-const fvgBearSeries = chart.addAreaSeries({
-  topColor: "rgba(251, 113, 133, 0.12)",
-  bottomColor: "rgba(251, 113, 133, 0.02)",
-  lineColor: "rgba(251, 113, 133, 0.4)",
-  lineWidth: 1,
-  priceLineVisible: false,
-  lastValueVisible: false,
-});
-
-// OB top/bottom 가로선 관리 — render 시마다 재생성
-let obPriceLines = [];
+// OB 박스 — BaselineSeries 풀 (각 활성 OB 마다 1개)
+let obBoxSeries = [];
+// FVG 박스 — BaselineSeries 풀
+let fvgBoxSeries = [];
 // Strong/Weak HL 가로선 (top + bottom 한 쌍)
 let trailingPriceLines = [];
 // BOS / CHoCH 짧은 segment LineSeries pool
 let bosSegmentSeries = [];
 // EQH / EQL 짧은 segment LineSeries pool
 let eqlSegmentSeries = [];
-// PD Zone — 3개 AreaSeries (premium / equilibrium / discount)
-let zoneAreaSeries = [];
+// PD Zone — BaselineSeries 3개 (premium / equilibrium / discount)
+let zoneBoxSeries = [];
 
-function clearObPriceLines() {
-  obPriceLines.forEach((pl) => {
-    try { candleSeries.removePriceLine(pl); } catch (e) { /* noop */ }
-  });
-  obPriceLines = [];
+function clearObBoxes() {
+  obBoxSeries.forEach((s) => { try { chart.removeSeries(s); } catch (e) { /* noop */ } });
+  obBoxSeries = [];
+}
+
+function clearFvgBoxes() {
+  fvgBoxSeries.forEach((s) => { try { chart.removeSeries(s); } catch (e) { /* noop */ } });
+  fvgBoxSeries = [];
 }
 
 function clearTrailingPriceLines() {
@@ -79,6 +66,58 @@ function clearTrailingPriceLines() {
     try { candleSeries.removePriceLine(pl); } catch (e) { /* noop */ }
   });
   trailingPriceLines = [];
+}
+
+// 공통 헬퍼 — BaselineSeries 박스 1개 (시작 ts ~ 끝 ts, top → baseline=bottom fill)
+function _addBoxSeries(startSec, endSec, top, bottom, fillColor, lineColor) {
+  const series = chart.addBaselineSeries({
+    baseValue: { type: "price", price: bottom },
+    topFillColor1: fillColor,
+    topFillColor2: fillColor,
+    topLineColor: lineColor,
+    bottomFillColor1: "rgba(0,0,0,0)",
+    bottomFillColor2: "rgba(0,0,0,0)",
+    bottomLineColor: "rgba(0,0,0,0)",
+    lineWidth: 1,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    crosshairMarkerVisible: false,
+  });
+  series.setData([
+    { time: startSec, value: top },
+    { time: endSec, value: top },
+  ]);
+  return series;
+}
+
+// 활성 OB 박스 — bullish=teal / bearish=pink, OB 봉 ~ 차트 끝
+function renderObBoxes(obs) {
+  clearObBoxes();
+  if (!lastBarTimeSec) return;
+  const active = (obs || []).filter((o) => !o.mitigated).slice(-8);
+  active.forEach((ob) => {
+    const isBull = ob.type === "bullish";
+    const fill = isBull ? "rgba(45, 212, 191, 0.18)" : "rgba(244, 114, 182, 0.18)";
+    const line = isBull ? "rgba(45, 212, 191, 0.55)" : "rgba(244, 114, 182, 0.55)";
+    const startSec = tsToTimeSec(ob.ts_ms);
+    if (startSec >= lastBarTimeSec) return;
+    obBoxSeries.push(_addBoxSeries(startSec, lastBarTimeSec, ob.high, ob.low, fill, line));
+  });
+}
+
+// 활성 FVG 박스 — bullish=green / bearish=red, FVG 봉 ~ 차트 끝
+function renderFvgBoxes(fvgs) {
+  clearFvgBoxes();
+  if (!lastBarTimeSec) return;
+  const active = (fvgs || []).filter((f) => !f.filled && !f.invalidated).slice(-10);
+  active.forEach((fvg) => {
+    const isBull = fvg.type === "bullish";
+    const fill = isBull ? "rgba(52, 211, 153, 0.15)" : "rgba(251, 113, 133, 0.15)";
+    const line = isBull ? "rgba(52, 211, 153, 0.45)" : "rgba(251, 113, 133, 0.45)";
+    const startSec = tsToTimeSec(fvg.ts_ms);
+    if (startSec >= lastBarTimeSec) return;
+    fvgBoxSeries.push(_addBoxSeries(startSec, lastBarTimeSec, fvg.high, fvg.low, fill, line));
+  });
 }
 
 function clearBosSegments() {
@@ -163,80 +202,43 @@ function renderEqlSegments(equalLevels) {
   });
 }
 
-// PD Zone — 3개 AreaSeries (premium=빨강, equilibrium=회색, discount=초록)
-// 각 zone 의 top/bottom 가격을 그라데이션 박스로 표시. trailing.bottom_ts_ms 시점부터 차트 끝까지 채움.
-function _addZoneArea(startSec, endSec, top, bottom, color) {
-  // 위쪽 line — top, 아래쪽 line — bottom, baseline 박은 게 박은 게 박은 박은 박은 박은 박은 박은 박은
-  // lightweight-charts AreaSeries 는 단일 값 + baseline 박을 게 박은 게 박은 박은 박은 박은 박은 박은
-  // 박은 게 박은 게 박은 박은 박은 박은 박은 박은 박은 박은 — 박은 게 박은 게 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은
-  const series = chart.addAreaSeries({
-    topColor: color,
-    bottomColor: color.replace(/[\d.]+\)$/, "0.05)"),
-    lineColor: color.replace(/[\d.]+\)$/, "0.0)"),
-    lineWidth: 1,
-    priceLineVisible: false,
-    lastValueVisible: false,
-    crosshairMarkerVisible: false,
-  });
-  // top 값으로 fill — 아래는 0 으로 떨어지므로 base 값으로 잘라야 함 → baseLine 박은 거 박은 게 박은 박은 박은 박은
-  // 가장 간단 — top 값만 area, bottom 부분은 별 series 박은 게 박은 게 박은 박은 박은 박은
-  series.setData([
-    { time: startSec, value: top },
-    { time: endSec, value: top },
-  ]);
-  return series;
-}
-
-function renderPdZones(trailing, lastBarTimeSec) {
-  clearZoneAreas();
-  if (!vizEnabled.zones || !trailing) return;
+// PD Zone — BaselineSeries 박스 3개 (Premium=빨강 / Equilibrium=회색 / Discount=초록)
+// 각 zone 은 trailing 시작 ts 부터 차트 끝까지의 시간 한정 박스
+function renderPdZones(trailing) {
+  clearZoneBoxes();
+  if (!vizEnabled.zones || !trailing || !lastBarTimeSec) return;
   const top = trailing.top_price;
   const bot = trailing.bottom_price;
-  if (top <= bot || !lastBarTimeSec) return;
+  if (top <= bot) return;
   const range = top - bot;
-  // zone 시작 시점 — trailing top/bottom 중 더 이른 시점
   const startTs = Math.min(trailing.top_ts_ms, trailing.bottom_ts_ms);
   const startSec = tsToTimeSec(startTs);
+  if (startSec >= lastBarTimeSec) return;
 
-  // 6개 priceLine 으로 zone 경계 박는 게 박은 게 박은 박은 박은 박은 박은 — 박은 게 박은 게 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은
-  // (AreaSeries 박은 게 박은 게 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은 박은)
   const zones = [
-    { topPrice: top,              botPrice: bot + 0.95 * range, color: "rgba(251, 113, 133, 0.20)" },  // Premium
-    { topPrice: bot + 0.525*range, botPrice: bot + 0.475 * range, color: "rgba(135, 139, 148, 0.20)" }, // Equilibrium
-    { topPrice: bot + 0.05*range,  botPrice: bot,                color: "rgba(52, 211, 153, 0.20)" },   // Discount
+    {
+      topPrice: top,
+      botPrice: bot + 0.95 * range,
+      fill: "rgba(251, 113, 133, 0.18)",
+      line: "rgba(251, 113, 133, 0.50)",
+    },
+    {
+      topPrice: bot + 0.525 * range,
+      botPrice: bot + 0.475 * range,
+      fill: "rgba(135, 139, 148, 0.18)",
+      line: "rgba(135, 139, 148, 0.50)",
+    },
+    {
+      topPrice: bot + 0.05 * range,
+      botPrice: bot,
+      fill: "rgba(52, 211, 153, 0.18)",
+      line: "rgba(52, 211, 153, 0.50)",
+    },
   ];
   zones.forEach((z) => {
-    // 위쪽 area — fill 값 = topPrice, baseline = botPrice
-    const series = chart.addAreaSeries({
-      topColor: z.color,
-      bottomColor: z.color,
-      lineColor: z.color.replace(/[\d.]+\)$/, "0.5)"),
-      lineWidth: 1,
-      priceLineVisible: false,
-      lastValueVisible: false,
-      crosshairMarkerVisible: false,
-      // baseValue 박은 게 박은 게 박은 박은 박은 — botPrice 박은 게 박은 박은 박은 박은 박은 박은 박은 박은
-      baseLineColor: "transparent",
-    });
-    series.setData([
-      { time: startSec, value: z.topPrice },
-      { time: lastBarTimeSec, value: z.topPrice },
-    ]);
-    zoneAreaSeries.push(series);
-    // 아래쪽 경계선 (botPrice)
-    const lowSeries = chart.addLineSeries({
-      color: z.color.replace(/[\d.]+\)$/, "0.5)"),
-      lineWidth: 1,
-      lineStyle: 0,
-      priceLineVisible: false,
-      lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    lowSeries.setData([
-      { time: startSec, value: z.botPrice },
-      { time: lastBarTimeSec, value: z.botPrice },
-    ]);
-    zoneAreaSeries.push(lowSeries);
+    zoneBoxSeries.push(
+      _addBoxSeries(startSec, lastBarTimeSec, z.topPrice, z.botPrice, z.fill, z.line),
+    );
   });
 }
 
@@ -267,37 +269,19 @@ function renderTrailingExtremes(trailing) {
   trailingPriceLines.push(topPl, botPl);
 }
 
-function renderObPriceLines(obs) {
-  clearObPriceLines();
-  // 미mitigated OB 상위 5개만 (chart 지저분 방지)
-  const active = (obs || []).filter((o) => !o.mitigated).slice(-5);
-  active.forEach((ob) => {
-    const color = ob.type === "bullish"
-      ? "rgba(45, 212, 191, 0.45)"
-      : "rgba(244, 114, 182, 0.45)";
-    [ob.high, ob.low].forEach((price) => {
-      const pl = candleSeries.createPriceLine({
-        price,
-        color,
-        lineWidth: 1,
-        lineStyle: 2, // dashed
-        axisLabelVisible: false,
-        title: "",
-      });
-      obPriceLines.push(pl);
-    });
-  });
-}
-
 function clearOverlays() {
-  fvgBullSeries.setData([]);
-  fvgBearSeries.setData([]);
   candleSeries.setMarkers([]);
-  clearObPriceLines();
+  clearObBoxes();
+  clearFvgBoxes();
   clearTrailingPriceLines();
   clearBosSegments();
   clearEqlSegments();
-  clearZoneAreas();
+  clearZoneBoxes();
+}
+
+function clearZoneBoxes() {
+  zoneBoxSeries.forEach((s) => { try { chart.removeSeries(s); } catch (e) { /* noop */ } });
+  zoneBoxSeries = [];
 }
 
 function tsToTimeSec(ts_ms) { return Math.floor(ts_ms / 1000); }
@@ -396,23 +380,7 @@ function renderMarkers(payload) {
   // 단순 marker 렌더 — 각 FVG 별 사각형 대신 setMarkers 일괄 표시.
   const markers = [];
 
-  // FVG markers — 같은 봉/위치에 여러 FVG 면 1개만
-  const fvgSeen = new Set();
-  m.fvgs.forEach(f => {
-    const t = tsToTimeSec(f.ts_ms);
-    const pos = f.type === "bullish" ? "belowBar" : "aboveBar";
-    const key = `${t}-${pos}`;
-    if (fvgSeen.has(key)) return;
-    fvgSeen.add(key);
-    const color = f.type === "bullish" ? "#34d399" : "#fb7185";
-    markers.push({
-      time: t,
-      position: pos,
-      color,
-      shape: "square",
-      text: `FVG ${f.filled ? "✓" : ""}${f.invalidated ? "✗" : ""}`,
-    });
-  });
+  // FVG 박스 (BaselineSeries) 가 시각 자체이므로 텍스트 마커는 제거 (renderFvgBoxes)
 
   // Sweep markers — 같은 봉의 같은 위치(아래/위)에서 sweep 여러 개면 1개만 표시
   // (큰 TF 차트에서 한 봉에 wick 여러 swing 한 번에 sweep 하면 도배되는 문제)
@@ -448,27 +416,12 @@ function renderMarkers(payload) {
     });
   });
 
-  // Order Blocks — 미mitigated 만, 같은 봉/위치 dedup
-  const obSeen = new Set();
-  (m.order_blocks ?? []).forEach(ob => {
-    if (ob.mitigated) return;
-    const t = tsToTimeSec(ob.ts_ms);
-    const isBull = ob.type === "bullish";
-    const pos = isBull ? "belowBar" : "aboveBar";
-    const key = `${t}-${pos}`;
-    if (obSeen.has(key)) return;
-    obSeen.add(key);
-    markers.push({
-      time: t,
-      position: pos,
-      color: isBull ? "#2dd4bf" : "#f472b6",
-      shape: "square",
-      text: "OB",
-    });
-  });
+  // OB 박스 (BaselineSeries) 가 시각 자체이므로 텍스트 마커는 제거 (renderObBoxes)
 
-  // 활성 OB top/bottom 가로 priceLine — 최대 5개
-  renderObPriceLines(m.order_blocks ?? []);
+  // 활성 OB 박스 — BaselineSeries (시작 봉 ~ 차트 끝)
+  renderObBoxes(m.order_blocks ?? []);
+  // 활성 FVG 박스 — BaselineSeries
+  renderFvgBoxes(m.fvgs ?? []);
 
   // Trailing extremes (Strong/Weak High & Low) — 가로선 한 쌍
   renderTrailingExtremes(m.trailing ?? null);
@@ -482,21 +435,13 @@ function renderMarkers(payload) {
   renderEqlSegments(m.equal_levels ?? []);
 
   // Premium/Discount Zone — AreaSeries 박스 (마지막 봉 ts 까지 채움)
-  renderPdZones(m.trailing ?? null, lastBarTimeSec);
+  renderPdZones(m.trailing ?? null);
 
   // 시간순 정렬
   markers.sort((a, b) => a.time - b.time);
   candleSeries.setMarkers(markers);
 
-  // FVG mean line — 각 FVG 의 mid price 를 area series 로 추적 (단순 indicator)
-  const bullLine = m.fvgs.filter(f => f.type === "bullish").map(f => ({
-    time: tsToTimeSec(f.ts_ms), value: f.mean,
-  }));
-  const bearLine = m.fvgs.filter(f => f.type === "bearish").map(f => ({
-    time: tsToTimeSec(f.ts_ms), value: f.mean,
-  }));
-  fvgBullSeries.setData(bullLine.sort((a,b) => a.time-b.time));
-  fvgBearSeries.setData(bearLine.sort((a,b) => a.time-b.time));
+  // FVG 는 renderFvgBoxes 의 BaselineSeries 박스로 표시 (mean line 제거)
 }
 
 // ============================================================
