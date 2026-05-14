@@ -1647,8 +1647,8 @@ def main() -> None:
         "Aurora Launcher",
         str(ui_path),
         js_api=api,
-        width=1100,                  # v0.4.45 — 사용자 요청 사이즈 (축소)
-        height=680,
+        width=1137,                  # v0.4.45 — 사용자 지정 사이즈
+        height=613,
         resizable=False,             # v0.4.43 — 런처 창 크기 고정
         background_color="#1e202c",  # v0.1.15 brand bg
     )
