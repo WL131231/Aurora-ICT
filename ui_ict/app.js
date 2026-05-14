@@ -29,8 +29,25 @@ const chart = LightweightCharts.createChart(chartEl, {
     horzLines: { color: "rgba(219,219,222,0.04)" },
   },
   timeScale: { borderColor: "rgba(219,219,222,0.10)", timeVisible: true, secondsVisible: false },
-  rightPriceScale: { borderColor: "rgba(219,219,222,0.10)" },
+  rightPriceScale: {
+    borderColor: "rgba(219,219,222,0.10)",
+    autoScale: true,
+    mode: LightweightCharts.PriceScaleMode.Normal,
+  },
   crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+  // 가격 축 드래그로 상하 확대/축소 활성화 + 휠 스크롤로 시간축 확대
+  handleScale: {
+    mouseWheel: true,
+    pinch: true,
+    axisPressedMouseMove: { time: true, price: true },
+    axisDoubleClickReset: true,
+  },
+  handleScroll: {
+    mouseWheel: true,
+    pressedMouseMove: true,
+    horzTouchDrag: true,
+    vertTouchDrag: true,
+  },
 });
 const candleSeries = chart.addCandlestickSeries({
   upColor: "#34d399", downColor: "#fb7185",
@@ -398,6 +415,10 @@ function renderStatus(s) {
 
   $("btn-demo").classList.toggle("active", s.run_mode === "demo");
   $("btn-live").classList.toggle("active", s.run_mode === "live");
+
+  // 봇 가동 상태 → START / STOP 시각 효과 (running 시 START 녹색 glow)
+  $("btn-start").classList.toggle("active", s.state === "running");
+  $("btn-stop").classList.toggle("active", s.state === "stopped" && s.enabled);
 
   // API Credentials 폼 ↔ 등록완료 상태 전환
   const credForm = $("cred-form-block");
