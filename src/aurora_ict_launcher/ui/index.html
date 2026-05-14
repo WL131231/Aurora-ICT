@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aurora · ICT Launcher</title>
+    <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+    <!-- 검은 배경 + ICT painterly 손 (사용자 페이지 동일 분위기) -->
+    <div class="bg-gradient"></div>
+    <div class="bg-texture"></div>
+    <div class="bg-hands"></div>
+
+    <main class="cinematic">
+        <!-- 좌측 — 타이틀 / 부제 / Start / 버전 -->
+        <section class="hero">
+            <div class="hero-top">
+                <div class="brand-row">
+                    <div class="logo-mark">
+                        <svg width="40" height="40" viewBox="0 0 28 28" fill="none">
+                            <defs>
+                                <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" stop-color="#DBDBDE" />
+                                    <stop offset="100%" stop-color="#8b8b90" />
+                                </linearGradient>
+                            </defs>
+                            <path d="M14 2 L26 14 L14 26 L2 14 Z" stroke="url(#logoGrad)" stroke-width="1.5" fill="none" />
+                            <path d="M14 8 L20 14 L14 20 L8 14 Z" fill="url(#logoGrad)" opacity="0.6" />
+                        </svg>
+                    </div>
+                    <span class="brand-text">AURORA · ICT</span>
+                </div>
+                <div class="meta-info">
+                    <span id="version-info">v—</span>
+                </div>
+            </div>
+
+            <div class="hero-content">
+                <div class="episode-num">01 — 03</div>
+                <h1 class="hero-title">ICT를<br/>정복하다.</h1>
+                <p class="hero-sub">
+                    ICT는 Inner Circle Trader — 시장은 기관 알고리즘이 유동성을 사냥하며 움직인다고 보는 매매 방법론입니다.<br/>
+                    Aurora-ICT는 그 룰을 100% 코드로 옮겨 24시간 차트를 감시하고, 8개 핵심 지표가 정렬된 자리에서만 진입합니다.
+                </p>
+
+                <div id="status-line">준비됨 — Trading Start 클릭</div>
+
+                <div id="progress-container" class="progress-container" style="display:none">
+                    <div id="progress-bar" class="progress-bar"></div>
+                    <div id="progress-text" class="progress-text"></div>
+                </div>
+            </div>
+
+            <div class="hero-bottom">
+                <div class="log-area">
+                    <ul id="log-list"></ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- 우측 — Start 버튼 -->
+        <aside class="visual">
+            <div class="diamond-stage">
+                <svg viewBox="0 0 400 400" class="diamond-hero">
+                    <defs>
+                        <linearGradient id="heroGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" stop-color="#DBDBDE" />
+                            <stop offset="100%" stop-color="#5a5a60" />
+                        </linearGradient>
+                        <radialGradient id="heroGlow" cx="50%" cy="50%" r="50%">
+                            <stop offset="0%" stop-color="rgba(219, 219, 222, 0.25)" />
+                            <stop offset="100%" stop-color="rgba(219, 219, 222, 0)" />
+                        </radialGradient>
+                    </defs>
+                    <circle cx="200" cy="200" r="180" fill="url(#heroGlow)" />
+                    <path d="M200 40 L360 200 L200 360 L40 200 Z"
+                          stroke="url(#heroGrad)" stroke-width="3" fill="none"
+                          opacity="0.95" />
+                    <path d="M200 90 L310 200 L200 310 L90 200 Z"
+                          stroke="url(#heroGrad)" stroke-width="2" fill="none"
+                          opacity="0.5" />
+                    <path d="M200 130 L270 200 L200 270 L130 200 Z"
+                          fill="url(#heroGrad)" opacity="0.7" />
+                </svg>
+            </div>
+
+            <button id="btn-start" class="btn-start">
+                <span class="btn-arrow">▶</span>
+                <span class="btn-label">Trading Start</span>
+            </button>
+        </aside>
+    </main>
+
+    <script src="js/app.js"></script>
+</body>
+</html>

@@ -18,15 +18,16 @@ ICON_WIN = ASSETS_DIR / "aurora.ico"
 ICON_MAC = ASSETS_DIR / "aurora.icns"
 
 a = Analysis(
-    [str(SRC / "aurora_ict_launcher" / "__main__.py")],
+    [str(SRC / "aurora_ict" / "main.py")],
     pathex=[str(SRC)],
     binaries=[],
     datas=[
-        # ui_ict 폴더 통째로 — launcher 가 /ui static mount 로 서빙
+        # ui_ict 폴더 통째로 — main app 이 /ui static mount 로 서빙
         (str(UI_DIR), "ui_ict"),
     ],
     hiddenimports=[
         "aurora_ict",
+        "aurora_ict.main",
         "aurora_ict.api.app",
         "aurora_ict.bot.manager",
         "aurora_ict.bot.aurora_adapter",

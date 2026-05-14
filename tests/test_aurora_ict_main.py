@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from aurora_ict_launcher.launcher import (
+from aurora_ict.main import (
     _is_port_free,
     _pick_port,
     _wait_ready,
