@@ -100,8 +100,9 @@ body {
 .hero {
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
-    padding: 48px 56px;
+    justify-content: flex-start;     /* v0.4.45 — 텍스트 brand-row 바로 아래로 */
+    padding: 32px 48px;
+    gap: 24px;
 }
 
 .hero-top {
@@ -221,8 +222,9 @@ body {
     min-height: 1.4em;
 }
 
-/* hero 하단 로그 */
+/* hero 하단 로그 — v0.4.45 mt-auto 로 항상 바닥에 박음 */
 .hero-bottom {
+    margin-top: auto;
     border-top: 1px solid var(--border);
     padding-top: 16px;
 }
