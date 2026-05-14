@@ -94,8 +94,8 @@ class IctSettings(BaseSettings):
     step_interval_sec: int = Field(default=60, ge=10)
     ohlcv_limit: int = Field(default=1000, ge=50, le=1000)
     # setup stale threshold — FVG 이후 N 봉 안에 retest 없으면 진입 안 함.
-    # 1h → 10봉 = 10시간 (NY 세션 충분 커버).
-    setup_stale_bars: int = Field(default=10, ge=1, le=50)
+    # 30봉 = 5m TF 에서 2.5시간 / 1h TF 에서 30시간. limit retest 시간 넉넉히 확보.
+    setup_stale_bars: int = Field(default=30, ge=1, le=100)
     # disable_time_filter: True 면 Silver Bullet / Killzone 시간 윈도우 무시 (24h 매매).
     # ICT 정통은 TIME-first 라 살짝 벗어나지만 FVG/bias/sweep/min_rr 다른 필터로 깐깐.
     disable_time_filter: bool = Field(default=True)
