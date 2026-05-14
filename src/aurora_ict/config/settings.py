@@ -99,6 +99,10 @@ class IctSettings(BaseSettings):
     # disable_time_filter: True 면 Silver Bullet / Killzone 시간 윈도우 무시 (24h 매매).
     # ICT 정통은 TIME-first 라 살짝 벗어나지만 FVG/bias/sweep/min_rr 다른 필터로 깐깐.
     disable_time_filter: bool = Field(default=True)
+    # multi_tf: True 면 HTF (Trade TF 위 전체) setup 추적 + LTF retrace/structure
+    # shift/FVG confirm 시 진입 (ICT 정통). False 면 단일 TF 매매.
+    multi_tf: bool = Field(default=False)
+    multi_tf_ltf_lookback: int = Field(default=30, ge=5, le=200)
 
     demo_api_key: SecretStr = Field(default=SecretStr(""))
     demo_api_secret: SecretStr = Field(default=SecretStr(""))
