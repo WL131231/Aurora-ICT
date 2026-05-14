@@ -108,6 +108,8 @@ def _settings_safe_dict(settings: IctSettings) -> dict[str, Any]:
         "position_pct_base": settings.position_pct_base,
         "position_pct_max": settings.position_pct_max,
         "position_pct_step": settings.position_pct_step,
+        "multi_tf": settings.multi_tf,
+        "multi_tf_ltf_lookback": settings.multi_tf_ltf_lookback,
         "min_rr": settings.min_rr,
         "fvg_min_size_pct": settings.fvg_min_size_pct,
         "step_interval_sec": settings.step_interval_sec,

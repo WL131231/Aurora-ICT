@@ -26,7 +26,13 @@ from aurora_ict.indicators.daily_bias import compute_daily_bias
 from aurora_ict.indicators.structure import TrendDirection
 from aurora_ict.signal.ict_signal import (
     ICTSignal,
+    SignalAction,
     generate_ict_signal,
+)
+from aurora_ict.strategy.htf_setup_tracker import HtfSetupTracker
+from aurora_ict.strategy.ltf_entry_confirmer import (
+    ConfirmedEntry,
+    confirm_ltf_entry,
 )
 from aurora_ict.strategy.multi_tf_bias import (
     combine_bias,
@@ -119,6 +125,13 @@ class BotIctInstance:
     # 24h 매매 — True 면 SB / Killzone 시간 필터 완전 skip. expand_to_killzone 보다 우선.
     disable_time_filter: bool = True
 
+    # Multi-TF 모드 — True 면 HTF (Trade TF 위 모든 단계) setup 추적 + LTF (Trade TF)
+    # 에서 retrace + structure shift + FVG confirm 시 진입. ICT 정통 multi-TF framework.
+    # False 면 기존 단일 TF 방식.
+    multi_tf: bool = False
+    # Multi-TF LTF confirmer lookback (LTF 봉 단위).
+    multi_tf_ltf_lookback: int = 30
+
     # Partial TP 분배 — TP1/TP2/TP3 비율 (합 = 1.0). ICT 정통 50/25/25.
     tp_distribution: tuple[float, float, float] = (0.5, 0.25, 0.25)
 
@@ -128,6 +141,8 @@ class BotIctInstance:
     _last_setup_ts_ms: int = field(default=0)  # 동일 setup 중복 진입 방지
     # HTF 봉 캐시 — (tf, last_ts_ms) → DataFrame. 같은 봉이면 재fetch 안 함.
     _htf_cache: dict[str, tuple[int, pd.DataFrame]] = field(default_factory=dict)
+    # Multi-TF tracker — multi_tf=True 시 lazy init.
+    _htf_tracker: HtfSetupTracker | None = field(default=None)
 
     async def start(self) -> None:
         """봇 기동 (background task 생성)."""
@@ -165,6 +180,9 @@ class BotIctInstance:
         Returns:
             계산된 ``ICTSignal`` (테스트/디버그 용도로 노출).
         """
+        if self.multi_tf:
+            return await self._step_multi_tf()
+
         df = await self._fetch_ohlcv()
         htf_bias = await self._compute_htf_bias()
         daily_bias = await self._compute_daily_bias(df)
@@ -197,6 +215,116 @@ class BotIctInstance:
         await self._execute_setup(signal.setup)
         self._last_setup_ts_ms = signal.setup.ts_ms
         return signal
+
+    async def _step_multi_tf(self) -> ICTSignal:
+        """Multi-TF step — HTF tracker + LTF confirmer 결합 (ICT 정통).
+
+        시퀀스:
+        1. LTF (self.timeframe) OHLCV fetch
+        2. HtfSetupTracker lazy init + 각 HTF fetch → tracker.update_htf
+        3. 현재 가격으로 SL/TP hit setup 제거
+        4. 가격이 zone 안인 HTF setup 별로 LtfEntryConfirmer 실행
+        5. ConfirmedEntry 박힘 + 신규 setup 박힘 + 포지션 없음 → 진입
+        """
+        if self._htf_tracker is None:
+            self._htf_tracker = HtfSetupTracker(
+                trade_tf=self.timeframe,
+                min_rr=self.min_rr,
+                fvg_min_size_pct=self.fvg_min_size_pct,
+            )
+
+        ltf_df = await self._fetch_ohlcv()
+        last_ts_ms = (
+            int(ltf_df.index[-1].value // 10**6) if len(ltf_df) > 0 else 0
+        )
+        no_action = ICTSignal(
+            action=SignalAction.NO_ACTION,
+            setup=None,
+            symbol=self.symbol,
+            ts_ms=last_ts_ms,
+            reason="multi_tf",
+        )
+
+        if len(ltf_df) < 5:
+            return no_action
+
+        current_price = float(ltf_df["close"].iloc[-1])
+
+        # HTF tracker 갱신 — 각 HTF 별 fetch + 최신 setup 감지.
+        for htf_tf in self._htf_tracker.htf_list():
+            try:
+                htf_df = await self._fetch_ohlcv_tf(htf_tf, 200)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("HTF fetch 실패 (%s): %s", htf_tf, e)
+                continue
+            self._htf_tracker.update_htf(htf_tf, htf_df)
+
+        # SL/TP hit setup 제거.
+        self._htf_tracker.invalidate_if_sl_hit(current_price)
+        self._htf_tracker.invalidate_if_tp_hit(current_price)
+
+        # 진입 중이면 sync 만.
+        if self.active_position is not None:
+            await self._sync_position_state()
+            return no_action
+
+        # 가격이 zone 안인 HTF setup 별로 confirm 시도.
+        matching = self._htf_tracker.setups_containing_price(current_price)
+        for htf_active in matching:
+            # 동일 HTF setup 으로 재진입 방지.
+            if htf_active.setup.ts_ms == self._last_setup_ts_ms:
+                continue
+            confirmed = confirm_ltf_entry(
+                htf_active,
+                ltf_df,
+                lookback_bars=self.multi_tf_ltf_lookback,
+                fvg_min_size_pct=self.fvg_min_size_pct,
+            )
+            if confirmed is None:
+                continue
+            setup = self._confirmed_to_setup(confirmed)
+            await self._execute_setup(setup)
+            self._last_setup_ts_ms = htf_active.setup.ts_ms
+            return ICTSignal(
+                action=(
+                    SignalAction.ENTER_LONG
+                    if confirmed.direction is Direction.LONG
+                    else SignalAction.ENTER_SHORT
+                ),
+                setup=setup,
+                symbol=self.symbol,
+                ts_ms=last_ts_ms,
+                reason=f"multi_tf:{htf_active.htf_tf}",
+            )
+
+        return no_action
+
+    @staticmethod
+    def _confirmed_to_setup(confirmed: ConfirmedEntry) -> SilverBulletSetup:
+        """ConfirmedEntry → SilverBulletSetup 변환 (execute_setup 재사용).
+
+        confluence_score=2 박혀있어서 sizing 70% (base 40 + step 15 × 2).
+        """
+        risk = abs(confirmed.entry - confirmed.stop_loss)
+        reward = abs(confirmed.take_profit - confirmed.entry)
+        rr = (reward / risk) if risk > 0 else 0.0
+        return SilverBulletSetup(
+            ts_ms=confirmed.htf_setup_ts_ms,
+            direction=confirmed.direction,
+            window=f"multi_tf:{confirmed.htf_tf}",
+            entry=confirmed.entry,
+            stop_loss=confirmed.stop_loss,
+            take_profit=confirmed.take_profit,
+            risk_reward=rr,
+            fvg=confirmed.ltf_fvg,
+            confluence_score=2,
+            confluences=[f"htf={confirmed.htf_tf}"],
+            reasons=[
+                f"htf_tf={confirmed.htf_tf}",
+                f"htf_setup_ts={confirmed.htf_setup_ts_ms}",
+                "multi_tf_confirmed",
+            ],
+        )
 
     async def _fetch_ohlcv(self) -> pd.DataFrame:
         """OHLCV fetch + DataFrame 변환 (Trade TF)."""
