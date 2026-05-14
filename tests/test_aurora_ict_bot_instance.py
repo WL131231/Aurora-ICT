@@ -314,12 +314,12 @@ def test_combine_with_daily_htf_none_passes_through() -> None:
     assert BotIctInstance._combine_with_daily(None, TrendDirection.UP) is None
 
 
-def test_combine_with_daily_conflict_returns_none_trend() -> None:
-    """HTF UP + Daily DOWN → NONE (진입 차단)."""
+def test_combine_with_daily_conflict_follows_daily() -> None:
+    """HTF UP + Daily DOWN → daily 따름 (DOWN). 충돌 시 daily 우선 정책."""
     result = BotIctInstance._combine_with_daily(
         TrendDirection.UP, TrendDirection.DOWN,
     )
-    assert result is TrendDirection.NONE
+    assert result is TrendDirection.DOWN
 
 
 def test_combine_with_daily_agreement() -> None:

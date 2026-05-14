@@ -87,7 +87,9 @@ class IctSettings(BaseSettings):
     # confluence_score 0 → base, 1/2/3+ → base + step * score (max capped).
     # 사용자 정책: 0→40, 1→55, 2→70, 3+→90 (step=15).
     position_pct_step: float = Field(default=15.0, ge=0.0, le=50.0)
-    min_rr: float = Field(default=2.0, ge=1.0)
+    # min_rr 1.5 — 진입 빈도 위해 기존 2.0 에서 완화. partial 1R/2R/3R 청산 구조라
+    # final RR 1.5 도 평균 ~1.5R 의 실제 수익 챙길 수 있음.
+    min_rr: float = Field(default=1.5, ge=1.0)
     fvg_min_size_pct: float = Field(default=0.0005, ge=0)
     step_interval_sec: int = Field(default=60, ge=10)
     ohlcv_limit: int = Field(default=1000, ge=50, le=1000)

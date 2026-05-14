@@ -260,7 +260,7 @@ class BotIctInstance:
         - HTF None (매핑 없음) → silver_bullet 자동 추정 위임 (None 그대로)
         - 둘 다 같은 방향 → 그 방향
         - 한쪽 NONE → 다른쪽 따름
-        - 충돌 → NONE (진입 차단)
+        - 충돌 → daily 따름 (Daily bias 가 더 무거운 신호라 우선)
         """
         if htf is None:
             return None
@@ -270,7 +270,7 @@ class BotIctInstance:
             return htf
         if htf == daily:
             return htf
-        return TrendDirection.NONE
+        return daily
 
     async def _htf_bias_for_tf(self, tf: str) -> TrendDirection:
         """단일 HTF bias — 캐시된 봉 재사용, 새 봉 생겼을 때만 재fetch."""
