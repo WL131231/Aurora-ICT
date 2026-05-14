@@ -83,6 +83,7 @@ class BotManager:
             ohlcv_limit=self.settings.ohlcv_limit,
             # v0.4.30 이후 진입 완화 옵션 — settings 에서 명시 주입.
             setup_stale_bars=self.settings.setup_stale_bars,
+            disable_time_filter=self.settings.disable_time_filter,
         )
         await self._bot.start()
         logger.info(

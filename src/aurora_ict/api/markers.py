@@ -267,6 +267,7 @@ def to_chart_markers(
     include_setups: bool = True,
     fvg_min_size_pct: float | None = 0.0005,
     min_rr: float = 2.0,
+    disable_time_filter: bool = True,
 ) -> ChartMarkers:
     """DataFrame 한 건으로부터 모든 ICT marker를 한꺼번에 계산.
 
@@ -275,6 +276,8 @@ def to_chart_markers(
         include_setups: ``True``일 때 Silver Bullet setup marker도 포함.
         fvg_min_size_pct: FVG 최소 % size.
         min_rr: setup 최소 RR.
+        disable_time_filter: ``True``면 SB / Killzone 시간 윈도우 무시 (24h setup).
+            UI 차트에 봇 진입 정책과 동일한 setup 라벨 렌더링하려면 봇 default 와 일치 박음.
 
     Returns:
         ``ChartMarkers`` bundle.
@@ -554,6 +557,7 @@ def to_chart_markers(
             df,
             min_rr=min_rr,
             fvg_min_size_pct=fvg_min_size_pct,
+            disable_time_filter=disable_time_filter,
         )
         for s in setups:
             markers.setups.append(SetupMarker(

@@ -77,9 +77,10 @@ class IctSettings(BaseSettings):
             )
         return v
 
-    # ICT 정통 risk 1%. min_rr 은 strict 3.0 도 가능하지만 진입 빈도 위해 2.0 표준.
-    risk_per_trade_pct: float = Field(default=1.0, ge=0.01, le=5.0)
-    leverage: int = Field(default=5, ge=1, le=20)
+    # Risk 5% / Leverage 20x — 필터 (HTF bias / FVG / sweep / min_rr 2.0) 깐깐해서
+    # setup 자체가 드물기 때문에 setup 당 큰 비중 박는 정책.
+    risk_per_trade_pct: float = Field(default=5.0, ge=0.01, le=10.0)
+    leverage: int = Field(default=20, ge=1, le=50)
     min_rr: float = Field(default=2.0, ge=1.0)
     fvg_min_size_pct: float = Field(default=0.0005, ge=0)
     step_interval_sec: int = Field(default=60, ge=10)
@@ -87,6 +88,9 @@ class IctSettings(BaseSettings):
     # setup stale threshold — FVG 이후 N 봉 안에 retest 없으면 진입 안 함.
     # 1h → 10봉 = 10시간 (NY 세션 충분 커버).
     setup_stale_bars: int = Field(default=10, ge=1, le=50)
+    # disable_time_filter: True 면 Silver Bullet / Killzone 시간 윈도우 무시 (24h 매매).
+    # ICT 정통은 TIME-first 라 살짝 벗어나지만 FVG/bias/sweep/min_rr 다른 필터로 깐깐.
+    disable_time_filter: bool = Field(default=True)
 
     demo_api_key: SecretStr = Field(default=SecretStr(""))
     demo_api_secret: SecretStr = Field(default=SecretStr(""))

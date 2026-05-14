@@ -99,9 +99,9 @@ class BotIctInstance:
     client: ExchangeClientProtocol
     symbol: str = "BTCUSDT"
     timeframe: str = "1m"
-    # ICT risk 1%. min_rr 2.0 (1:2, ICT 인정 범위, 진입 빈도 균형).
-    risk_per_trade_pct: float = 1.0
-    leverage: int = 5
+    # Risk 5% / Leverage 20x — 깐깐한 필터 (HTF bias / FVG / sweep / min_rr 2.0) 기반.
+    risk_per_trade_pct: float = 5.0
+    leverage: int = 20
     min_rr: float = 2.0
     step_interval_sec: int = 60
     ohlcv_limit: int = 200
@@ -110,9 +110,11 @@ class BotIctInstance:
     setup_stale_bars: int = 10
     # LuxAlgo SB Strict mode — True 면 FVG mean threshold 까지 retrace 된 setup 만 진입.
     require_retrace: bool = False
-    # Setup 시간 윈도우 확장 — True (default) 면 Killzone 전체 (Asian/London/NY_AM/Close/PM),
+    # Setup 시간 윈도우 확장 — True 면 Killzone 전체 (Asian/London/NY_AM/Close/PM),
     # False 면 Silver Bullet 1시간 윈도우만 (NY 3-4am/10-11am/2-3pm).
     expand_to_killzone: bool = True
+    # 24h 매매 — True 면 SB / Killzone 시간 필터 완전 skip. expand_to_killzone 보다 우선.
+    disable_time_filter: bool = True
 
     # Partial TP 분배 — TP1/TP2/TP3 비율 (합 = 1.0). ICT 정통 50/25/25.
     tp_distribution: tuple[float, float, float] = (0.5, 0.25, 0.25)
@@ -174,6 +176,7 @@ class BotIctInstance:
             stale_bars=self.setup_stale_bars,
             require_retrace=self.require_retrace,
             expand_to_killzone=self.expand_to_killzone,
+            disable_time_filter=self.disable_time_filter,
         )
 
         # 진입 중인 position이 있으면 신규 진입은 막고 상태만 동기화

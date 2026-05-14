@@ -227,6 +227,7 @@ def detect_silver_bullet_setups(
     fvg_min_size_pct: float | None = 0.0005,
     min_confluence: int = 0,
     expand_to_killzone: bool = False,
+    disable_time_filter: bool = False,
 ) -> list[SilverBulletSetup]:
     """Silver Bullet setup 후보 검출.
 
@@ -239,6 +240,9 @@ def detect_silver_bullet_setups(
         expand_to_killzone: ``True``면 Silver Bullet 1시간 윈도우 대신 Killzone
             전체 (Asian/London/NY_AM/Close/PM) 안 FVG 도 setup 으로 채택.
             진입 빈도 ↑ (5세션 ≈ 12시간/일 vs 기존 SB 3시간/일).
+        disable_time_filter: ``True``면 SB / Killzone 시간 윈도우 검사 자체를 skip
+            → 24시간 진입 허용 (window 라벨 = ``"any"``). expand_to_killzone 보다
+            우선 적용.
 
     Returns:
         ``SilverBulletSetup`` list — 시간순.
@@ -274,15 +278,24 @@ def detect_silver_bullet_setups(
     for fvg in fvgs:
         if fvg.type is not desired_fvg_type:
             continue
-        # 시간 윈도우 검사 — SB 윈도우 우선, 없으면 Killzone (expand 모드 시).
-        window = in_silver_bullet(fvg.ts_ms)
-        if window is None:
-            if not expand_to_killzone:
-                continue
-            kz = classify_killzone(fvg.ts_ms)
-            if kz is None:
-                continue
-            window = kz.value
+        # 시간 윈도우 검사 — disable_time_filter 면 skip (24h 매매).
+        # 아니면 SB 윈도우 우선, 없으면 Killzone (expand 모드 시).
+        if disable_time_filter:
+            sb_win = in_silver_bullet(fvg.ts_ms)
+            if sb_win is not None:
+                window = sb_win
+            else:
+                kz = classify_killzone(fvg.ts_ms)
+                window = kz.value if kz is not None else "any"
+        else:
+            window = in_silver_bullet(fvg.ts_ms)
+            if window is None:
+                if not expand_to_killzone:
+                    continue
+                kz = classify_killzone(fvg.ts_ms)
+                if kz is None:
+                    continue
+                window = kz.value
         day_ms = (fvg.ts_ms // 86_400_000) * 86_400_000
         key = (day_ms, window)
         if key in seen_windows:
