@@ -288,12 +288,25 @@ def _detect_obs_luxalgo(  # noqa: PLR0913
         if best_idx < 0:
             continue
 
+        # OB zone 은 봉 절반 (LuxAlgo OB Detector 표준).
+        # Bullish OB → 봉 아래 절반 (hl2 ~ low) = demand zone
+        # Bearish OB → 봉 위 절반 (high ~ hl2) = supply zone
+        bar_high = float(highs[best_idx])
+        bar_low = float(lows[best_idx])
+        hl2 = (bar_high + bar_low) / 2.0
+        if is_bull_event:
+            ob_top = hl2
+            ob_bottom = bar_low
+        else:
+            ob_top = bar_high
+            ob_bottom = hl2
+
         obs.append(OrderBlock(
             ts_ms=int(ts_arr[best_idx]),
             type=OrderBlockType.BULLISH if is_bull_event else OrderBlockType.BEARISH,
             open=float(opens[best_idx]),
-            high=float(highs[best_idx]),
-            low=float(lows[best_idx]),
+            high=ob_top,
+            low=ob_bottom,
             close=float(closes[best_idx]),
             idx=best_idx,
             displacement_idx=hi_idx,

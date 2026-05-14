@@ -280,7 +280,8 @@ def test_ob_luxalgo_bullish_basic() -> None:
     assert len(bull) == 1
     assert bull[0].idx == 3
     assert bull[0].displacement_idx == 5
-    assert bull[0].high == 108
+    # OB zone = 봉 아래 절반 (LuxAlgo): top = hl2 = (108+95)/2 = 101.5, bottom = low = 95
+    assert bull[0].high == 101.5
     assert bull[0].low == 95
 
 
