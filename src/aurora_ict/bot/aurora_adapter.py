@@ -152,5 +152,39 @@ class AuroraClientAdapter:
             logger.warning("fetch_balance 실패: %s", e)
             return {}
 
+    async def modify_stop_loss(
+        self, symbol: str, new_stop_loss: float,
+    ) -> dict[str, Any]:
+        """Bybit V5 set_trading_stop API 호출 — 활성 포지션 SL 수정.
+
+        Args:
+            symbol: ccxt unified symbol (e.g. "BTC/USDT:USDT").
+            new_stop_loss: 새 SL 가격.
+
+        Returns:
+            Bybit API 응답 dict. 실패 시 빈 dict.
+        """
+        ex = getattr(self._client, "_ex", None)
+        if ex is None:
+            logger.warning("modify_stop_loss: _ex 없음 — skip")
+            return {}
+        # ccxt unified → Bybit raw symbol ("BTC/USDT:USDT" → "BTCUSDT").
+        raw_symbol = symbol.replace("/", "").split(":")[0]
+        params = {
+            "category": "linear",
+            "symbol": raw_symbol,
+            "stopLoss": str(new_stop_loss),
+            # tpsl 모드 — Full 이면 전체 포지션 SL 수정.
+            "tpslMode": "Full",
+            "positionIdx": 0,  # one-way mode.
+        }
+        try:
+            result = await ex.private_post_v5_position_trading_stop(params)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("set_trading_stop 실패 (%s, sl=%.4f): %s",
+                           raw_symbol, new_stop_loss, e)
+            return {}
+        return dict(result) if isinstance(result, dict) else {"raw": str(result)}
+
 
 __all__ = ["AuroraClientAdapter"]
