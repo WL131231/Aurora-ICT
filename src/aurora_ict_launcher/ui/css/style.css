@@ -1,0 +1,290 @@
+/* v0.1.16 Launcher — HBO Chernobyl 시네마틱 레이아웃.
+   좌→우 그라디언트 배경 (#31323e → #60519b) + painterly 텍스처.
+   좌측 = 타이틀/부제/Start, 우측 = 거대 다이아몬드. */
+
+/* v0.1.70: 한글 글씨체 — HSBombaram 2.1 (한섬 봄바람체, 배포/상업 허용). */
+@font-face {
+    font-family: "HSBombaram";
+    src: url("../fonts/HSBombaram2.1.ttf") format("truetype");
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+}
+
+/* v0.1.71: AURORA 워드마크 폰트 — Ginqail (장수님 결정). */
+@font-face {
+    font-family: "Ginqail";
+    src: url("../fonts/Ginqail-Font.ttf") format("truetype");
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+}
+
+:root {
+    /* Aurora-ICT 모노톤 (본체 UI 와 동일 팔레트) */
+    --bg: #0a0a0c;
+    --bg-card: #141316;
+    --bg-purple: #201F1F;  /* legacy 변수명 유지 (CSS 의존성 안전) */
+    --text-base: #DBDBDE;
+
+    --text-1: rgba(219, 219, 222, 0.95);
+    --text-2: rgba(219, 219, 222, 0.70);
+    --text-3: rgba(219, 219, 222, 0.45);
+    --text-4: rgba(219, 219, 222, 0.25);
+    --border: rgba(219, 219, 222, 0.10);
+
+    /* 로고 / accent — 모노톤 */
+    --logo-purple: #DBDBDE;
+    --logo-indigo: #8b8b90;
+    --logo-cyan: #5a5a60;
+
+    --paint-texture: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='320'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.13 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: "HSBombaram", 'Pretendard Variable', 'Space Grotesk', system-ui, sans-serif;
+    color: var(--text-1);
+    overflow: hidden;
+    height: 100vh;
+    background: var(--bg);
+}
+
+/* ===== 배경 — Aurora-ICT 페이지 분위기 (검정 + 미세 vignette) ===== */
+.bg-gradient {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    background:
+        radial-gradient(ellipse at center, rgba(28,28,28,0.4) 0%, transparent 70%),
+        var(--bg);
+}
+
+.bg-texture {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background-image: var(--paint-texture);
+    background-blend-mode: overlay;
+    opacity: 0.7;
+}
+
+/* 두 손 배경 — cropped 이미지 (좌 로봇 / 우 인간). v0.1.17 사용자 cropped PNG 제공.
+   흰 배경 + 검정/회색 도트 손 → invert + screen 으로 흰=투명 / 손=흰 효과. */
+/* ICT painterly 손 배경 — 좌측 정렬 (페이지 디자인 동일) */
+.bg-hands {
+    position: fixed;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+    background-image: url("../img/launcher-bg-hands.png");
+    background-size: contain;
+    background-position: left center;
+    background-repeat: no-repeat;
+    /* 모노톤 유지 — invert 없이 자연스러운 darken */
+    filter: grayscale(1) brightness(0.7);
+    opacity: 0.55;
+}
+
+/* ===== 시네마틱 레이아웃 (좌 hero / 우 visual) ===== */
+.cinematic {
+    position: relative;
+    z-index: 3;                /* bg-gradient(0) / bg-texture(1) / bg-hands(2) 위 */
+    display: grid;
+    grid-template-columns: 1.2fr 1fr;
+    height: 100vh;
+}
+
+/* ===== 좌측 hero ===== */
+.hero {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 48px 56px;
+}
+
+.hero-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.brand-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.brand-text {
+    font-family: "Bodoni Moda", "Playfair Display", serif;
+    font-size: 18px;
+    letter-spacing: 0.32em;
+    font-weight: 500;
+    color: var(--text-1);
+}
+
+.meta-info {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-3);
+    letter-spacing: 0.08em;
+}
+
+/* hero 메인 콘텐츠 */
+.hero-content {
+    margin-bottom: 48px;
+}
+
+.episode-num {
+    font-family: "Bodoni Moda", serif;
+    font-size: 14px;
+    letter-spacing: 0.3em;
+    color: var(--text-3);
+    margin-bottom: 24px;
+}
+
+.hero-title {
+    font-family: "Bodoni Moda", "Playfair Display", serif;
+    font-size: 96px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1;
+    color: var(--text-1);
+    margin-bottom: 24px;
+    text-shadow: 0 4px 30px rgba(0, 0, 0, 0.4);
+}
+
+.hero-sub {
+    max-width: 480px;
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--text-2);
+    margin-bottom: 40px;
+    letter-spacing: 0.02em;
+}
+
+/* Trading Start 버튼 — 우측 하단 시네마틱 (visual 영역 absolute, v0.1.16). */
+.btn-start {
+    position: absolute;
+    right: 56px;
+    bottom: 48px;
+    display: inline-flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 36px;
+    border: 1px solid var(--text-base);
+    background: var(--text-base);
+    color: var(--bg);
+    font-family: "Bodoni Moda", serif;
+    font-size: 15px;
+    letter-spacing: 0.28em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    border-radius: 0;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.5);
+}
+.btn-start:hover:not(:disabled) {
+    background: #d8d9e8;
+    transform: translateY(-2px);
+    box-shadow: 0 12px 32px -8px rgba(168, 85, 247, 0.4);
+}
+.btn-start:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.btn-arrow {
+    color: var(--bg);
+    font-size: 12px;
+}
+
+#status-line {
+    margin-top: 16px;
+    font-size: 12px;
+    color: var(--text-3);
+    letter-spacing: 0.08em;
+    min-height: 1.4em;
+}
+
+/* hero 하단 로그 */
+.hero-bottom {
+    border-top: 1px solid var(--border);
+    padding-top: 16px;
+}
+
+.log-area {
+    max-height: 88px;
+    overflow-y: auto;
+}
+
+#log-list {
+    list-style: none;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text-3);
+    letter-spacing: 0.04em;
+    line-height: 1.8;
+}
+#log-list li::before {
+    content: "› ";
+    color: var(--logo-purple);
+}
+
+/* ===== 우측 거대 다이아몬드 비주얼 + Trading Start 버튼 컨테이너 ===== */
+.visual {
+    position: relative;        /* btn-start absolute 기준 */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+}
+
+.diamond-stage {
+    position: relative;
+    width: 80%;
+    max-width: 480px;
+    aspect-ratio: 1;
+    animation: float 8s ease-in-out infinite;
+}
+
+.diamond-hero {
+    width: 100%;
+    height: 100%;
+    filter: drop-shadow(0 0 40px rgba(168, 85, 247, 0.4));
+}
+
+@keyframes float {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    50%      { transform: translateY(-12px) rotate(2deg); }
+}
+
+/* ============================================================
+   v0.2.24 (ChoYoon #133 P1 ③): launcher progress bar
+   ============================================================ */
+
+.progress-container {
+    width: 80%;
+    max-width: 360px;
+    margin-top: 1.25rem;
+}
+
+.progress-bar {
+    height: 8px;
+    background: linear-gradient(90deg, #a855f7, #60a5fa, #22d3ee);
+    border-radius: 6px;
+    width: 0%;
+    transition: width 0.35s ease-out;
+    box-shadow: 0 0 8px rgba(168, 85, 247, 0.4);
+}
+
+.progress-text {
+    color: #e5e7eb;
+    font-size: 0.85rem;
+    font-weight: 500;
+    margin-top: 0.5rem;
+    letter-spacing: 0.05em;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}

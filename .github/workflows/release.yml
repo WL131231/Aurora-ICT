@@ -215,3 +215,115 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_path }}
+
+  # Launcher 미니 .exe — 사용자가 launcher 만 다운받아 본체 자동 업데이트.
+  # 본체 (Aurora-ICT.exe) 의 자기-swap race condition 회피.
+  build-launcher:
+    name: Build Launcher (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset_name: Aurora-ICT-launcher.exe
+            artifact_path: dist/Aurora-ICT-launcher.exe
+          - os: macos-14
+            asset_name: Aurora-ICT-launcher-macOS.zip
+            artifact_path: dist/Aurora-ICT-launcher-macOS.zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bump launcher __version__ from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF##*/v}"
+          sed -i.bak 's/__version__ = ".*"/__version__ = "'"$VERSION"'"/' src/aurora_ict_launcher/__init__.py
+          rm -f src/aurora_ict_launcher/__init__.py.bak
+          cat src/aurora_ict_launcher/__init__.py
+
+      - name: Setup Python 3.11
+        id: setup
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install minimal deps (pywebview + pyinstaller)
+        shell: bash
+        run: |
+          PY="${{ steps.setup.outputs.python-path }}"
+          "$PY" -m pip install --upgrade pip
+          "$PY" -m pip install pywebview pyinstaller certifi
+
+      - name: Build Aurora-ICT-launcher
+        shell: bash
+        run: |
+          "${{ steps.setup.outputs.python-path }}" scripts/build_launcher.py
+
+      - name: Verify Windows launcher
+        if: matrix.os == 'windows-latest'
+        run: |
+          if (-not (Test-Path "dist/Aurora-ICT-launcher.exe")) {
+              Write-Error "dist/Aurora-ICT-launcher.exe 생성 실패"
+              exit 1
+          }
+          $size = (Get-Item "dist/Aurora-ICT-launcher.exe").Length / 1MB
+          Write-Host "Aurora-ICT-launcher.exe size: $([math]::Round($size, 1)) MB"
+        shell: pwsh
+
+      - name: ad-hoc codesign macOS launcher
+        if: matrix.os == 'macos-14'
+        shell: bash
+        run: |
+          if [ -d "dist/Aurora-ICT-launcher.app" ]; then
+              codesign --force --deep --sign - dist/Aurora-ICT-launcher.app
+              codesign --verify --verbose=2 dist/Aurora-ICT-launcher.app || true
+          fi
+
+      - name: Zip macOS launcher
+        if: matrix.os == 'macos-14'
+        shell: bash
+        run: |
+          if [ -d "dist/Aurora-ICT-launcher.app" ]; then
+              cd dist
+              ditto -c -k --sequesterRsrc --keepParent Aurora-ICT-launcher.app Aurora-ICT-launcher-macOS.zip
+          fi
+
+      # external repo (Aurora-ICT-releases) — RELEASES_REPO_TOKEN 박혀있을 때
+      - name: Attach launcher (external repo)
+        if: startsWith(github.ref, 'refs/tags/v') && env.RELEASES_TOKEN != ''
+        env:
+          RELEASES_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          target_commitish: main
+          files: ${{ matrix.artifact_path }}
+          generate_release_notes: false
+          repository: WL131231/Aurora-ICT-releases
+          token: ${{ secrets.RELEASES_REPO_TOKEN }}
+
+      - name: Attach launcher (self repo)
+        if: startsWith(github.ref, 'refs/tags/v') && env.RELEASES_TOKEN == ''
+        env:
+          RELEASES_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact_path }}
+          generate_release_notes: false
+
+      - name: Upload launcher artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.artifact_path }}

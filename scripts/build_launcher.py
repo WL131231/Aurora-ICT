@@ -1,17 +1,17 @@
-"""PyInstaller 빌드 스크립트 — Aurora Launcher 미니 .exe.
+"""PyInstaller 빌드 스크립트 — Aurora-ICT Launcher 미니 .exe.
 
-본체 (Aurora.exe) 와 별개 작은 wrapper:
+본체 (Aurora-ICT.exe) 와 별개 작은 wrapper:
     - pywebview + 표준 라이브러리만 (~10MB)
     - 본체 의존성 (numpy / pandas / ccxt / fastapi 등) 미포함
 
 산출물:
-    Windows: dist/Aurora-launcher.exe
-    macOS:   dist/Aurora-launcher.app  (zip 으로 release 첨부)
+    Windows: dist/Aurora-ICT-launcher.exe
+    macOS:   dist/Aurora-ICT-launcher.app  (zip 으로 release 첨부)
 
 사용법:
     python scripts/build_launcher.py
 
-진입점: src/aurora_launcher/launcher.py
+진입점: src/aurora_ict_launcher/launcher.py
 """
 
 from __future__ import annotations
@@ -34,26 +34,26 @@ PLATFORM_HIDDEN_IMPORTS = {
 
 
 PLATFORM_ICON = {
-    "Windows": "aurora-launcher.ico",  # v0.1.14 — 본체와 구분되는 검정 다이아몬드
-    "Darwin": "aurora-launcher.icns",
-    "Linux": "aurora-launcher.png",
+    "Windows": "aurora-ict-launcher.ico",  # v0.1.14 — 본체와 구분되는 검정 다이아몬드
+    "Darwin": "aurora-ict-launcher.icns",
+    "Linux": "aurora-ict-launcher.png",
 }
 PLATFORM_ICON_FALLBACK = {
-    "Windows": "aurora.ico",  # 검정 launcher 아이콘 미존재 시 본체 아이콘 fallback
-    "Darwin": "aurora.icns",
-    "Linux": "aurora.png",
+    "Windows": "aurora-ict.ico",  # 검정 launcher 아이콘 미존재 시 본체 아이콘 fallback
+    "Darwin": "aurora-ict.icns",
+    "Linux": "aurora-ict.png",
 }
 
 
 def main() -> int:
     plat = platform.system()
-    entry = PROJECT_ROOT / "src" / "aurora_launcher" / "launcher.py"
-    ui_dir = PROJECT_ROOT / "src" / "aurora_launcher" / "ui"
+    entry = PROJECT_ROOT / "src" / "aurora_ict_launcher" / "launcher.py"
+    ui_dir = PROJECT_ROOT / "src" / "aurora_ict_launcher" / "ui"
     assets_dir = PROJECT_ROOT / "assets"
 
     cmd: list[str] = [
         sys.executable, "-m", "PyInstaller",
-        "--name", "Aurora-launcher",
+        "--name", "Aurora-ICT-launcher",
         "--windowed",
         "--paths", str(PROJECT_ROOT / "src"),
         # ui/ 번들 (HTML/CSS/JS) — _MEIPASS/ui 아래에 풀림
@@ -72,7 +72,7 @@ def main() -> int:
         "--onefile",
     ]
 
-    # 런처 아이콘 — 검정 다이아몬드 (assets/aurora-launcher.ico, v0.1.14).
+    # 런처 아이콘 — 검정 다이아몬드 (assets/aurora-ict-launcher.ico, v0.1.14).
     # 미존재 시 본체 그라디언트 아이콘 fallback.
     icon_name = PLATFORM_ICON.get(plat)
     fallback_name = PLATFORM_ICON_FALLBACK.get(plat)
@@ -91,7 +91,7 @@ def main() -> int:
     # 본체 의존성 모두 exclude — launcher 는 표준 + pywebview 만
     for module in [
         "numpy", "pandas", "ccxt", "fastapi", "uvicorn", "pydantic",
-        "matplotlib", "scipy", "pyarrow", "aurora.backtest",
+        "matplotlib", "scipy", "pyarrow", "aurora_ict.backtest",
     ]:
         cmd.extend(["--exclude-module", module])
 
@@ -112,7 +112,7 @@ def _patch_launcher_info_plist() -> None:
     """v0.1.74: macOS launcher.app Info.plist 후처리 — LSMinimumSystemVersion."""
     import plistlib
 
-    app_path = PROJECT_ROOT / "dist" / "Aurora-launcher.app"
+    app_path = PROJECT_ROOT / "dist" / "Aurora-ICT-launcher.app"
     plist_path = app_path / "Contents" / "Info.plist"
     if not plist_path.exists():
         print(f"[warn] launcher Info.plist not found: {plist_path} (skip patch)")
@@ -123,7 +123,7 @@ def _patch_launcher_info_plist() -> None:
         plist["LSMinimumSystemVersion"] = "13.0"
         plist["NSHighResolutionCapable"] = True
         try:
-            from aurora_launcher import __version__ as _v
+            from aurora_ict_launcher import __version__ as _v
             plist["CFBundleVersion"] = _v
             plist["CFBundleShortVersionString"] = _v
         except ImportError:
