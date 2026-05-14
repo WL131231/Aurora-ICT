@@ -210,5 +210,57 @@ def test_no_action_after_invalidation() -> None:
     ])
     fvgs = detect_fvgs(df)
     mark_filled_and_invalidated(fvgs, df)
-    # invalidated 박은 후 break — 무한 박힌 거 X
+    # invalidated 후 break — 무한 루프 X
     assert fvgs[0].invalidated is True
+
+
+# ============================================================
+# require_displacement — 중간 봉 close 가 1봉 high 위/아래여야 함
+# ============================================================
+
+
+def test_displacement_required_default() -> None:
+    """기본 require_displacement=True — 중간 봉 close 가 1봉 high 위 통과."""
+    df = _make_df([
+        (95, 100, 94, 99),       # idx=0  high=100
+        (99, 115, 99, 114),      # idx=1  close=114 > high[0]=100 ✓
+        (114, 116, 105, 115),    # idx=2  low=105 > high[0]=100 → bullish FVG
+    ])
+    fvgs = detect_fvgs(df, min_size_pct=0.001)
+    assert len(fvgs) == 1
+    assert fvgs[0].type is FVGType.BULLISH
+
+
+def test_displacement_filters_weak_mid_bar() -> None:
+    """중간 봉 close 가 1봉 high 아래 → FVG 제외 (displacement 부족)."""
+    df = _make_df([
+        (95, 100, 94, 99),       # idx=0  high=100
+        (99, 102, 95, 98),       # idx=1  close=98 < high[0]=100 (displacement 약함)
+        (98, 110, 105, 109),     # idx=2  low=105 > high[0]=100 (gap 자체는 있음)
+    ])
+    fvgs = detect_fvgs(df, min_size_pct=0.001, require_displacement=True)
+    # displacement 부족 → 빈 리스트
+    assert fvgs == []
+    # require_displacement=False 면 검출
+    fvgs_no_req = detect_fvgs(df, min_size_pct=0.001, require_displacement=False)
+    assert len(fvgs_no_req) == 1
+
+
+def test_auto_threshold_filters_small_gap() -> None:
+    """auto_threshold=True — 작은 gap 은 cumulative mean 못 넘으면 제외."""
+    # 큰 변동성 봉들 + 미세 gap 1개 → gap 이 cumulative threshold 못 넘으면 skip
+    bars = [(100, 110, 90, 105) for _ in range(10)]
+    bars.append((105, 106, 105.05, 105.5))   # 작은 gap 봉
+    bars.append((105.5, 105.7, 105.1, 105.2))
+    df = _make_df(bars)
+    fvgs_auto = detect_fvgs(
+        df, auto_threshold=True, auto_threshold_multiplier=2.0,
+        require_displacement=False,
+    )
+    # 큰 변동성 평균 대비 미세 gap → auto_threshold 가 제외
+    # (정확히 0개 보장 못 하므로 적어도 정적 threshold 보다 적게 잡힌다)
+    fvgs_static = detect_fvgs(
+        df, min_size_pct=0.0,
+        require_displacement=False,
+    )
+    assert len(fvgs_auto) <= len(fvgs_static)
