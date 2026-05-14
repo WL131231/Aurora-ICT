@@ -6,6 +6,6 @@ Aurora 측 ``src/aurora/`` = UI / launcher / 거래소 layer (그대로 재사�
 ICT 핵심 = TIME first, PRICE second. Smart Money Concepts (IPDA 알고리즘 기반).
 """
 
-__version__ = "0.1.0"
+__version__ = "0.4.33"
 
 __all__ = ["__version__"]
