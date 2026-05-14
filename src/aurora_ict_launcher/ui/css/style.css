@@ -131,6 +131,19 @@ body {
     letter-spacing: 0.08em;
 }
 
+/* v0.4.43 — 창 전체 우측 상단 끝 버전 표시 */
+.global-version {
+    position: absolute;
+    top: 24px;
+    right: 32px;
+    z-index: 4;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-3);
+    letter-spacing: 0.08em;
+    pointer-events: none;
+}
+
 /* hero 메인 콘텐츠 */
 .hero-content {
     margin-bottom: 48px;

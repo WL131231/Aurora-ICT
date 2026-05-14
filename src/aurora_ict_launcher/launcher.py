@@ -1649,8 +1649,7 @@ def main() -> None:
         js_api=api,
         width=1280,                  # 본체 .exe 와 동일 크기 (v0.1.16 redesign)
         height=800,
-        min_size=(960, 600),
-        resizable=True,
+        resizable=False,             # v0.4.43 — 런처 창 크기 고정
         background_color="#1e202c",  # v0.1.15 brand bg
     )
 
