@@ -73,6 +73,10 @@ def detect_fvgs(
     df: pd.DataFrame,
     min_size: float | None = None,
     min_size_pct: float | None = None,
+    *,
+    auto_threshold: bool = False,
+    auto_threshold_multiplier: float = 2.0,
+    require_displacement: bool = True,
 ) -> list[FVG]:
     """3봉 패턴 FVG 검출.
 
@@ -82,6 +86,13 @@ def detect_fvgs(
         min_size: 절대 가격 단위 최소 gap (None = 필터 미적용).
         min_size_pct: 중간 봉 close 대비 % 최소 gap (예: 0.001 = 0.1%).
             ``min_size``와 함께 지정하면 둘 다 만족해야 통과.
+        auto_threshold: ``True``면 LuxAlgo SMC 표준 동적 threshold 적용 —
+            ``ta.cum(abs(barDeltaPercent))/bar_index * auto_threshold_multiplier``.
+            ``min_size_pct``를 동적값으로 덮어씀.
+        auto_threshold_multiplier: auto_threshold 배수 (기본 2.0, LuxAlgo SMC).
+        require_displacement: ``True``면 중간 봉 close 의 displacement 확인 —
+            Bullish: ``close[i] > high[i-1]`` / Bearish: ``close[i] < low[i-1]``.
+            False positive 감소 (LuxAlgo FVG indicator 표준).
 
     Returns:
         FVG list — 시간순. 빈 list = 미검출.
@@ -89,8 +100,6 @@ def detect_fvgs(
     Notes:
         - df.index가 DatetimeIndex면 ``ts_ms = index.astype(int) // 10**6``.
         - df.index가 int (ms)면 그대로 사용.
-        - 중간 봉과 1봉/3봉 wick의 overlap 여부는 검증하지 않음 — 단순히 1봉 high <
-          3봉 low (bullish) 조건만 검사. "wick overlap 시 implied FVG"는 별도 처리.
     """
     if len(df) < 3:
         return []
@@ -110,34 +119,58 @@ def detect_fvgs(
     lows = df["low"].to_numpy()
     closes = df["close"].to_numpy()
 
+    # auto_threshold: cumulative mean of |(close-open)/open| * multiplier
+    auto_thr: float | None = None
+    if auto_threshold:
+        opens = df["open"].to_numpy()
+        # bar delta % = abs(close - open) / open, 누적 평균
+        valid = opens != 0
+        delta_pct = (closes - opens) / opens
+        delta_pct = delta_pct * valid  # 0-division 가드
+        cum_mean = float(abs(delta_pct).mean()) if len(delta_pct) > 0 else 0.0
+        auto_thr = cum_mean * auto_threshold_multiplier
+
     fvgs: list[FVG] = []
     for i in range(1, len(df) - 1):
         # Bullish FVG: 1봉 high < 3봉 low → 위쪽으로 gap
         if highs[i - 1] < lows[i + 1]:
+            # 중간 봉 displacement: close 가 1봉 high 위
+            if require_displacement and closes[i] <= highs[i - 1]:
+                continue
             gap_low = float(highs[i - 1])
             gap_high = float(lows[i + 1])
             gap_size = gap_high - gap_low
-            if _passes_size(gap_size, closes[i], min_size, min_size_pct):
-                fvgs.append(FVG(
-                    ts_ms=int(ts_arr[i]),
-                    type=FVGType.BULLISH,
-                    high=gap_high,
-                    low=gap_low,
-                    idx=i,
-                ))
+            if not _passes_size(gap_size, closes[i], min_size, min_size_pct):
+                continue
+            if auto_thr is not None and closes[i] > 0:
+                if gap_size / closes[i] < auto_thr:
+                    continue
+            fvgs.append(FVG(
+                ts_ms=int(ts_arr[i]),
+                type=FVGType.BULLISH,
+                high=gap_high,
+                low=gap_low,
+                idx=i,
+            ))
         # Bearish FVG: 1봉 low > 3봉 high → 아래쪽으로 gap
         elif lows[i - 1] > highs[i + 1]:
+            if require_displacement and closes[i] >= lows[i - 1]:
+                continue
             gap_high = float(lows[i - 1])
             gap_low = float(highs[i + 1])
             gap_size = gap_high - gap_low
-            if _passes_size(gap_size, closes[i], min_size, min_size_pct):
-                fvgs.append(FVG(
-                    ts_ms=int(ts_arr[i]),
-                    type=FVGType.BEARISH,
-                    high=gap_high,
-                    low=gap_low,
-                    idx=i,
-                ))
+            if not _passes_size(gap_size, closes[i], min_size, min_size_pct):
+                continue
+            if auto_thr is not None and closes[i] > 0:
+                if gap_size / closes[i] < auto_thr:
+                    continue
+            fvgs.append(FVG(
+                ts_ms=int(ts_arr[i]),
+                type=FVGType.BEARISH,
+                high=gap_high,
+                low=gap_low,
+                idx=i,
+            ))
 
     return fvgs
 
