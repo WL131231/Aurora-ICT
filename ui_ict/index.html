@@ -100,6 +100,20 @@
     border-color: rgba(251, 113, 133, 0.35);
     color: #fb7185;
   }
+  /* 봇 가동 중 START 버튼 active 시각 (녹색 glow) */
+  button#btn-start.active {
+    background: rgba(52, 211, 153, 0.18);
+    border-color: #34d399;
+    color: #34d399;
+    box-shadow: 0 0 12px rgba(52, 211, 153, 0.45);
+  }
+  /* 봇 정지 직후 STOP 버튼 active 시각 (빨강 glow) */
+  button#btn-stop.active {
+    background: rgba(251, 113, 133, 0.18);
+    border-color: #fb7185;
+    color: #fb7185;
+    box-shadow: 0 0 12px rgba(251, 113, 133, 0.45);
+  }
   .main { flex: 1; display: flex; flex-direction: column; background: var(--bg); }
   .chart-wrap {
     flex: 1;
@@ -440,7 +454,7 @@
       <button data-trade-tf="1d">1d</button>
       <button data-trade-tf="1w">1w</button>
     </div>
-    <p class="trade-tf-hint">5m 이상 (1m 은 노이즈 과대로 제외)</p>
+    <p class="trade-tf-hint">진입 봉 단위 — 선택한 TF 이상 봉으로 매매 결정 (1m 은 노이즈로 제외)</p>
 
     <h2>API Credentials</h2>
     <!-- 미등록 상태 — 입력 폼 (state: form) -->
