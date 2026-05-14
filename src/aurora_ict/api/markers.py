@@ -225,6 +225,8 @@ class ChartMarkers:
     large_swings: list[SwingMarker] = field(default_factory=list)
     large_structure: list[StructureMarker] = field(default_factory=list)
     large_sweeps: list[SweepMarker] = field(default_factory=list)
+    # Large OB (50봉 swing 기반) — 1d/1w 차트용 (internal OB 는 너무 많이 잡힘)
+    large_order_blocks: list[OrderBlockMarker] = field(default_factory=list)
     # Equal Highs / Equal Lows (같은 가격대 swing 클러스터)
     equal_levels: list[EqualLevelMarker] = field(default_factory=list)
 
@@ -248,6 +250,7 @@ class ChartMarkers:
             "large_swings": [asdict(s) for s in self.large_swings],
             "large_structure": [asdict(s) for s in self.large_structure],
             "large_sweeps": [asdict(s) for s in self.large_sweeps],
+            "large_order_blocks": [asdict(o) for o in self.large_order_blocks],
             "equal_levels": [asdict(e) for e in self.equal_levels],
         }
 
@@ -443,6 +446,25 @@ def to_chart_markers(
     )
     for ob in obs:
         markers.order_blocks.append(OrderBlockMarker(
+            ts_ms=ob.ts_ms,
+            type=ob.type.value,
+            open=ob.open,
+            high=ob.high,
+            low=ob.low,
+            close=ob.close,
+            mitigated=ob.mitigated,
+        ))
+
+    # Large OB (50봉 swing 기반) — 1d/1w 차트 시각화용. internal 은 너무 잘게 잡힘.
+    large_obs = detect_order_blocks(
+        df,
+        algorithm="luxalgo",
+        swings=large_pivots,
+        events=large_events,
+        mark_mitigation=True,
+    )
+    for ob in large_obs:
+        markers.large_order_blocks.append(OrderBlockMarker(
             ts_ms=ob.ts_ms,
             type=ob.type.value,
             open=ob.open,
