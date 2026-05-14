@@ -124,13 +124,13 @@ def test_combine_one_none_uses_other() -> None:
     )
 
 
-def test_combine_conflict_returns_none() -> None:
-    """UP vs DOWN 충돌 → NONE."""
+def test_combine_conflict_prefers_htf1() -> None:
+    """UP vs DOWN 충돌 → HTF1 우선 (직속 상위 TF). 진입 빈도 위한 완화."""
     assert (
-        combine_bias(TrendDirection.UP, TrendDirection.DOWN) is TrendDirection.NONE
+        combine_bias(TrendDirection.UP, TrendDirection.DOWN) is TrendDirection.UP
     )
     assert (
-        combine_bias(TrendDirection.DOWN, TrendDirection.UP) is TrendDirection.NONE
+        combine_bias(TrendDirection.DOWN, TrendDirection.UP) is TrendDirection.DOWN
     )
 
 

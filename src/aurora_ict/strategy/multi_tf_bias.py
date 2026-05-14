@@ -89,7 +89,10 @@ def combine_bias(
 
     - 둘 다 같은 방향 → 그 방향
     - 한쪽 NONE → 다른쪽 따름
-    - 충돌 (UP vs DOWN) → NONE
+    - 충돌 (UP vs DOWN) → **HTF1 우선** (직속 상위 TF 가 가장 적절)
+
+    충돌 시 NONE 차단보다 HTF1 우선이 진입 빈도 ↑. ICT 정통은 HTF1 (Trade TF
+    직속) 의 신호도 충분히 강한 entry trigger 로 인정.
     """
     if htf1 is TrendDirection.NONE:
         return htf2
@@ -97,7 +100,8 @@ def combine_bias(
         return htf1
     if htf1 == htf2:
         return htf1
-    return TrendDirection.NONE  # 충돌
+    # 충돌 — HTF1 우선 (직속 상위 TF 의 단기 추세 따름)
+    return htf1
 
 
 __all__ = [

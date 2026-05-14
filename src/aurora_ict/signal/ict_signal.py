@@ -67,6 +67,7 @@ def generate_ict_signal(
     fvg_min_size_pct: float | None = 0.0005,
     stale_bars: int = 5,
     require_retrace: bool = False,
+    expand_to_killzone: bool = False,
 ) -> ICTSignal:
     """OHLCV DataFrame으로부터 ICT signal을 한 건 생성.
 
@@ -101,6 +102,7 @@ def generate_ict_signal(
         bias=bias,
         min_rr=min_rr,
         fvg_min_size_pct=fvg_min_size_pct,
+        expand_to_killzone=expand_to_killzone,
     )
 
     if not setups:
