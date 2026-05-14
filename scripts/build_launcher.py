@@ -34,14 +34,14 @@ PLATFORM_HIDDEN_IMPORTS = {
 
 
 PLATFORM_ICON = {
-    "Windows": "aurora-ict-launcher.ico",  # v0.1.14 — 본체와 구분되는 검정 다이아몬드
-    "Darwin": "aurora-ict-launcher.icns",
-    "Linux": "aurora-ict-launcher.png",
+    "Windows": "aurora.ico",  # v0.4.44 — 본체 .exe 와 동일 아이콘 (사용자 요청)
+    "Darwin": "aurora.icns",
+    "Linux": "aurora.png",
 }
 PLATFORM_ICON_FALLBACK = {
-    "Windows": "aurora-ict.ico",  # 검정 launcher 아이콘 미존재 시 본체 아이콘 fallback
-    "Darwin": "aurora-ict.icns",
-    "Linux": "aurora-ict.png",
+    "Windows": "aurora-launcher.ico",  # 본체 아이콘 미존재 시 기존 launcher 아이콘
+    "Darwin": "aurora-launcher.icns",
+    "Linux": "aurora-launcher.png",
 }
 
 
