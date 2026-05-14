@@ -91,6 +91,7 @@ class BotManager:
             multi_tf_ltf_lookback=self.settings.multi_tf_ltf_lookback,
             enable_trail=self.settings.enable_trail,
             trail_buffer_ratio=self.settings.trail_buffer_ratio,
+            use_market_entry=self.settings.use_market_entry,
         )
         await self._bot.start()
         logger.info(

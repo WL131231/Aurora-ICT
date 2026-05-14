@@ -106,6 +106,9 @@ class IctSettings(BaseSettings):
     # enable_trail: 진입 후 새 swing 형성 시 SL 이동 (ICT 정통 structure-based trail).
     enable_trail: bool = Field(default=False)
     trail_buffer_ratio: float = Field(default=0.001, ge=0.0, le=0.05)
+    # use_market_entry: True 면 setup 검출 시 limit (FVG mean retest) 대신 즉시 시장가 진입.
+    # 진입률 100% 보장 (limit 미체결 문제 해소), ICT 정통 retrace 진입 철학에서 살짝 벗어남.
+    use_market_entry: bool = Field(default=False)
 
     demo_api_key: SecretStr = Field(default=SecretStr(""))
     demo_api_secret: SecretStr = Field(default=SecretStr(""))
