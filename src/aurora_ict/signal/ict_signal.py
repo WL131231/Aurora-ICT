@@ -66,6 +66,7 @@ def generate_ict_signal(
     min_rr: float = 2.0,
     fvg_min_size_pct: float | None = 0.0005,
     stale_bars: int = 5,
+    require_retrace: bool = False,
 ) -> ICTSignal:
     """OHLCV DataFrame으로부터 ICT signal을 한 건 생성.
 
@@ -123,6 +124,16 @@ def generate_ict_signal(
             symbol=symbol,
             ts_ms=last_ts_ms,
             reason=f"setup stale ({bars_since} bars > {stale_bars})",
+        )
+
+    # LuxAlgo Silver Bullet "Strict" mode — FVG 가 mean threshold 까지 retrace 되어야 진입.
+    if require_retrace and not setup.retraced:
+        return ICTSignal(
+            action=SignalAction.NO_ACTION,
+            setup=None,
+            symbol=symbol,
+            ts_ms=last_ts_ms,
+            reason="setup awaiting retrace",
         )
 
     action = (
