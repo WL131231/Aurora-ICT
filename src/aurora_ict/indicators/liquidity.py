@@ -46,6 +46,8 @@ class LiquiditySweep:
         wick_price: sweep candle wick 가격 (BSL = high, SSL = low).
         idx: sweep candle index.
         swing_idx: sweep된 swing point index.
+        retested: 후속 봉이 sweep zone (swept_price ~ wick_price) 안으로 다시
+            돌아왔는지. LuxAlgo Liquidity Sweeps 의 'taken' state 와 동등.
     """
 
     ts_ms: int
@@ -54,6 +56,17 @@ class LiquiditySweep:
     wick_price: float
     idx: int
     swing_idx: int
+    retested: bool = False
+
+    @property
+    def zone_top(self) -> float:
+        """Sweep zone 위쪽 가격 (BEARISH=wick_price/high, BULLISH=swept_price/swing low)."""
+        return max(self.swept_price, self.wick_price)
+
+    @property
+    def zone_bottom(self) -> float:
+        """Sweep zone 아래쪽 가격."""
+        return min(self.swept_price, self.wick_price)
 
 
 @dataclass(slots=True)
@@ -146,6 +159,16 @@ def detect_liquidity_sweeps(
                     ))
                     swing.swept = True
                     break
+
+    # Retest 검출 — 각 sweep 의 후속 봉이 zone 안에 wick 으로 진입했는지
+    for sw in sweeps:
+        zone_top = sw.zone_top
+        zone_bottom = sw.zone_bottom
+        for k in range(sw.idx + 1, len(df)):
+            # wick 이 zone 안으로 진입 (high>=bottom AND low<=top)
+            if highs[k] >= zone_bottom and lows[k] <= zone_top:
+                sw.retested = True
+                break
 
     return sweeps
 

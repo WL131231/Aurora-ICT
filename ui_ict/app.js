@@ -46,6 +46,8 @@ let fvgBoxSeries = [];
 let ifvgBoxSeries = [];
 // Breaker Block 박스 — BaselineSeries 풀 (보라 계열로 OB/IFVG 와 차별)
 let breakerBoxSeries = [];
+// Sweep zone 박스 — BaselineSeries 풀 (sweep wick 영역, retest 대기)
+let sweepZoneBoxSeries = [];
 // Strong/Weak HL 가로선 (top + bottom 한 쌍)
 let trailingPriceLines = [];
 // BOS / CHoCH 짧은 segment LineSeries pool
@@ -88,6 +90,34 @@ function renderIfvgBoxes(ifvgs) {
 function clearBreakerBoxes() {
   breakerBoxSeries.forEach((s) => { try { chart.removeSeries(s); } catch (e) { /* noop */ } });
   breakerBoxSeries = [];
+}
+
+function clearSweepZones() {
+  sweepZoneBoxSeries.forEach((s) => { try { chart.removeSeries(s); } catch (e) { /* noop */ } });
+  sweepZoneBoxSeries = [];
+}
+
+function renderSweepZones(sweeps) {
+  clearSweepZones();
+  if (!lastBarTimeSec) return;
+  // 최근 6개 sweep 의 wick zone (swept_price ~ wick_price) 박스 표시
+  // retested=true → 옅게 (이미 활용), false → 진하게 (대기 중)
+  const recent = (sweeps || []).slice(-6);
+  recent.forEach((sw) => {
+    if (!sw.zone_top || !sw.zone_bottom) return;
+    const isBull = sw.type === "bullish";
+    const alpha = sw.retested ? 0.10 : 0.22;
+    const lineAlpha = sw.retested ? 0.40 : 0.65;
+    const fill = isBull
+      ? `rgba(245, 158, 11, ${alpha})`
+      : `rgba(245, 158, 11, ${alpha})`;
+    const line = isBull
+      ? `rgba(245, 158, 11, ${lineAlpha})`
+      : `rgba(245, 158, 11, ${lineAlpha})`;
+    const startSec = tsToTimeSec(sw.ts_ms);
+    if (startSec >= lastBarTimeSec) return;
+    sweepZoneBoxSeries.push(_addBoxSeries(startSec, lastBarTimeSec, sw.zone_top, sw.zone_bottom, fill, line));
+  });
 }
 
 function renderBreakerBoxes(breakers) {
@@ -470,6 +500,8 @@ function renderMarkers(payload) {
   renderFvgBoxes(m.fvgs ?? []);
   renderIfvgBoxes(m.ifvgs ?? []);
   renderBreakerBoxes(m.breakers ?? []);
+  // Sweep zones — large_sweeps 만 표시 (basic sweep 은 너무 많음)
+  renderSweepZones(m.large_sweeps ?? []);
 
   // Trailing extremes (Strong/Weak High & Low) — 가로선 한 쌍
   renderTrailingExtremes(m.trailing ?? null);

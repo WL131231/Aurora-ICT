@@ -248,3 +248,83 @@ def test_structure_bos_bullish() -> None:
     first = events[0]
     assert first.type is StructureType.CHOCH_BULLISH
     assert first.trend_before is TrendDirection.NONE
+
+
+# ============================================================
+# Sweep retest detection + zone coordinates
+# ============================================================
+
+
+def test_sweep_zone_coordinates_bearish() -> None:
+    """BEARISH sweep zone = swept_price ~ wick_price (high)."""
+    from aurora_ict.indicators.liquidity import (
+        SweepType,
+        detect_liquidity_sweeps,
+    )
+    df = _make_df([
+        (100, 105, 99, 104),     # idx=0  high=105
+        (104, 112, 103, 109),    # idx=1  swing high (112)
+        (109, 110, 100, 102),    # idx=2  high=110
+        (102, 118, 101, 105),    # idx=3  wick=118 > 112, close=105 < 112 → BEARISH sweep
+    ])
+    swings = detect_swing_points(df)
+    sweeps = detect_liquidity_sweeps(df, swings)
+    bearish = [s for s in sweeps if s.type is SweepType.BEARISH]
+    assert len(bearish) == 1
+    sw = bearish[0]
+    assert sw.zone_top == 118.0   # wick_price (high)
+    assert sw.zone_bottom == 112.0  # swept_price (swing high)
+
+
+def test_sweep_zone_coordinates_bullish() -> None:
+    """BULLISH sweep zone = wick_price (low) ~ swept_price."""
+    from aurora_ict.indicators.liquidity import (
+        SweepType,
+        detect_liquidity_sweeps,
+    )
+    df = _make_df([
+        (100, 105, 95, 96),      # idx=0  low=95
+        (96, 100, 88, 91),       # idx=1  swing low (88), high=100 (not swing high)
+        (91, 102, 90, 99),       # idx=2  low=90, high=102 > 100
+        (99, 105, 80, 95),       # idx=3  wick=80 < 88, close=95 > 88 → BULLISH sweep
+    ])
+    swings = detect_swing_points(df)
+    sweeps = detect_liquidity_sweeps(df, swings)
+    bull = [s for s in sweeps if s.type is SweepType.BULLISH]
+    assert len(bull) == 1
+    sw = bull[0]
+    assert sw.zone_top == 88.0      # swept_price (swing low)
+    assert sw.zone_bottom == 80.0   # wick_price (low)
+
+
+def test_sweep_retest_detected() -> None:
+    """Sweep 후 후속 봉이 zone 안에 wick 으로 진입 → retested=True."""
+    from aurora_ict.indicators.liquidity import detect_liquidity_sweeps
+    df = _make_df([
+        (100, 105, 99, 104),
+        (104, 112, 103, 109),    # swing high 112
+        (109, 110, 100, 102),
+        (102, 118, 101, 105),    # BEARISH sweep (zone 112~118)
+        (105, 115, 104, 108),    # idx=4 high=115 ∈ [112,118] → retested!
+    ])
+    swings = detect_swing_points(df)
+    sweeps = detect_liquidity_sweeps(df, swings)
+    assert any(s.retested for s in sweeps)
+
+
+def test_sweep_no_retest_when_price_moves_away() -> None:
+    """Sweep 후 가격이 zone 멀어지면 retested=False."""
+    from aurora_ict.indicators.liquidity import detect_liquidity_sweeps
+    df = _make_df([
+        (100, 105, 99, 104),
+        (104, 112, 103, 109),    # swing high 112
+        (109, 110, 100, 102),
+        (102, 118, 101, 105),    # BEARISH sweep (zone 112~118)
+        (105, 108, 95, 97),       # idx=4 high=108 < 112 → zone 안 아님
+        (97, 100, 90, 92),
+    ])
+    swings = detect_swing_points(df)
+    sweeps = detect_liquidity_sweeps(df, swings)
+    bearish = [s for s in sweeps if s.type.value == "bearish"]
+    assert len(bearish) >= 1
+    assert all(not s.retested for s in bearish)
