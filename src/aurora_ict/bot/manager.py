@@ -81,6 +81,8 @@ class BotManager:
             fvg_min_size_pct=self.settings.fvg_min_size_pct,
             step_interval_sec=self.settings.step_interval_sec,
             ohlcv_limit=self.settings.ohlcv_limit,
+            # v0.4.30 이후 진입 완화 옵션 — settings 에서 명시 주입.
+            setup_stale_bars=self.settings.setup_stale_bars,
         )
         await self._bot.start()
         logger.info(
