@@ -89,8 +89,8 @@ class BotIctInstance:
         client: Bybit client (Aurora 측 ``CCXTClient``를 어댑터로 감싼 것).
         symbol: 거래 symbol (e.g. "BTCUSDT").
         timeframe: OHLCV timeframe (표준 "1m").
-        risk_per_trade_pct: 트레이드당 risk % (총 자산 기준).
         leverage: 사용 leverage.
+        position_pct_base / _max / _step: confluence-based notional sizing.
         min_rr: 최소 RR (표준 2.0).
         step_interval_sec: step 호출 간격 (표준 60s).
         ohlcv_limit: fetch 봉 수 (표준 200).
@@ -99,9 +99,12 @@ class BotIctInstance:
     client: ExchangeClientProtocol
     symbol: str = "BTCUSDT"
     timeframe: str = "1m"
-    # ICT risk 1%. min_rr 2.0 (1:2, ICT 인정 범위, 진입 빈도 균형).
-    risk_per_trade_pct: float = 1.0
-    leverage: int = 5
+    # Notional-based sizing — confluence_score 단계별 % (40 → 55 → 70 → 90, step=15).
+    # margin = equity * pct / 100, notional = margin * leverage, qty = notional / entry.
+    leverage: int = 20
+    position_pct_base: float = 40.0
+    position_pct_max: float = 90.0
+    position_pct_step: float = 15.0
     min_rr: float = 2.0
     step_interval_sec: int = 60
     ohlcv_limit: int = 200
@@ -110,9 +113,11 @@ class BotIctInstance:
     setup_stale_bars: int = 10
     # LuxAlgo SB Strict mode — True 면 FVG mean threshold 까지 retrace 된 setup 만 진입.
     require_retrace: bool = False
-    # Setup 시간 윈도우 확장 — True (default) 면 Killzone 전체 (Asian/London/NY_AM/Close/PM),
+    # Setup 시간 윈도우 확장 — True 면 Killzone 전체 (Asian/London/NY_AM/Close/PM),
     # False 면 Silver Bullet 1시간 윈도우만 (NY 3-4am/10-11am/2-3pm).
     expand_to_killzone: bool = True
+    # 24h 매매 — True 면 SB / Killzone 시간 필터 완전 skip. expand_to_killzone 보다 우선.
+    disable_time_filter: bool = True
 
     # Partial TP 분배 — TP1/TP2/TP3 비율 (합 = 1.0). ICT 정통 50/25/25.
     tp_distribution: tuple[float, float, float] = (0.5, 0.25, 0.25)
@@ -174,6 +179,7 @@ class BotIctInstance:
             stale_bars=self.setup_stale_bars,
             require_retrace=self.require_retrace,
             expand_to_killzone=self.expand_to_killzone,
+            disable_time_filter=self.disable_time_filter,
         )
 
         # 진입 중인 position이 있으면 신규 진입은 막고 상태만 동기화
@@ -374,16 +380,22 @@ class BotIctInstance:
         return 1000.0
 
     def _calc_qty(self, setup: SilverBulletSetup, equity: float) -> float:
-        """진입 qty 계산.
+        """진입 qty 계산 — confluence_score 단계별 notional sizing.
 
-        risk_amount = equity × risk_per_trade_pct/100
-        qty = risk_amount / |entry - stop_loss|
+        pct = min(base + step * score, max)
+        margin = equity * pct/100  → leveraged notional = margin * leverage
+        qty = leveraged notional / entry_price
         """
-        notional_risk = equity * (self.risk_per_trade_pct / 100.0)
-        sl_dist = abs(setup.entry - setup.stop_loss)
-        if sl_dist <= 0:
+        score = max(0, setup.confluence_score)
+        pct = min(
+            self.position_pct_base + self.position_pct_step * score,
+            self.position_pct_max,
+        )
+        margin = equity * (pct / 100.0)
+        notional = margin * self.leverage
+        if setup.entry <= 0:
             return 0.0
-        qty = notional_risk / sl_dist
+        qty = notional / setup.entry
         # Bybit BTC 최소 주문수량 0.001
         return max(qty, 0.001)
 

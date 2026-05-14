@@ -75,14 +75,17 @@ class BotManager:
             client=client,
             symbol=self.settings.symbol,
             timeframe=self.settings.timeframe,
-            risk_per_trade_pct=self.settings.risk_per_trade_pct,
             leverage=self.settings.leverage,
+            position_pct_base=self.settings.position_pct_base,
+            position_pct_max=self.settings.position_pct_max,
+            position_pct_step=self.settings.position_pct_step,
             min_rr=self.settings.min_rr,
             fvg_min_size_pct=self.settings.fvg_min_size_pct,
             step_interval_sec=self.settings.step_interval_sec,
             ohlcv_limit=self.settings.ohlcv_limit,
             # v0.4.30 이후 진입 완화 옵션 — settings 에서 명시 주입.
             setup_stale_bars=self.settings.setup_stale_bars,
+            disable_time_filter=self.settings.disable_time_filter,
         )
         await self._bot.start()
         logger.info(

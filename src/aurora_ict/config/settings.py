@@ -43,8 +43,8 @@ class IctSettings(BaseSettings):
         enabled: bot 가동 허용 플래그 (False면 start 불가).
         symbol: 거래 symbol (e.g. "BTC/USDT:USDT", ccxt unified symbol 형식).
         timeframe: OHLCV timeframe.
-        risk_per_trade_pct: 트레이드당 risk %.
         leverage: 레버리지.
+        position_pct_base / _max / _step: confluence-based notional sizing.
         min_rr: 최소 RR.
         fvg_min_size_pct: FVG 최소 % size.
         step_interval_sec: bot step 호출 간격.
@@ -77,9 +77,16 @@ class IctSettings(BaseSettings):
             )
         return v
 
-    # ICT 정통 risk 1%. min_rr 은 strict 3.0 도 가능하지만 진입 빈도 위해 2.0 표준.
-    risk_per_trade_pct: float = Field(default=1.0, ge=0.01, le=5.0)
-    leverage: int = Field(default=5, ge=1, le=20)
+    # Notional-based sizing — confluence_score 단계별 시드 % 박는 정책.
+    # 기본 40% / score+1 마다 ↑ / 최대 90%. equity * pct / 100 = margin, leveraged.
+    # ICT 정통 risk-based (qty=risk/SL_dist) 박지 않고 notional 박는 방향.
+    # 단점: SL 거리 가변 → 실제 손실 폭도 가변. min_rr 2.0 / FVG / bias 필터로 보완.
+    leverage: int = Field(default=20, ge=1, le=50)
+    position_pct_base: float = Field(default=40.0, ge=1.0, le=100.0)
+    position_pct_max: float = Field(default=90.0, ge=1.0, le=100.0)
+    # confluence_score 0 → base, 1/2/3+ → base + step * score (max capped).
+    # 사용자 정책: 0→40, 1→55, 2→70, 3+→90 (step=15).
+    position_pct_step: float = Field(default=15.0, ge=0.0, le=50.0)
     min_rr: float = Field(default=2.0, ge=1.0)
     fvg_min_size_pct: float = Field(default=0.0005, ge=0)
     step_interval_sec: int = Field(default=60, ge=10)
@@ -87,6 +94,9 @@ class IctSettings(BaseSettings):
     # setup stale threshold — FVG 이후 N 봉 안에 retest 없으면 진입 안 함.
     # 1h → 10봉 = 10시간 (NY 세션 충분 커버).
     setup_stale_bars: int = Field(default=10, ge=1, le=50)
+    # disable_time_filter: True 면 Silver Bullet / Killzone 시간 윈도우 무시 (24h 매매).
+    # ICT 정통은 TIME-first 라 살짝 벗어나지만 FVG/bias/sweep/min_rr 다른 필터로 깐깐.
+    disable_time_filter: bool = Field(default=True)
 
     demo_api_key: SecretStr = Field(default=SecretStr(""))
     demo_api_secret: SecretStr = Field(default=SecretStr(""))
