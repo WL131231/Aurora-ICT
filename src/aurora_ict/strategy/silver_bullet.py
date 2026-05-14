@@ -36,6 +36,7 @@ from aurora_ict.indicators.structure import (
 )
 from aurora_ict.indicators.swing_points import SwingPoint, SwingType, detect_swing_points
 from aurora_ict.timing.killzone import (
+    classify_killzone,
     in_macro,
     in_silver_bullet,
     macro_priority,
@@ -225,6 +226,7 @@ def detect_silver_bullet_setups(
     min_rr: float = 2.0,
     fvg_min_size_pct: float | None = 0.0005,
     min_confluence: int = 0,
+    expand_to_killzone: bool = False,
 ) -> list[SilverBulletSetup]:
     """Silver Bullet setup 후보 검출.
 
@@ -234,6 +236,9 @@ def detect_silver_bullet_setups(
         swing_left/right: swing pivot 윈도우.
         min_rr: 최소 RR (표준 2.0).
         fvg_min_size_pct: FVG 최소 % size (noise 필터).
+        expand_to_killzone: ``True``면 Silver Bullet 1시간 윈도우 대신 Killzone
+            전체 (Asian/London/NY_AM/Close/PM) 안 FVG 도 setup 으로 채택.
+            진입 빈도 ↑ (5세션 ≈ 12시간/일 vs 기존 SB 3시간/일).
 
     Returns:
         ``SilverBulletSetup`` list — 시간순.
@@ -269,9 +274,15 @@ def detect_silver_bullet_setups(
     for fvg in fvgs:
         if fvg.type is not desired_fvg_type:
             continue
+        # 시간 윈도우 검사 — SB 윈도우 우선, 없으면 Killzone (expand 모드 시).
         window = in_silver_bullet(fvg.ts_ms)
         if window is None:
-            continue
+            if not expand_to_killzone:
+                continue
+            kz = classify_killzone(fvg.ts_ms)
+            if kz is None:
+                continue
+            window = kz.value
         day_ms = (fvg.ts_ms // 86_400_000) * 86_400_000
         key = (day_ms, window)
         if key in seen_windows:
