@@ -516,7 +516,10 @@ function renderMarkers(payload) {
   // OB 박스 (BaselineSeries) 가 시각 자체이므로 텍스트 마커는 제거 (renderObBoxes)
 
   // 활성 OB 박스 — BaselineSeries (시작 봉 ~ 차트 끝)
-  renderObBoxes(m.order_blocks ?? []);
+  // chart TF 가 1d / 1w 같은 큰 단위면 large_order_blocks (50봉 swing 기반) 사용,
+  // 그 외엔 order_blocks (internal 5봉 swing).
+  const isLargeChartTf = currentTimeframe === "1d" || currentTimeframe === "1w";
+  renderObBoxes(isLargeChartTf ? (m.large_order_blocks ?? []) : (m.order_blocks ?? []));
   // 활성 FVG 박스 — BaselineSeries
   renderFvgBoxes(m.fvgs ?? []);
   renderIfvgBoxes(m.ifvgs ?? []);
