@@ -97,7 +97,9 @@ def _write_env_credentials(mode: str, api_key: str, api_secret: str) -> Path:
 
 def _settings_safe_dict(settings: IctSettings) -> dict[str, Any]:
     """settings → dict (api key는 직접 노출하지 않고 보유 여부만 표시)."""
+    from aurora_ict import __version__
     return {
+        "version": __version__,
         "run_mode": settings.run_mode.value,
         "enabled": settings.enabled,
         "symbol": settings.symbol,

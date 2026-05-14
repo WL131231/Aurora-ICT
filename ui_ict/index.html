@@ -43,6 +43,15 @@
     font-weight: 400;
     margin: 0 0 24px 0;
     color: var(--accent);
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+  .sidebar h1 .version {
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    color: var(--text-3);
+    font-weight: 400;
   }
   .sidebar h2 {
     font-size: 10px;
@@ -429,7 +438,7 @@
 <body>
 <div class="wrap">
   <aside class="sidebar">
-    <h1>AURORA · ICT</h1>
+    <h1>AURORA · ICT<span class="version" id="app-version">—</span></h1>
 
     <h2>Status</h2>
     <div class="row"><span class="k">State</span><span id="s-state" class="v">—</span></div>

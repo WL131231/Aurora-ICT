@@ -822,6 +822,16 @@ function fit() {
 window.addEventListener("resize", fit);
 fit();
 
+// 부팅 시 version 1회 fetch (config endpoint)
+async function fetchVersion() {
+  try {
+    const cfg = await api("/ict/config");
+    const el = document.getElementById("app-version");
+    if (el && cfg && cfg.version) el.textContent = `v${cfg.version}`;
+  } catch (e) { /* noop */ }
+}
+fetchVersion();
+
 // 초기 fetch + polling (10s 주기)
 fetchAndRender();
 setInterval(fetchAndRender, 10_000);
