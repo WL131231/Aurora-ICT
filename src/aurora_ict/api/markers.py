@@ -90,12 +90,16 @@ class DOLMarker:
 
 @dataclass(slots=True)
 class SweepMarker:
-    """Liquidity Sweep marker — sweep wick 정보."""
+    """Liquidity Sweep marker — sweep wick + zone box + retest 정보."""
 
     ts_ms: int
     type: str        # "bullish" (SSL) / "bearish" (BSL)
     swept_price: float
     wick_price: float
+    retested: bool = False
+    # Zone box 좌표 (UI sweep zone 박스 렌더용)
+    zone_top: float = 0.0
+    zone_bottom: float = 0.0
 
 
 @dataclass(slots=True)
@@ -324,6 +328,9 @@ def to_chart_markers(
             type=sw.type.value,
             swept_price=sw.swept_price,
             wick_price=sw.wick_price,
+            retested=sw.retested,
+            zone_top=sw.zone_top,
+            zone_bottom=sw.zone_bottom,
         ))
     # detect_liquidity_sweeps가 swing.swept를 갱신했으므로 markers.swings를 최신
     # swept 플래그로 재생성한다 (in-place mutation 결과 반영).
@@ -394,6 +401,9 @@ def to_chart_markers(
             type=sw.type.value,
             swept_price=sw.swept_price,
             wick_price=sw.wick_price,
+            retested=sw.retested,
+            zone_top=sw.zone_top,
+            zone_bottom=sw.zone_bottom,
         ))
 
     # 4-d. EQH / EQL — 같은 가격대 swing 클러스터 (liquidity)
