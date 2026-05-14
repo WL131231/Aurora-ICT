@@ -142,6 +142,10 @@ class BotIctInstance:
     # Trail SL buffer ratio (swing 가격 × ratio 만큼 buffer).
     trail_buffer_ratio: float = 0.001
 
+    # use_market_entry: True 면 setup 검출 시 limit (FVG mean retest) 대신 즉시 시장가 진입.
+    # 진입률 100%, ICT 정통 retrace 철학에서 살짝 벗어남.
+    use_market_entry: bool = False
+
     # Partial TP 분배 — TP1/TP2/TP3 비율 (합 = 1.0). ICT 정통 50/25/25.
     tp_distribution: tuple[float, float, float] = (0.5, 0.25, 0.25)
 
@@ -459,12 +463,14 @@ class BotIctInstance:
         )
 
         try:
-            # Entry + SL — TP 는 partial 로 따로 등록
+            # Entry + SL — TP 는 partial 로 따로 등록.
+            # use_market_entry=True 면 price=None (시장가), False 면 setup.entry (limit).
+            entry_price = None if self.use_market_entry else setup.entry
             await self.client.place_order(
                 symbol=self.symbol,
                 side=side,
                 qty=qty,
-                price=setup.entry,
+                price=entry_price,
                 stop_loss=setup.stop_loss,
                 take_profit=None,
             )
