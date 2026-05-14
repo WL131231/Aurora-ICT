@@ -89,6 +89,8 @@ class BotManager:
             # multi-TF (ICT 정통 HTF setup + LTF confirm) 옵션.
             multi_tf=self.settings.multi_tf,
             multi_tf_ltf_lookback=self.settings.multi_tf_ltf_lookback,
+            enable_trail=self.settings.enable_trail,
+            trail_buffer_ratio=self.settings.trail_buffer_ratio,
         )
         await self._bot.start()
         logger.info(

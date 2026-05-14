@@ -22,6 +22,7 @@ from typing import Any, Protocol
 
 import pandas as pd
 
+from aurora_ict.bot.structure_trail import compute_structure_trail
 from aurora_ict.indicators.daily_bias import compute_daily_bias
 from aurora_ict.indicators.structure import TrendDirection
 from aurora_ict.signal.ict_signal import (
@@ -65,6 +66,10 @@ class ExchangeClientProtocol(Protocol):
     async def fetch_position(self, symbol: str) -> dict[str, Any] | None: ...
 
     async def fetch_balance(self) -> dict[str, Any]: ...
+
+    async def modify_stop_loss(
+        self, symbol: str, new_stop_loss: float,
+    ) -> dict[str, Any]: ...
 
 
 class BotState(StrEnum):
@@ -131,6 +136,11 @@ class BotIctInstance:
     multi_tf: bool = False
     # Multi-TF LTF confirmer lookback (LTF 봉 단위).
     multi_tf_ltf_lookback: int = 30
+
+    # Structure-based trailing stop (ICT 정통) — True 면 진입 후 새 swing 형성 시 SL 이동.
+    enable_trail: bool = False
+    # Trail SL buffer ratio (swing 가격 × ratio 만큼 buffer).
+    trail_buffer_ratio: float = 0.001
 
     # Partial TP 분배 — TP1/TP2/TP3 비율 (합 = 1.0). ICT 정통 50/25/25.
     tp_distribution: tuple[float, float, float] = (0.5, 0.25, 0.25)
@@ -200,8 +210,10 @@ class BotIctInstance:
             disable_time_filter=self.disable_time_filter,
         )
 
-        # 진입 중인 position이 있으면 신규 진입은 막고 상태만 동기화
+        # 진입 중인 position이 있으면 신규 진입은 막고 상태만 동기화 + trail tick.
         if self.active_position is not None:
+            if self.enable_trail:
+                await self._tick_trail(df)
             await self._sync_position_state()
             return signal
 
@@ -263,8 +275,10 @@ class BotIctInstance:
         self._htf_tracker.invalidate_if_sl_hit(current_price)
         self._htf_tracker.invalidate_if_tp_hit(current_price)
 
-        # 진입 중이면 sync 만.
+        # 진입 중이면 sync + trail tick.
         if self.active_position is not None:
+            if self.enable_trail:
+                await self._tick_trail(ltf_df)
             await self._sync_position_state()
             return no_action
 
@@ -481,6 +495,38 @@ class BotIctInstance:
             qty=qty,
             setup_ts_ms=setup.ts_ms,
         )
+
+    async def _tick_trail(self, df: pd.DataFrame) -> None:
+        """진입 중 새 swing 형성 시 SL 을 그 자리로 이동 (structure-based trail).
+
+        Args:
+            df: 최근 LTF OHLCV DataFrame (swing 검출용).
+        """
+        pos = self.active_position
+        if pos is None:
+            return
+        update = compute_structure_trail(
+            df,
+            direction=pos.direction,
+            entry=pos.entry,
+            current_stop_loss=pos.stop_loss,
+            buffer_ratio=self.trail_buffer_ratio,
+        )
+        if update is None:
+            return
+        try:
+            await self.client.modify_stop_loss(self.symbol, update.new_stop_loss)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "trail SL 수정 실패 (%.4f → %.4f): %s",
+                pos.stop_loss, update.new_stop_loss, e,
+            )
+            return
+        logger.info(
+            "trail SL 이동 %.4f → %.4f (anchor swing @%.4f)",
+            pos.stop_loss, update.new_stop_loss, update.anchor_swing_price,
+        )
+        pos.stop_loss = update.new_stop_loss
 
     async def _fetch_equity(self) -> float:
         """가용 자산 (USDT equity) 조회.

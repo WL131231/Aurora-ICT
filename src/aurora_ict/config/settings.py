@@ -103,6 +103,9 @@ class IctSettings(BaseSettings):
     # shift/FVG confirm 시 진입 (ICT 정통). False 면 단일 TF 매매.
     multi_tf: bool = Field(default=False)
     multi_tf_ltf_lookback: int = Field(default=30, ge=5, le=200)
+    # enable_trail: 진입 후 새 swing 형성 시 SL 이동 (ICT 정통 structure-based trail).
+    enable_trail: bool = Field(default=False)
+    trail_buffer_ratio: float = Field(default=0.001, ge=0.0, le=0.05)
 
     demo_api_key: SecretStr = Field(default=SecretStr(""))
     demo_api_secret: SecretStr = Field(default=SecretStr(""))
