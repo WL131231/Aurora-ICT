@@ -139,7 +139,8 @@ function _addBoxSeries(startSec, endSec, top, bottom, fillColor, lineColor) {
 function renderObBoxes(obs) {
   clearObBoxes();
   if (!lastBarTimeSec) return;
-  const active = (obs || []).filter((o) => !o.mitigated).slice(-8);
+  // LuxAlgo OB Detector 표준 — bullish/bearish 각 3개 표시
+  const active = (obs || []).filter((o) => !o.mitigated).slice(-3);
   active.forEach((ob) => {
     const isBull = ob.type === "bullish";
     const fill = isBull ? "rgba(45, 212, 191, 0.18)" : "rgba(244, 114, 182, 0.18)";
