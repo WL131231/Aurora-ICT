@@ -250,6 +250,7 @@ function renderBosSegments(structureList) {
     if (seen.has(key)) return;
     seen.add(key);
     const isChoCH = ev.type.startsWith("choch");
+    const isBull = ev.type.endsWith("bullish");
     const color = isChoCH ? "#a855f7" : "#60a5fa";
     const series = chart.addLineSeries({
       color,
@@ -263,6 +264,15 @@ function renderBosSegments(structureList) {
       { time: t1, value: ev.broken_level },
       { time: t2, value: ev.broken_level },
     ]);
+    // 텍스트 라벨 "BOS" / "CHoCH" — segment 끝점 (돌파 봉) 위/아래
+    series.setMarkers([{
+      time: t2,
+      position: isBull ? "aboveBar" : "belowBar",
+      color,
+      shape: "circle",
+      text: isChoCH ? "CHoCH" : "BOS",
+      size: 0,
+    }]);
     bosSegmentSeries.push(series);
   });
 }
@@ -291,6 +301,15 @@ function renderEqlSegments(equalLevels) {
       { time: t1, value: lvl.price },
       { time: t2, value: lvl.price },
     ]);
+    // 텍스트 라벨 "EQH" / "EQL" — 마지막 swing 끝점
+    series.setMarkers([{
+      time: t2,
+      position: isHigh ? "aboveBar" : "belowBar",
+      color,
+      shape: "circle",
+      text: isHigh ? "EQH" : "EQL",
+      size: 0,
+    }]);
     eqlSegmentSeries.push(series);
   });
 }
