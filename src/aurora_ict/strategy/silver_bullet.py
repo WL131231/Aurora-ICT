@@ -86,6 +86,10 @@ class SilverBulletSetup:
     confluence_score: int = 0
     confluences: list[str] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
+    # LuxAlgo Silver Bullet "Strict" mode — FVG 가 mean threshold 까지 retrace 됐는지.
+    # entry limit 가 FVG mean 인데, 가격이 그 raw 까지 실제로 닿았는지 확인.
+    # True → active setup (entry 가능). False → retrace 미발생 (대기 또는 skip).
+    retraced: bool = False
 
     def __post_init__(self) -> None:
         """tp1/tp2/tp3 자동 계산 — 명시 안 됐을 때 1R/2R/3R 으로 채움."""
@@ -250,6 +254,11 @@ def detect_silver_bullet_setups(
     )
 
     fvgs = detect_fvgs(df, min_size_pct=fvg_min_size_pct)
+    # mark_filled_and_invalidated 적용 — fvg.filled (retrace) / invalidated 갱신.
+    # LuxAlgo Silver Bullet "Strict" mode 에서 retrace 검증에 사용.
+    from aurora_ict.indicators.fvg import mark_filled_and_invalidated
+    mark_filled_and_invalidated(fvgs, df)
+
     # OB 는 setup 검출 후 confluence 평가에서 사용 — 1회만 계산.
     obs = detect_order_blocks(df, displacement_bars=3, mark_mitigation=True)
 
@@ -344,6 +353,7 @@ def detect_silver_bullet_setups(
             confluence_score=score,
             confluences=confluences,
             reasons=reasons,
+            retraced=fvg.filled,  # mean threshold 까지 닿았는지
         ))
 
     return setups

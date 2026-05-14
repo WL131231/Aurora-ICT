@@ -108,6 +108,8 @@ class BotIctInstance:
     fvg_min_size_pct: float = 0.0005
     # FVG 이후 N 봉 안에 retest 없으면 진입 skip.
     setup_stale_bars: int = 5
+    # LuxAlgo SB Strict mode — True 면 FVG mean threshold 까지 retrace 된 setup 만 진입.
+    require_retrace: bool = False
 
     # Partial TP 분배 — TP1/TP2/TP3 비율 (합 = 1.0). ICT 정통 50/25/25.
     tp_distribution: tuple[float, float, float] = (0.5, 0.25, 0.25)
@@ -167,6 +169,7 @@ class BotIctInstance:
             min_rr=self.min_rr,
             fvg_min_size_pct=self.fvg_min_size_pct,
             stale_bars=self.setup_stale_bars,
+            require_retrace=self.require_retrace,
         )
 
         # 진입 중인 position이 있으면 신규 진입은 막고 상태만 동기화
