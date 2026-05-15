@@ -42,6 +42,33 @@ class AuroraClientAdapter:
 
     def __init__(self, ccxt_client: Any) -> None:
         self._client = ccxt_client
+        # ccxt 의 시간 동기화 옵션 설정. Bybit V5 private API 가 timestamp 1초 이상
+        # 차이 박으면 retCode 10002 거부 → 모든 호출 시 자동 보정.
+        ex = getattr(ccxt_client, "_ex", None)
+        if ex is not None:
+            try:
+                if hasattr(ex, "options") and isinstance(ex.options, dict):
+                    ex.options["adjustForTimeDifference"] = True
+                    ex.options["recvWindow"] = 60000
+            except Exception:  # noqa: BLE001
+                pass
+        self._time_diff_loaded = False
+
+    async def _ensure_time_sync(self) -> None:
+        """Bybit 서버 시간과 PC 시간 차이 한 번 로드 (lazy)."""
+        if self._time_diff_loaded:
+            return
+        ex = getattr(self._client, "_ex", None)
+        if ex is None:
+            self._time_diff_loaded = True
+            return
+        try:
+            if hasattr(ex, "load_time_difference"):
+                await ex.load_time_difference()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("load_time_difference 실패: %s", e)
+        finally:
+            self._time_diff_loaded = True
 
     def _aurora_tf(self, tf: str) -> str:
         """소문자 timeframe → Aurora 대문자 포맷. 미매핑 시 원본 그대로."""
@@ -137,6 +164,7 @@ class AuroraClientAdapter:
         if ex is None:
             logger.warning("set_trading_stop: _ex 없음 — SL/TP 적용 skip")
             return
+        await self._ensure_time_sync()
         raw_symbol = symbol.replace("/", "").split(":")[0]
         params: dict[str, Any] = {
             "category": "linear",
@@ -203,6 +231,7 @@ class AuroraClientAdapter:
         if ex is None:
             logger.warning("set_leverage: _ex 없음 — skip")
             return {}
+        await self._ensure_time_sync()
         raw_symbol = symbol.replace("/", "").split(":")[0]
         params = {
             "category": "linear",
@@ -247,6 +276,7 @@ class AuroraClientAdapter:
         if ex is None:
             logger.warning("modify_stop_loss: _ex 없음 — skip")
             return {}
+        await self._ensure_time_sync()
         # ccxt unified → Bybit raw symbol ("BTC/USDT:USDT" → "BTCUSDT").
         raw_symbol = symbol.replace("/", "").split(":")[0]
         params = {
