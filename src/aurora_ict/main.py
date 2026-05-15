@@ -49,10 +49,38 @@ WINDOW_HEIGHT = 800
 
 
 def _setup_logging() -> None:
+    """본체 로깅 설정. frozen --windowed 환경에서도 파일로 남기기 위해 FileHandler 추가.
+
+    파일 위치 (Windows): ``%LOCALAPPDATA%/Aurora-ICT/bot.log``
+    그 외 (POSIX): ``~/.aurora-ict/bot.log``
+    파일 작성 실패해도 stdout 핸들러는 유지.
+    """
     level = os.environ.get("AURORA_ICT_LOG_LEVEL", "INFO")
+    fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+
+    try:
+        if sys.platform.startswith("win"):
+            base = os.environ.get("LOCALAPPDATA")
+            log_dir = Path(base) / "Aurora-ICT" if base else None
+        else:
+            log_dir = Path.home() / ".aurora-ict"
+
+        if log_dir is not None:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / "bot.log"
+            fh = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+            fh.setFormatter(logging.Formatter(fmt))
+            handlers.append(fh)
+    except Exception:  # noqa: BLE001 — 파일 로깅 실패는 stdout 으로 fallback
+        pass
+
     logging.basicConfig(
         level=level,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        format=fmt,
+        handlers=handlers,
+        force=True,
     )
 
 
