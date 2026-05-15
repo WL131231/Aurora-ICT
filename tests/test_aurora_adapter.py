@@ -84,7 +84,7 @@ async def test_fetch_ohlcv_empty_df() -> None:
 
 @pytest.mark.asyncio
 async def test_place_order_dataclass_to_dict() -> None:
-    """Aurora Order dataclass → dict 박힘."""
+    """Aurora Order dataclass → dict 변환."""
 
     @dataclass
     class FakeOrder:
@@ -100,11 +100,80 @@ async def test_place_order_dataclass_to_dict() -> None:
     adapter = AuroraClientAdapter(inner)
     result = await adapter.place_order(
         symbol="BTCUSDT", side="buy", qty=0.01, price=50000,
-        stop_loss=49000, take_profit=52000,
     )
     assert result["symbol"] == "BTCUSDT"
     assert result["qty"] == 0.01
     assert result["order_id"] == "X1"
+
+
+@pytest.mark.asyncio
+async def test_place_order_with_sl_calls_trading_stop() -> None:
+    """entry + SL 들어가면 set_trading_stop API 호출됨."""
+    inner = MagicMock()
+    inner.place_order = AsyncMock(return_value={"orderId": "X"})
+    ex = MagicMock()
+    ex.private_post_v5_position_trading_stop = AsyncMock(return_value={"retCode": 0})
+    inner._ex = ex
+    adapter = AuroraClientAdapter(inner)
+    await adapter.place_order(
+        symbol="BTC/USDT:USDT", side="buy", qty=0.01,
+        stop_loss=79000, take_profit=82000,
+    )
+    ex.private_post_v5_position_trading_stop.assert_awaited_once()
+    params = ex.private_post_v5_position_trading_stop.call_args.args[0]
+    assert params["symbol"] == "BTCUSDT"
+    assert params["stopLoss"] == "79000"
+    assert params["takeProfit"] == "82000"
+    assert params["category"] == "linear"
+    assert params["tpslMode"] == "Full"
+    assert params["positionIdx"] == 0
+
+
+@pytest.mark.asyncio
+async def test_place_order_reduce_only_skips_trading_stop() -> None:
+    """reduce_only=True (partial TP) 면 SL/TP 인자 와도 trading_stop 호출 X."""
+    inner = MagicMock()
+    inner.place_order = AsyncMock(return_value={"orderId": "X"})
+    ex = MagicMock()
+    ex.private_post_v5_position_trading_stop = AsyncMock(return_value={"retCode": 0})
+    inner._ex = ex
+    adapter = AuroraClientAdapter(inner)
+    await adapter.place_order(
+        symbol="BTC/USDT:USDT", side="sell", qty=0.005, price=82000,
+        reduce_only=True, stop_loss=79000,
+    )
+    ex.private_post_v5_position_trading_stop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_place_order_no_sl_no_trading_stop_call() -> None:
+    """SL/TP 없으면 trading_stop 호출 X."""
+    inner = MagicMock()
+    inner.place_order = AsyncMock(return_value={"orderId": "X"})
+    ex = MagicMock()
+    ex.private_post_v5_position_trading_stop = AsyncMock(return_value={"retCode": 0})
+    inner._ex = ex
+    adapter = AuroraClientAdapter(inner)
+    await adapter.place_order(symbol="BTC/USDT:USDT", side="buy", qty=0.01)
+    ex.private_post_v5_position_trading_stop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_place_order_trading_stop_failure_swallowed() -> None:
+    """set_trading_stop 실패해도 place_order 자체는 정상 반환."""
+    inner = MagicMock()
+    inner.place_order = AsyncMock(return_value={"orderId": "X"})
+    ex = MagicMock()
+    ex.private_post_v5_position_trading_stop = AsyncMock(
+        side_effect=RuntimeError("API down"),
+    )
+    inner._ex = ex
+    adapter = AuroraClientAdapter(inner)
+    result = await adapter.place_order(
+        symbol="BTC/USDT:USDT", side="buy", qty=0.01, stop_loss=79000,
+    )
+    # 주문 결과는 정상 반환됨 (SL 실패는 warning 만)
+    assert result.get("orderId") == "X"
 
 
 @pytest.mark.asyncio
