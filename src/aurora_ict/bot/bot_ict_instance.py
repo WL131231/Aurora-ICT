@@ -145,6 +145,8 @@ class BotIctInstance:
     # use_market_entry: True 면 setup 검출 시 limit (FVG mean retest) 대신 즉시 시장가 진입.
     # 진입률 100%, ICT 정통 retrace 철학에서 살짝 벗어남.
     use_market_entry: bool = False
+    # enable_partial_tp: False 면 partial TP1/TP2/TP3 안 박음. 자기-트랩 회피용.
+    enable_partial_tp: bool = True
 
     # Partial TP 분배 — TP1/TP2/TP3 비율 (합 = 1.0). ICT 정통 50/25/25.
     tp_distribution: tuple[float, float, float] = (0.5, 0.25, 0.25)
@@ -474,20 +476,27 @@ class BotIctInstance:
                 stop_loss=setup.stop_loss,
                 take_profit=None,
             )
-            # Partial TP 3개 (reduce_only limit)
-            for tp_price, tp_qty in (
-                (setup.tp1, qty1),
-                (setup.tp2, qty2),
-                (setup.tp3, qty3),
-            ):
-                if tp_qty <= 0:
-                    continue
-                await self.client.place_order(
-                    symbol=self.symbol,
-                    side=exit_side,
-                    qty=tp_qty,
-                    price=tp_price,
-                    reduce_only=True,
+            # Partial TP 3개 (reduce_only limit) — enable_partial_tp 옵션 분기.
+            # 시장가 entry 일 때 setup 의 TP1/2/3 가 실제 fill 가격과 동떨어져 즉시
+            # 손실 fill 되는 자기-트랩 발생 가능 → enable_partial_tp=False 시 skip.
+            if self.enable_partial_tp:
+                for tp_price, tp_qty in (
+                    (setup.tp1, qty1),
+                    (setup.tp2, qty2),
+                    (setup.tp3, qty3),
+                ):
+                    if tp_qty <= 0:
+                        continue
+                    await self.client.place_order(
+                        symbol=self.symbol,
+                        side=exit_side,
+                        qty=tp_qty,
+                        price=tp_price,
+                        reduce_only=True,
+                    )
+            else:
+                logger.info(
+                    "partial TP skip (enable_partial_tp=False) — trail SL 청산 의존",
                 )
         except Exception as e:  # noqa: BLE001 — 주문 실패도 봇은 계속 돌아야 함
             logger.exception("place_order 실패: %s", e)

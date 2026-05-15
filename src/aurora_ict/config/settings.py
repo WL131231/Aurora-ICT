@@ -109,6 +109,10 @@ class IctSettings(BaseSettings):
     # use_market_entry: True 면 setup 검출 시 limit (FVG mean retest) 대신 즉시 시장가 진입.
     # 진입률 100% 보장 (limit 미체결 문제 해소), ICT 정통 retrace 진입 철학에서 살짝 벗어남.
     use_market_entry: bool = Field(default=False)
+    # enable_partial_tp: False 면 partial TP1/TP2/TP3 (50/25/25%) 안 박음. 시장가 진입 시
+    # setup entry vs 실제 fill price 차이로 partial TP 가 즉시 손실 fill 되는 자기-트랩
+    # 회피용. trail SL 만으로 청산.
+    enable_partial_tp: bool = Field(default=True)
 
     demo_api_key: SecretStr = Field(default=SecretStr(""))
     demo_api_secret: SecretStr = Field(default=SecretStr(""))
