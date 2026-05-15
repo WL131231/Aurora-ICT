@@ -87,12 +87,16 @@ def compute_structure_trail(
         return None
 
     # break-even 이상 조건 — LONG 은 swing low 가 entry 이상, SHORT 은 그 반대.
+    # buffer 적용 후 new_sl 도 entry 보다 유리한 쪽에 있어야 진짜 break-even.
     # (자기 SL 자체보다 불리하면 의미 없음)
     if direction is Direction.LONG:
         if anchor.price <= entry:
             return None
         buffer = anchor.price * buffer_ratio
         new_sl = anchor.price - buffer
+        # buffer 적용 후 new_sl 이 entry 아래로 떨어지면 손실 SL → skip.
+        if new_sl <= entry:
+            return None
         # 역행 금지 — 새 SL 이 현재 SL 보다 낮으면 갱신 X.
         if new_sl <= current_stop_loss:
             return None
@@ -101,6 +105,9 @@ def compute_structure_trail(
             return None
         buffer = anchor.price * buffer_ratio
         new_sl = anchor.price + buffer
+        # buffer 적용 후 new_sl 이 entry 위로 올라가면 손실 SL → skip.
+        if new_sl >= entry:
+            return None
         if new_sl >= current_stop_loss:
             return None
 

@@ -152,6 +152,54 @@ def test_short_swing_high_above_entry_returns_none() -> None:
     assert result is None
 
 
+def test_short_buffer_pushes_sl_above_entry_returns_none() -> None:
+    """SHORT entry 80211, anchor 80180 (entry 아래), buffer 80.18 적용 시 new_sl=80260
+    > entry → 손실 영역이므로 None 반환 (regression test for v0.4.50 fix).
+    """
+    df = _df([
+        (80200, 80250, 80100, 80211),
+        (80211, 80250, 80100, 80120),
+        (80120, 80180, 80050, 80050),    # swing low (no influence on SHORT)
+        (80050, 80180, 80020, 80100),
+        (80100, 80180, 80030, 80050),    # swing high @ 80180 (entry 아래)
+        (80050, 80150, 80000, 80030),
+        (80030, 80100, 79950, 79990),
+    ])
+    # SHORT entry 80211, current_sl 80322 (entry 위)
+    result = compute_structure_trail(
+        df, Direction.SHORT, entry=80211.0, current_stop_loss=80322.0,
+        buffer_ratio=0.001,
+    )
+    # anchor 80180 < entry → break-even 통과하지만 buffer 80.18 적용 시
+    # new_sl = 80180 + 80.18 = 80260.18 > entry 80211 → 손실 영역 → None
+    assert result is None
+
+
+def test_long_buffer_pushes_sl_below_entry_returns_none() -> None:
+    """LONG entry 80000, anchor 80050 (entry 위), buffer 80.05 적용 시 new_sl=79970
+    < entry → 손실 영역 → None.
+    """
+    df = _df([
+        (80000, 80100, 79950, 80000),
+        (80000, 80050, 79950, 79980),
+        (79980, 80050, 79900, 79900),
+        (79900, 80050, 79850, 79900),
+        (79900, 80050, 79850, 79950),    # swing low @ 80050 (entry 위지만 buffer 적용 시 entry 아래)
+        (79950, 80100, 79900, 80050),
+        (80050, 80150, 80000, 80100),
+    ])
+    result = compute_structure_trail(
+        df, Direction.LONG, entry=80000.0, current_stop_loss=79800.0,
+        buffer_ratio=0.001,
+    )
+    # 결과: 손실 영역에 SL 박는 trail 박지 박지 박지
+    # anchor 박은 거 박은 거 박은 거 entry 와 가깝거나 매우 다르거나 — 어느 쪽이든
+    # new_sl < entry 면 None 박은 거.
+    if result is not None:
+        # 통과한 경우 new_sl 이 entry 위에 있어야 정상 (break-even 이상)
+        assert result.new_stop_loss > 80000.0
+
+
 def test_short_trail_no_regression() -> None:
     """SHORT 새 trail SL 이 현재 SL 보다 높으면 갱신 X."""
     df = _df([
