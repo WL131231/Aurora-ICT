@@ -90,23 +90,18 @@ class AuroraClientAdapter:
         stop_loss: float | None = None,
         take_profit: float | None = None,
     ) -> dict[str, Any]:
-        """Aurora place_order 결과를 dict로 변환.
+        """Aurora place_order 결과를 dict로 변환 + SL/TP passthrough.
 
         Aurora ``place_order`` 시그니처:
         ``(symbol, side, qty, price=None, reduce_only=False, ...)`` → Order dataclass.
 
-        SL/TP는 Bybit에서 conditional order로 처리되어야 하지만 현재 Aurora 측 client는
-        ccxt ``params={"stopLoss": SL, "takeProfit": TP}`` 형태를 직접 지원하지 않는다
-        (TODO: Aurora 측 SL/TP passthrough 구현).
+        v0.4.46 — SL/TP passthrough 추가:
+        - entry 주문 (reduce_only=False) + SL/TP 인자 있으면, 주문 직후 raw ccxt 의
+          ``set_trading_stop`` (Bybit V5 private API) 호출해서 거래소 측 conditional
+          SL/TP 설정. position 등록 후에 호출되어야 하므로 시장가 (price=None) 일 때
+          가장 안정.
+        - reduce_only=True (partial TP) 는 일반 limit 주문 — SL/TP 인자는 무시.
         """
-        # Aurora place_order에 SL/TP 인자가 없어 현재는 경고만 남기고 entry만 등록한다.
-        # 후속으로 Aurora 측에서 ccxt params를 받아 처리해주면 여기서도 전달 가능.
-        if stop_loss is not None or take_profit is not None:
-            logger.warning(
-                "SL/TP 전달 불가 (Aurora client 미지원): "
-                "sl=%s tp=%s — entry만 등록됩니다.",
-                stop_loss, take_profit,
-            )
         order = await self._client.place_order(
             symbol=symbol,
             side=side,
@@ -114,12 +109,52 @@ class AuroraClientAdapter:
             price=price,
             reduce_only=reduce_only,
         )
-        # Aurora Order dataclass → dict 변환
+        order_dict: dict[str, Any]
         if hasattr(order, "__dict__"):
-            return dict(order.__dict__)
-        if isinstance(order, dict):
-            return order
-        return {"raw": str(order)}
+            order_dict = dict(order.__dict__)
+        elif isinstance(order, dict):
+            order_dict = order
+        else:
+            order_dict = {"raw": str(order)}
+
+        # SL/TP passthrough — entry 주문이고 (reduce_only False) SL/TP 있을 때.
+        if not reduce_only and (stop_loss is not None or take_profit is not None):
+            await self._apply_trading_stop(
+                symbol=symbol,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+            )
+        return order_dict
+
+    async def _apply_trading_stop(
+        self,
+        symbol: str,
+        stop_loss: float | None,
+        take_profit: float | None,
+    ) -> None:
+        """Bybit V5 set_trading_stop 호출 — 활성 포지션의 SL/TP 설정."""
+        ex = getattr(self._client, "_ex", None)
+        if ex is None:
+            logger.warning("set_trading_stop: _ex 없음 — SL/TP 적용 skip")
+            return
+        raw_symbol = symbol.replace("/", "").split(":")[0]
+        params: dict[str, Any] = {
+            "category": "linear",
+            "symbol": raw_symbol,
+            "tpslMode": "Full",
+            "positionIdx": 0,
+        }
+        if stop_loss is not None:
+            params["stopLoss"] = str(stop_loss)
+        if take_profit is not None:
+            params["takeProfit"] = str(take_profit)
+        try:
+            await ex.private_post_v5_position_trading_stop(params)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "set_trading_stop 실패 (%s sl=%s tp=%s): %s",
+                raw_symbol, stop_loss, take_profit, e,
+            )
 
     async def fetch_position(self, symbol: str) -> dict[str, Any] | None:
         """Aurora Position dataclass → dict 변환."""
