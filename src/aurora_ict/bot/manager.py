@@ -92,6 +92,7 @@ class BotManager:
             enable_trail=self.settings.enable_trail,
             trail_buffer_ratio=self.settings.trail_buffer_ratio,
             use_market_entry=self.settings.use_market_entry,
+            enable_partial_tp=self.settings.enable_partial_tp,
         )
         await self._bot.start()
         logger.info(

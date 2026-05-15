@@ -73,12 +73,28 @@ async def test_market_entry_passes_price_none() -> None:
 
 @pytest.mark.asyncio
 async def test_market_entry_still_registers_partial_tps() -> None:
-    """market entry 박혀도 partial TP 3개는 그대로 reduce_only limit 등록."""
+    """market entry + enable_partial_tp=True 면 partial TP 3개 등록."""
     client = _mock_client()
-    bot = BotIctInstance(client=client, use_market_entry=True)
+    bot = BotIctInstance(
+        client=client, use_market_entry=True, enable_partial_tp=True,
+    )
     await bot._execute_setup(_dummy_setup())
     # 호출 4개 — entry + tp1 + tp2 + tp3
     assert client.place_order.await_count == 4
     # tp1/tp2/tp3 는 reduce_only=True
     for call in client.place_order.await_args_list[1:]:
         assert call.kwargs.get("reduce_only") is True
+
+
+@pytest.mark.asyncio
+async def test_disable_partial_tp_only_entry_order() -> None:
+    """enable_partial_tp=False 면 entry 한 건만 등록 — partial TP skip."""
+    client = _mock_client()
+    bot = BotIctInstance(
+        client=client, use_market_entry=True, enable_partial_tp=False,
+    )
+    await bot._execute_setup(_dummy_setup())
+    # 호출 1개 (entry 만) — TP1/2/3 skip
+    assert client.place_order.await_count == 1
+    # 그 호출은 entry — reduce_only 인자 안 전달 (default False).
+    assert client.place_order.await_args_list[0].kwargs.get("reduce_only", False) is False
