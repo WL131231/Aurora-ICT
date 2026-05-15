@@ -187,6 +187,50 @@ class AuroraClientAdapter:
             logger.warning("fetch_balance 실패: %s", e)
             return {}
 
+    async def set_leverage(
+        self, symbol: str, leverage: int,
+    ) -> dict[str, Any]:
+        """Bybit V5 set_leverage 호출 — buy/sell leverage 동시 설정.
+
+        Args:
+            symbol: ccxt unified symbol (e.g. "BTC/USDT:USDT").
+            leverage: 정수 leverage (1 ~ 50).
+
+        Returns:
+            Bybit API 응답 dict. 실패 시 빈 dict.
+        """
+        ex = getattr(self._client, "_ex", None)
+        if ex is None:
+            logger.warning("set_leverage: _ex 없음 — skip")
+            return {}
+        raw_symbol = symbol.replace("/", "").split(":")[0]
+        params = {
+            "category": "linear",
+            "symbol": raw_symbol,
+            "buyLeverage": str(leverage),
+            "sellLeverage": str(leverage),
+        }
+        try:
+            result = await ex.private_post_v5_position_set_leverage(params)
+            logger.info(
+                "set_leverage 완료 (%s → %dx)", raw_symbol, leverage,
+            )
+            return dict(result) if isinstance(result, dict) else {"raw": str(result)}
+        except Exception as e:  # noqa: BLE001
+            # Bybit retCode 110043: "leverage not modified" — 이미 같은 값 설정.
+            # 다른 에러는 warning, 진행 자체는 안 막음.
+            msg = str(e)
+            if "110043" in msg or "not modified" in msg:
+                logger.info(
+                    "set_leverage skip (%s 이미 %dx)", raw_symbol, leverage,
+                )
+                return {"retCode": 110043, "alreadySet": True}
+            logger.warning(
+                "set_leverage 실패 (%s %dx): %s",
+                raw_symbol, leverage, e,
+            )
+            return {}
+
     async def modify_stop_loss(
         self, symbol: str, new_stop_loss: float,
     ) -> dict[str, Any]:
