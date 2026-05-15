@@ -159,6 +159,45 @@ async def test_place_order_no_sl_no_trading_stop_call() -> None:
 
 
 @pytest.mark.asyncio
+async def test_set_leverage_calls_bybit_api() -> None:
+    """set_leverage 가 Bybit V5 set_leverage 호출 + 정확한 params."""
+    inner = MagicMock()
+    ex = MagicMock()
+    ex.private_post_v5_position_set_leverage = AsyncMock(return_value={"retCode": 0})
+    inner._ex = ex
+    adapter = AuroraClientAdapter(inner)
+    await adapter.set_leverage("BTC/USDT:USDT", 20)
+    ex.private_post_v5_position_set_leverage.assert_awaited_once()
+    params = ex.private_post_v5_position_set_leverage.call_args.args[0]
+    assert params["symbol"] == "BTCUSDT"
+    assert params["buyLeverage"] == "20"
+    assert params["sellLeverage"] == "20"
+    assert params["category"] == "linear"
+
+
+@pytest.mark.asyncio
+async def test_set_leverage_already_set_handled() -> None:
+    """이미 같은 leverage 박혀있을 때 retCode 110043 박혀와도 OK 처리."""
+    inner = MagicMock()
+    ex = MagicMock()
+    ex.private_post_v5_position_set_leverage = AsyncMock(
+        side_effect=RuntimeError("bybit error 110043: leverage not modified"),
+    )
+    inner._ex = ex
+    adapter = AuroraClientAdapter(inner)
+    result = await adapter.set_leverage("BTC/USDT:USDT", 20)
+    assert result.get("alreadySet") is True
+
+
+@pytest.mark.asyncio
+async def test_set_leverage_no_ex_returns_empty() -> None:
+    inner = MagicMock(spec=[])
+    adapter = AuroraClientAdapter(inner)
+    result = await adapter.set_leverage("BTC/USDT:USDT", 20)
+    assert result == {}
+
+
+@pytest.mark.asyncio
 async def test_place_order_trading_stop_failure_swallowed() -> None:
     """set_trading_stop 실패해도 place_order 자체는 정상 반환."""
     inner = MagicMock()

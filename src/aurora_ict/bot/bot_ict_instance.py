@@ -71,6 +71,10 @@ class ExchangeClientProtocol(Protocol):
         self, symbol: str, new_stop_loss: float,
     ) -> dict[str, Any]: ...
 
+    async def set_leverage(
+        self, symbol: str, leverage: int,
+    ) -> dict[str, Any]: ...
+
 
 class BotState(StrEnum):
     """봇 상태."""

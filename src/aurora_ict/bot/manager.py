@@ -94,10 +94,16 @@ class BotManager:
             use_market_entry=self.settings.use_market_entry,
             enable_partial_tp=self.settings.enable_partial_tp,
         )
+        # 거래소 측 leverage 를 settings 에 맞춤 — qty 계산 일치 보장.
+        # 실패해도 봇 시작 자체는 진행 (warning 만, 사용자가 수동 박은 거 박혀있을 수 있음).
+        try:
+            await client.set_leverage(self.settings.symbol, self.settings.leverage)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("set_leverage 호출 자체 실패: %s", e)
         await self._bot.start()
         logger.info(
-            "BotManager started — mode=%s symbol=%s",
-            self.settings.run_mode.value, self.settings.symbol,
+            "BotManager started — mode=%s symbol=%s leverage=%dx",
+            self.settings.run_mode.value, self.settings.symbol, self.settings.leverage,
         )
         return self.status()
 
