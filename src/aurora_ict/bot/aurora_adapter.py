@@ -185,18 +185,47 @@ class AuroraClientAdapter:
             )
 
     async def fetch_position(self, symbol: str) -> dict[str, Any] | None:
-        """Aurora Position dataclass → dict 변환."""
-        pos = await self._client.fetch_position(symbol)
-        if pos is None:
+        """포지션 조회. Aurora client → fallback: ccxt _ex 직접 호출.
+
+        Aurora 본진 CcxtClient.fetch_position 이 None 반환하는 경우가 있어 (v0.4.55)
+        ccxt _ex.fetch_positions([symbol]) 로 직접 fetch fallback. Bybit V5 가 빈
+        포지션도 contracts=0 으로 반환하므로 0인 항목은 제외.
+        """
+        # 1차: Aurora client.fetch_position
+        try:
+            pos = await self._client.fetch_position(symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Aurora fetch_position 실패: %s — ccxt fallback", e)
+            pos = None
+        if pos is not None:
+            if hasattr(pos, "__dict__"):
+                d = dict(pos.__dict__)
+                if "qty" in d and "contracts" not in d:
+                    d["contracts"] = d["qty"]
+                if float(d.get("contracts") or 0) > 0:
+                    return d
+            elif isinstance(pos, dict):
+                if float(pos.get("contracts") or pos.get("qty") or 0) > 0:
+                    return pos
+
+        # 2차 fallback: ccxt _ex 직접 fetch_positions
+        ex = getattr(self._client, "_ex", None)
+        if ex is None:
             return None
-        if hasattr(pos, "__dict__"):
-            d = dict(pos.__dict__)
-            # Aurora Position의 ``qty`` 필드를 ccxt-style ``contracts``로 alias 추가
-            if "qty" in d and "contracts" not in d:
-                d["contracts"] = d["qty"]
-            return d
-        if isinstance(pos, dict):
-            return pos
+        await self._ensure_time_sync()
+        try:
+            positions = await ex.fetch_positions([symbol])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ccxt fetch_positions 실패: %s", e)
+            return None
+        for p in positions or []:
+            contracts = float(p.get("contracts") or 0)
+            if contracts > 0:
+                # ccxt 표준 dict 그대로 반환 (entryPrice / side / contracts 박힘).
+                if "qty" not in p:
+                    p["qty"] = contracts
+                return p
+        return None
         return None
 
     async def fetch_balance(self) -> dict[str, Any]:
