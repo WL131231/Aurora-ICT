@@ -228,6 +228,7 @@ def detect_silver_bullet_setups(
     min_confluence: int = 0,
     expand_to_killzone: bool = False,
     disable_time_filter: bool = False,
+    min_sl_distance_pct: float = 0.0,
 ) -> list[SilverBulletSetup]:
     """Silver Bullet setup 후보 검출.
 
@@ -322,6 +323,12 @@ def detect_silver_bullet_setups(
 
         if rr < min_rr:
             continue
+
+        # SL 거리 너무 작은 setup skip — noise-trap 회피.
+        # SL 거리 / entry < min_sl_distance_pct 면 1분 안 SL hit 가능성 ↑.
+        if min_sl_distance_pct > 0 and entry > 0:
+            if (risk / entry) < min_sl_distance_pct:
+                continue
 
         # Confluence 평가 — OB / Macro / Sweep 각 +1
         confluences: list[str] = []

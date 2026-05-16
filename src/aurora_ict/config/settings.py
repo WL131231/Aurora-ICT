@@ -113,6 +113,10 @@ class IctSettings(BaseSettings):
     # setup entry vs 실제 fill price 차이로 partial TP 가 즉시 손실 fill 되는 자기-트랩
     # 회피용. trail SL 만으로 청산.
     enable_partial_tp: bool = Field(default=True)
+    # min_sl_distance_pct: SL 거리가 entry 의 이 비율 미만이면 setup skip. 5m FVG 가
+    # 너무 작아서 SL 24~35 pip (0.03~0.04%) 박힘 → 노이즈 한 번에 hit → 즉시 손실 청산
+    # 다발 발생. 최소 거리 보장으로 noise-trap 회피.
+    min_sl_distance_pct: float = Field(default=0.003, ge=0.0, le=0.05)
 
     demo_api_key: SecretStr = Field(default=SecretStr(""))
     demo_api_secret: SecretStr = Field(default=SecretStr(""))
