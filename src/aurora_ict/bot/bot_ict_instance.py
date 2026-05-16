@@ -151,6 +151,8 @@ class BotIctInstance:
     use_market_entry: bool = False
     # enable_partial_tp: False 면 partial TP1/TP2/TP3 안 박음. 자기-트랩 회피용.
     enable_partial_tp: bool = True
+    # min_sl_distance_pct: SL 거리 / entry 가 이 비율 미만이면 setup skip (noise-trap 회피).
+    min_sl_distance_pct: float = 0.0
 
     # Partial TP 분배 — TP1/TP2/TP3 비율 (합 = 1.0). ICT 정통 50/25/25.
     tp_distribution: tuple[float, float, float] = (0.5, 0.25, 0.25)
@@ -218,6 +220,7 @@ class BotIctInstance:
             require_retrace=self.require_retrace,
             expand_to_killzone=self.expand_to_killzone,
             disable_time_filter=self.disable_time_filter,
+            min_sl_distance_pct=self.min_sl_distance_pct,
         )
 
         # 진입 중인 position이 있으면 신규 진입은 막고 상태만 동기화 + trail tick.
