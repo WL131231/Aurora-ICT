@@ -167,13 +167,65 @@ class BotIctInstance:
     _htf_tracker: HtfSetupTracker | None = field(default=None)
 
     async def start(self) -> None:
-        """봇 기동 (background task 생성)."""
+        """봇 기동 (background task 생성).
+
+        시작 시 거래소 측 활성 포지션 fetch → active_position 복원.
+        봇 재시작 시 거래소 측 포지션 인식 못해서 중복 진입 박는 위험 회피.
+        """
         if self.state is BotState.RUNNING:
             logger.info("BotIctInstance %s 이미 실행 중", self.symbol)
             return
+        await self._recover_position_from_exchange()
         self.state = BotState.RUNNING
         self._task = asyncio.create_task(self._run_loop())
         logger.info("BotIctInstance %s 시작", self.symbol)
+
+    async def _recover_position_from_exchange(self) -> None:
+        """봇 시작 시 거래소 측 활성 포지션 복원.
+
+        fetch_position 호출 → contracts > 0 이면 active_position 채움.
+        ts_ms / entry / SL / TP 박은 거 거래소 응답에서 추출 (없으면 추정값).
+        """
+        try:
+            pos = await self.client.fetch_position(self.symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("recover fetch_position 실패: %s — skip", e)
+            return
+        if pos is None:
+            return
+        contracts = float(pos.get("contracts", 0) or 0)
+        if contracts <= 0:
+            return
+        # 방향 추정 — Bybit ccxt: side="long"/"short" 또는 size sign.
+        side = (pos.get("side") or "").lower()
+        if side in ("long", "buy"):
+            direction = Direction.LONG
+        elif side in ("short", "sell"):
+            direction = Direction.SHORT
+        else:
+            logger.warning("recover: side 인식 실패 (%s) — skip", side)
+            return
+        entry_price = float(
+            pos.get("entryPrice") or pos.get("entry_price") or pos.get("averagePrice") or 0,
+        )
+        if entry_price <= 0:
+            logger.warning("recover: entry_price 인식 실패 — skip")
+            return
+        # SL/TP 박은 거 박은 거 박은 거 — Bybit V5 응답 stopLoss / takeProfit.
+        sl = float(pos.get("stopLossPrice") or pos.get("stop_loss") or 0) or 0.0
+        tp = float(pos.get("takeProfitPrice") or pos.get("take_profit") or 0) or 0.0
+        self.active_position = _ActivePosition(
+            direction=direction,
+            entry=entry_price,
+            stop_loss=sl,
+            take_profit=tp,
+            qty=contracts,
+            setup_ts_ms=0,  # recovery 박은 거 박은 거 박은 거 박은 거 ts_ms 모름
+        )
+        logger.info(
+            "recover: 활성 포지션 복원 — %s %s entry=%.4f qty=%.4f sl=%.4f tp=%.4f",
+            self.symbol, direction.value, entry_price, contracts, sl, tp,
+        )
 
     async def stop(self) -> None:
         """봇 정지 (background task cancel)."""

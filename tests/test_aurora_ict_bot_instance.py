@@ -176,6 +176,38 @@ async def test_step_duplicate_setup_filtered() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_recovers_position_from_exchange() -> None:
+    """봇 시작 시 거래소 측 활성 포지션 fetch → active_position 복원."""
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.fetch_position = AsyncMock(return_value={
+        "contracts": 0.05,
+        "side": "short",
+        "entryPrice": 80000.0,
+        "stopLossPrice": 80500.0,
+        "takeProfitPrice": 78000.0,
+    })
+    bot = BotIctInstance(client=client, step_interval_sec=3600)
+    await bot.start()
+    assert bot.active_position is not None
+    assert bot.active_position.direction is Direction.SHORT
+    assert bot.active_position.entry == 80000.0
+    assert bot.active_position.qty == 0.05
+    assert bot.active_position.stop_loss == 80500.0
+    await bot.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_no_recovery_when_no_exchange_position() -> None:
+    """거래소 측 포지션 없으면 active_position 그대로 None."""
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.fetch_position = AsyncMock(return_value=None)
+    bot = BotIctInstance(client=client, step_interval_sec=3600)
+    await bot.start()
+    assert bot.active_position is None
+    await bot.stop()
+
+
+@pytest.mark.asyncio
 async def test_start_stop_lifecycle() -> None:
     """start → state RUNNING, stop → state STOPPED."""
     client = _mock_client([[1, 100, 101, 99, 100, 10]])
