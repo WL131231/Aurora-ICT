@@ -90,7 +90,9 @@ class IctSettings(BaseSettings):
     # min_rr 1.5 — 진입 빈도 위해 기존 2.0 에서 완화. partial 1R/2R/3R 청산 구조라
     # final RR 1.5 도 평균 ~1.5R 의 실제 수익 챙길 수 있음.
     min_rr: float = Field(default=1.5, ge=1.0)
-    fvg_min_size_pct: float = Field(default=0.0005, ge=0)
+    # FVG 최소 % size — 0.0005 → 0.0004 (v0.4.56). 작은 FVG 도 채택해서 setup 빈도 ↑.
+    # min_sl_distance_pct 0.0005 가 너무 작은 SL 차단하므로 quality 유지.
+    fvg_min_size_pct: float = Field(default=0.0004, ge=0)
     step_interval_sec: int = Field(default=60, ge=10)
     ohlcv_limit: int = Field(default=1000, ge=50, le=1000)
     # setup stale threshold — FVG 이후 N 봉 안에 retest 없으면 진입 안 함.
