@@ -121,6 +121,11 @@ class IctSettings(BaseSettings):
     # 0.003 (0.3%) 박은 거 박은 거 박은 거 박은 거 박은 거 박은 거 박은 거 박은 거 박은 거 박은 거
     # 큰 수익 setup 까지 차단해서 초기 default 0.05% 로 보수적 설정.
     min_sl_distance_pct: float = Field(default=0.0005, ge=0.0, le=0.05)
+    # max_sl_distance_pct: SL 거리가 entry 의 이 비율 초과면 setup skip.
+    # 0 = 비활성. default 0.005 (0.5%) — 비정상 큰 SL 차단.
+    max_sl_distance_pct: float = Field(default=0.005, ge=0.0, le=0.1)
+    # heartbeat_interval_sec: bot loop 살아있음 INFO 로그 주기 (0 = 비활성).
+    heartbeat_interval_sec: int = Field(default=900, ge=0)
 
     demo_api_key: SecretStr = Field(default=SecretStr(""))
     demo_api_secret: SecretStr = Field(default=SecretStr(""))

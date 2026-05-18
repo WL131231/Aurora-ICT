@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -57,20 +58,32 @@ class BotManager:
     client_factory: ClientFactory
     settings: IctSettings = field(default_factory=get_settings)
     _bot: BotIctInstance | None = field(default=None)
+    _client: ExchangeClientProtocol | None = field(default=None)
+    _start_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     async def start(self) -> BotStatus:
-        """봇 기동. ``enabled=False``이거나 API 키가 없으면 ValueError."""
-        if not self.settings.enabled:
-            raise ValueError("봇이 disabled 상태 — settings.enabled=False")
-        if not self.settings.has_credentials():
-            raise ValueError(
-                f"API 키 없음 (run_mode={self.settings.run_mode.value})",
-            )
-        if self._bot is not None and self._bot.state is BotState.RUNNING:
-            logger.info("이미 실행 중 — re-start 무시")
-            return self.status()
+        """봇 기동. ``enabled=False``이거나 API 키가 없으면 ValueError.
 
+        동시 호출 (UI 더블 클릭 / launcher race) 시 두 번째 호출이 새 client/bot 인스턴스
+        생성해서 중복 실행 발생 — asyncio.Lock + state 재검사로 차단.
+        """
+        async with self._start_lock:
+            if not self.settings.enabled:
+                raise ValueError("봇이 disabled 상태 — settings.enabled=False")
+            if not self.settings.has_credentials():
+                raise ValueError(
+                    f"API 키 없음 (run_mode={self.settings.run_mode.value})",
+                )
+            if self._bot is not None and self._bot.state is BotState.RUNNING:
+                logger.info("이미 실행 중 — re-start 무시")
+                return self.status()
+            return await self._do_start()
+
+    async def _do_start(self) -> BotStatus:
+        # 이전 client 가 남아있으면 명시적으로 close — ccxt aiohttp session 누수 방지.
+        await self._close_client()
         client = await self.client_factory(self.settings)
+        self._client = client
         self._bot = BotIctInstance(
             client=client,
             symbol=self.settings.symbol,
@@ -94,6 +107,8 @@ class BotManager:
             use_market_entry=self.settings.use_market_entry,
             enable_partial_tp=self.settings.enable_partial_tp,
             min_sl_distance_pct=self.settings.min_sl_distance_pct,
+            max_sl_distance_pct=self.settings.max_sl_distance_pct,
+            heartbeat_interval_sec=self.settings.heartbeat_interval_sec,
         )
         # 거래소 측 leverage 를 settings 에 맞춤 — qty 계산 일치 보장.
         # 실패해도 봇 시작 자체는 진행 (warning 만, 사용자가 수동 박은 거 박혀있을 수 있음).
@@ -109,10 +124,31 @@ class BotManager:
         return self.status()
 
     async def stop(self) -> BotStatus:
-        """봇 정지."""
+        """봇 정지 + client close (aiohttp session 누수 방지)."""
         if self._bot is not None:
             await self._bot.stop()
+        await self._close_client()
         return self.status()
+
+    async def _close_client(self) -> None:
+        """현재 client 의 내부 ccxt exchange (_ex) 를 명시적으로 close.
+
+        ccxt async exchange 의 aiohttp ClientSession 이 GC 까지 살아있으면
+        "Unclosed client session" WARNING 발생 → 명시 close 박아 해결.
+        """
+        if self._client is None:
+            return
+        client = self._client
+        self._client = None
+        # AuroraClientAdapter._client = Aurora CcxtClient. CcxtClient._ex = ccxt async exchange.
+        inner = getattr(client, "_client", client)
+        ex = getattr(inner, "_ex", None)
+        if ex is None:
+            return
+        try:
+            await ex.close()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("ccxt exchange close 실패 (무시): %s", e)
 
     async def set_run_mode(self, mode: RunMode) -> BotStatus:
         """모드 전환 — 실행 중이면 stop → settings 변경 → restart."""
