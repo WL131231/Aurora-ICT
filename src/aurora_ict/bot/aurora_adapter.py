@@ -144,6 +144,16 @@ class AuroraClientAdapter:
         else:
             order_dict = {"raw": str(order)}
 
+        # Entry 주문 (reduce_only False) — 실제 fill 가격 / qty 를 거래소 응답에서 추출.
+        # 시장가(price=None) 진입 시 setup 가격과 실제 체결가가 다름 (slippage / spread).
+        # SL/TP/trail 계산이 실제 fill 가격 기준이어야 정확.
+        if not reduce_only:
+            avg_fill, filled_qty = await self._extract_fill(order_dict, symbol)
+            if avg_fill is not None:
+                order_dict["avg_fill_price"] = avg_fill
+            if filled_qty is not None:
+                order_dict["filled_qty"] = filled_qty
+
         # SL/TP passthrough — entry 주문이고 (reduce_only False) SL/TP 있을 때.
         if not reduce_only and (stop_loss is not None or take_profit is not None):
             await self._apply_trading_stop(
@@ -152,6 +162,44 @@ class AuroraClientAdapter:
                 take_profit=take_profit,
             )
         return order_dict
+
+    async def _extract_fill(
+        self, order_dict: dict[str, Any], symbol: str,
+    ) -> tuple[float | None, float | None]:
+        """주문 응답에서 평균 체결가 / 체결 qty 추출. 없으면 fetch_position fallback."""
+        # 1차: order_dict 안 ccxt 표준 필드.
+        avg_keys = ("average", "avgPrice", "avg_price", "fill_price", "price")
+        qty_keys = ("filled", "filled_qty", "amount", "qty")
+        avg: float | None = None
+        filled: float | None = None
+        for k in avg_keys:
+            v = order_dict.get(k)
+            if isinstance(v, (int, float)) and v > 0:
+                avg = float(v)
+                break
+        for k in qty_keys:
+            v = order_dict.get(k)
+            if isinstance(v, (int, float)) and v > 0:
+                filled = float(v)
+                break
+        if avg is not None:
+            return avg, filled
+        # 2차 fallback: 거래소 fetch_position 으로 entryPrice 조회 (시장가 즉시 fill).
+        try:
+            pos = await self.fetch_position(symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("fill 가격 fallback fetch_position 실패: %s", e)
+            return None, filled
+        if pos is None:
+            return None, filled
+        ep = pos.get("entryPrice") or pos.get("entry_price") or pos.get("averagePrice")
+        if isinstance(ep, (int, float)) and ep > 0:
+            avg = float(ep)
+        if filled is None:
+            c = pos.get("contracts") or pos.get("qty")
+            if isinstance(c, (int, float)) and c > 0:
+                filled = float(c)
+        return avg, filled
 
     async def _apply_trading_stop(
         self,
@@ -179,6 +227,14 @@ class AuroraClientAdapter:
         try:
             await ex.private_post_v5_position_trading_stop(params)
         except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            # Bybit retCode 34040 "not modified" — 동일 SL/TP 이미 박혀있음. 정상 동작.
+            if "34040" in msg or "not modified" in msg:
+                logger.debug(
+                    "set_trading_stop skip (%s sl=%s tp=%s 이미 적용)",
+                    raw_symbol, stop_loss, take_profit,
+                )
+                return
             logger.warning(
                 "set_trading_stop 실패 (%s sl=%s tp=%s): %s",
                 raw_symbol, stop_loss, take_profit, e,
@@ -319,6 +375,13 @@ class AuroraClientAdapter:
         try:
             result = await ex.private_post_v5_position_trading_stop(params)
         except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            if "34040" in msg or "not modified" in msg:
+                logger.debug(
+                    "modify_stop_loss skip (%s sl=%.4f 이미 적용)",
+                    raw_symbol, new_stop_loss,
+                )
+                return {"retCode": 34040, "alreadySet": True}
             logger.warning("set_trading_stop 실패 (%s, sl=%.4f): %s",
                            raw_symbol, new_stop_loss, e)
             return {}

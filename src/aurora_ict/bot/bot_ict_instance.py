@@ -153,6 +153,11 @@ class BotIctInstance:
     enable_partial_tp: bool = True
     # min_sl_distance_pct: SL 거리 / entry 가 이 비율 미만이면 setup skip (noise-trap 회피).
     min_sl_distance_pct: float = 0.0
+    # max_sl_distance_pct: SL 거리 / entry 가 이 비율 초과면 setup skip (비정상 큰 SL 차단).
+    # 0 = 비활성.
+    max_sl_distance_pct: float = 0.0
+    # heartbeat_interval_sec: step loop 살아있음 INFO 로그 주기. 0 = 비활성.
+    heartbeat_interval_sec: int = 0
 
     # Partial TP 분배 — TP1/TP2/TP3 비율 (합 = 1.0). ICT 정통 50/25/25.
     tp_distribution: tuple[float, float, float] = (0.5, 0.25, 0.25)
@@ -161,6 +166,7 @@ class BotIctInstance:
     active_position: _ActivePosition | None = field(default=None)
     _task: asyncio.Task[None] | None = field(default=None)
     _last_setup_ts_ms: int = field(default=0)  # 동일 setup 중복 진입 방지
+    _last_heartbeat_ms: int = field(default=0)
     # HTF 봉 캐시 — (tf, last_ts_ms) → DataFrame. 같은 봉이면 재fetch 안 함.
     _htf_cache: dict[str, tuple[int, pd.DataFrame]] = field(default_factory=dict)
     # Multi-TF tracker — multi_tf=True 시 lazy init.
@@ -241,11 +247,22 @@ class BotIctInstance:
 
     async def _run_loop(self) -> None:
         """매 step_interval_sec 마다 step()을 호출하는 메인 루프."""
+        import time as _time
         while self.state is BotState.RUNNING:
             try:
                 await self.step()
             except Exception as e:  # noqa: BLE001 — step 실패가 loop 전체를 죽이지 않도록
                 logger.exception("step 실패: %s", e)
+            # Heartbeat — loop 살아있음 주기적 INFO 로그.
+            if self.heartbeat_interval_sec > 0:
+                now_ms = int(_time.time() * 1000)
+                if now_ms - self._last_heartbeat_ms >= self.heartbeat_interval_sec * 1000:
+                    has_pos = self.active_position is not None
+                    logger.info(
+                        "step heartbeat — symbol=%s last_setup_ts_ms=%d active_pos=%s",
+                        self.symbol, self._last_setup_ts_ms, has_pos,
+                    )
+                    self._last_heartbeat_ms = now_ms
             await asyncio.sleep(self.step_interval_sec)
 
     async def step(self) -> ICTSignal:
@@ -504,6 +521,17 @@ class BotIctInstance:
         side = "buy" if setup.direction is Direction.LONG else "sell"
         exit_side = "sell" if setup.direction is Direction.LONG else "buy"
 
+        # max_sl_distance_pct skip (비정상 큰 SL 차단).
+        if self.max_sl_distance_pct > 0 and setup.entry > 0:
+            sl_dist_pct = abs(setup.entry - setup.stop_loss) / setup.entry
+            if sl_dist_pct > self.max_sl_distance_pct:
+                logger.info(
+                    "setup skip — SL 거리 %.4f%% > max %.4f%% (entry=%.4f sl=%.4f)",
+                    sl_dist_pct * 100, self.max_sl_distance_pct * 100,
+                    setup.entry, setup.stop_loss,
+                )
+                return
+
         equity = await self._fetch_equity()
         qty = self._calc_qty(setup, equity)
         if qty <= 0:
@@ -523,26 +551,60 @@ class BotIctInstance:
             setup.tp1, setup.tp2, setup.tp3, qty, qty1, qty2, qty3,
         )
 
+        # 실제 fill 가격 / SL / TP — 시장가 진입 시 fill 가격이 setup 과 다를 수 있어
+        # 응답에서 추출 후 SL/TP/trail 모두 fill 기준으로 재계산.
+        effective_entry = setup.entry
+        effective_sl = setup.stop_loss
+        effective_tp = setup.take_profit
+        effective_tp1, effective_tp2, effective_tp3 = setup.tp1, setup.tp2, setup.tp3
         try:
-            # Entry + SL — TP 는 partial 로 따로 등록.
-            # use_market_entry=True 면 price=None (시장가), False 면 setup.entry (limit).
+            # 시장가 진입 시: SL 은 entry 주문에 동봉하지 않고 fill 확인 후 별도 박음.
+            # 그래야 SL 이 실제 fill 가격 기준의 risk distance 로 정확하게 박힘.
             entry_price = None if self.use_market_entry else setup.entry
-            await self.client.place_order(
+            inline_sl = None if self.use_market_entry else setup.stop_loss
+            order_resp = await self.client.place_order(
                 symbol=self.symbol,
                 side=side,
                 qty=qty,
                 price=entry_price,
-                stop_loss=setup.stop_loss,
+                stop_loss=inline_sl,
                 take_profit=None,
             )
-            # Partial TP 3개 (reduce_only limit) — enable_partial_tp 옵션 분기.
-            # 시장가 entry 일 때 setup 의 TP1/2/3 가 실제 fill 가격과 동떨어져 즉시
-            # 손실 fill 되는 자기-트랩 발생 가능 → enable_partial_tp=False 시 skip.
+            # Fill 가격 추출 — adapter 가 avg_fill_price / filled_qty 박아 반환.
+            avg_fill = None
+            if isinstance(order_resp, dict):
+                v = order_resp.get("avg_fill_price")
+                if isinstance(v, (int, float)) and v > 0:
+                    avg_fill = float(v)
+            if self.use_market_entry and avg_fill is not None and avg_fill > 0:
+                # setup 가격 → fill 가격 shift. SL/TP 모두 동일 risk distance 유지.
+                sl_dist = setup.entry - setup.stop_loss
+                tp_dist = setup.take_profit - setup.entry
+                tp1_dist = setup.tp1 - setup.entry
+                tp2_dist = setup.tp2 - setup.entry
+                tp3_dist = setup.tp3 - setup.entry
+                effective_entry = avg_fill
+                effective_sl = avg_fill - sl_dist
+                effective_tp = avg_fill + tp_dist
+                effective_tp1 = avg_fill + tp1_dist
+                effective_tp2 = avg_fill + tp2_dist
+                effective_tp3 = avg_fill + tp3_dist
+                logger.info(
+                    "fill 가격 반영 — setup=%.4f fill=%.4f sl=%.4f→%.4f tp=%.4f→%.4f",
+                    setup.entry, avg_fill, setup.stop_loss, effective_sl,
+                    setup.take_profit, effective_tp,
+                )
+                # SL 을 fill 기준으로 박음 (시장가 진입 시).
+                try:
+                    await self.client.modify_stop_loss(self.symbol, effective_sl)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("fill 기반 SL 적용 실패: %s", e)
+            # Partial TP — fill 기반 effective_tp{1,2,3} 사용.
             if self.enable_partial_tp:
                 for tp_price, tp_qty in (
-                    (setup.tp1, qty1),
-                    (setup.tp2, qty2),
-                    (setup.tp3, qty3),
+                    (effective_tp1, qty1),
+                    (effective_tp2, qty2),
+                    (effective_tp3, qty3),
                 ):
                     if tp_qty <= 0:
                         continue
@@ -563,9 +625,9 @@ class BotIctInstance:
 
         self.active_position = _ActivePosition(
             direction=setup.direction,
-            entry=setup.entry,
-            stop_loss=setup.stop_loss,
-            take_profit=setup.take_profit,
+            entry=effective_entry,
+            stop_loss=effective_sl,
+            take_profit=effective_tp,
             qty=qty,
             setup_ts_ms=setup.ts_ms,
         )
