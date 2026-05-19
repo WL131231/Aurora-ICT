@@ -90,9 +90,8 @@ class IctSettings(BaseSettings):
     # min_rr 1.5 — 진입 빈도 위해 기존 2.0 에서 완화. partial 1R/2R/3R 청산 구조라
     # final RR 1.5 도 평균 ~1.5R 의 실제 수익 챙길 수 있음.
     min_rr: float = Field(default=1.5, ge=1.0)
-    # FVG 최소 % size — 0.0005 → 0.0004 (v0.4.56). 작은 FVG 도 채택해서 setup 빈도 ↑.
-    # min_sl_distance_pct 0.0005 가 너무 작은 SL 차단하므로 quality 유지.
-    fvg_min_size_pct: float = Field(default=0.0004, ge=0)
+    # FVG 최소 % size — 지난 12거래 분석 결과 작은 FVG 노이즈 비중 커서 0.0004 → 0.0006 상향.
+    fvg_min_size_pct: float = Field(default=0.0006, ge=0)
     step_interval_sec: int = Field(default=60, ge=10)
     ohlcv_limit: int = Field(default=1000, ge=50, le=1000)
     # setup stale threshold — FVG 이후 N 봉 안에 retest 없으면 진입 안 함.
@@ -116,16 +115,19 @@ class IctSettings(BaseSettings):
     # 회피용. trail SL 만으로 청산.
     enable_partial_tp: bool = Field(default=True)
     # min_sl_distance_pct: SL 거리가 entry 의 이 비율 미만이면 setup skip.
-    # default 0.0005 (0.05%) — 진짜 노이즈 (SL 0.03~0.04%) 만 차단. 큰 수익 trade
-    # (+$137 SL 0.1%, +$101 SL 0.8%) 박은 거 살림.
-    # 0.003 (0.3%) 박은 거 박은 거 박은 거 박은 거 박은 거 박은 거 박은 거 박은 거 박은 거 박은 거
-    # 큰 수익 setup 까지 차단해서 초기 default 0.05% 로 보수적 설정.
-    min_sl_distance_pct: float = Field(default=0.0005, ge=0.0, le=0.05)
+    # 지난 12거래 분석 결과 SL 너무 짧은 setup 손실 비중 커서 0.0005 → 0.0007 상향.
+    min_sl_distance_pct: float = Field(default=0.0007, ge=0.0, le=0.05)
     # max_sl_distance_pct: SL 거리가 entry 의 이 비율 초과면 setup skip.
     # 0 = 비활성. default 0.005 (0.5%) — 비정상 큰 SL 차단.
     max_sl_distance_pct: float = Field(default=0.005, ge=0.0, le=0.1)
     # heartbeat_interval_sec: bot loop 살아있음 INFO 로그 주기 (0 = 비활성).
     heartbeat_interval_sec: int = Field(default=900, ge=0)
+
+    # HTF EMA bias 필터 — multi_tf 와 별개의 단순 directional filter.
+    # 진입 직전 htf_ema_bias_tf (기본 1h) EMA20 vs 가격 비교 → 추세 방향 setup 만 진입.
+    htf_ema_bias_enabled: bool = Field(default=True)
+    htf_ema_bias_tf: str = Field(default="1h")
+    htf_ema_bias_period: int = Field(default=20, ge=2, le=200)
 
     demo_api_key: SecretStr = Field(default=SecretStr(""))
     demo_api_secret: SecretStr = Field(default=SecretStr(""))
