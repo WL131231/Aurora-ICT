@@ -123,6 +123,7 @@ def confirm_ltf_entry(
     lookback_bars: int = 30,
     fvg_min_size_pct: float | None = 0.0005,
     sl_buffer_ratio: float = 0.1,
+    sl_entry_buffer_ratio: float = 0.0,
 ) -> ConfirmedEntry | None:
     """HTF setup 활성 시 LTF 에서 진입 trigger 검증.
 
@@ -166,6 +167,14 @@ def confirm_ltf_entry(
         stop_loss = fvg.low - (fvg.size * sl_buffer_ratio)
     else:
         stop_loss = fvg.high + (fvg.size * sl_buffer_ratio)
+
+    # 변경 1: entry 가격 기반 추가 SL buffer (wick fakeout 회피).
+    if sl_entry_buffer_ratio > 0 and entry > 0:
+        buf = entry * sl_entry_buffer_ratio
+        if direction is Direction.LONG:
+            stop_loss -= buf
+        else:
+            stop_loss += buf
 
     return ConfirmedEntry(
         direction=direction,

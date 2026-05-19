@@ -125,9 +125,35 @@ class IctSettings(BaseSettings):
 
     # HTF EMA bias 필터 — multi_tf 와 별개의 단순 directional filter.
     # 진입 직전 htf_ema_bias_tf (기본 1h) EMA20 vs 가격 비교 → 추세 방향 setup 만 진입.
+    # DEPRECATED — htf_override_mode != "off" 면 ema_bias 는 무시된다.
+    # 단순 directional EMA 필터보다 HTF FVG 가중치 맵 (override) 이 더 강한 시스템.
     htf_ema_bias_enabled: bool = Field(default=True)
     htf_ema_bias_tf: str = Field(default="1h")
     htf_ema_bias_period: int = Field(default=20, ge=2, le=200)
+
+    # --- 신규 (변경 1) SL 버퍼 ---------------------------------------------
+    # SL 을 FVG / sweep 경계에서 추가로 얼마나 더 멀리 둘지 (entry 가격 대비 비율).
+    # BUY 면 SL 을 entry * ratio 만큼 더 아래로, SELL 이면 더 위로 이동.
+    # wick 한 번에 stop hit 되는 문제 완화용. 0.0005 = 0.05%.
+    sl_buffer_ratio: float = Field(default=0.0005, ge=0.0, le=0.01)
+
+    # --- 신규 (변경 3) HTF FVG 가중치 override ----------------------------
+    # off → 사용 안 함, A → 진입 직전 차단만, C → 진입 + 봉 close 기준 flip + re-entry.
+    htf_override_mode: str = Field(default="C")
+    # HTF FVG 맵 빌드에 사용할 TF 들. 5m 은 LTF 라 별도 가중치 (1) 만 부여.
+    htf_fvg_tfs: tuple[str, ...] = Field(
+        default=("15m", "1h", "2h", "4h", "1d", "1w"),
+    )
+
+    # --- 신규 (변경 7) 실시간 flip watcher (WS + polling fallback) ---------
+    # ICT 정통: FVG zone 1회 touch = mitigation 인정. 5분 봉 close 대기 X — 즉시 flip.
+    # 정확성 우선: WS tick 받아도 flip 직전 REST 로 재확인 후 청산/진입 sequential.
+    flip_watch_enabled: bool = Field(default=True)
+    flip_watch_ws_url: str = Field(default="wss://stream.bybit.com/v5/public/linear")
+    flip_watch_polling_interval_sec: float = Field(default=0.2, ge=0.05, le=5.0)
+    flip_watch_ws_reconnect_max: int = Field(default=5, ge=1, le=20)
+    # FVG 무효화 — touch 3회 누적 시 더 이상 mitigation 후보로 안 봄 (약화).
+    htf_fvg_max_touch_count: int = Field(default=3, ge=1, le=20)
 
     demo_api_key: SecretStr = Field(default=SecretStr(""))
     demo_api_secret: SecretStr = Field(default=SecretStr(""))

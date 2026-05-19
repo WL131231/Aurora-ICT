@@ -112,6 +112,10 @@ class BotManager:
             htf_ema_bias_enabled=self.settings.htf_ema_bias_enabled,
             htf_ema_bias_tf=self.settings.htf_ema_bias_tf,
             htf_ema_bias_period=self.settings.htf_ema_bias_period,
+            # 신규 — SL buffer + HTF FVG override.
+            sl_buffer_ratio=self.settings.sl_buffer_ratio,
+            htf_override_mode=self.settings.htf_override_mode,
+            htf_fvg_tfs=self.settings.htf_fvg_tfs,
         )
         # 거래소 측 leverage 를 settings 에 맞춤 — qty 계산 일치 보장.
         # 실패해도 봇 시작 자체는 진행 (warning 만, 사용자가 수동 박은 거 박혀있을 수 있음).

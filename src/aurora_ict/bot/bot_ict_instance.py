@@ -40,7 +40,14 @@ from aurora_ict.strategy.multi_tf_bias import (
     compute_bias_from_df,
     htf_pair,
 )
+from aurora_ict.strategy.htf_fvg_map import (
+    TF_WEIGHT,
+    HtfFvgEntry,
+    build_htf_fvg_map,
+    find_opposite_htf_fvg,
+)
 from aurora_ict.strategy.silver_bullet import Direction, SilverBulletSetup
+from aurora_ict.strategy.trend_state import TrendState, evaluate_trend
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +101,10 @@ class _ActivePosition:
     take_profit: float
     qty: float
     setup_ts_ms: int
+    # 변경 3: HTF FVG override — 봉 close 가 이 zone 안 들어오면 flip.
+    htf_flip_target: HtfFvgEntry | None = None
+    # LTF setup 가중치 (5m=1 등). flip 판정 시 가중치 비교에 사용.
+    ltf_weight: int = 1
 
 
 @dataclass(slots=True)
@@ -165,6 +176,22 @@ class BotIctInstance:
     htf_ema_bias_tf: str = "1h"
     htf_ema_bias_period: int = 20
 
+    # 변경 1: SL 버퍼 (entry 대비 비율). 0 = 비활성.
+    sl_buffer_ratio: float = 0.0
+
+    # 변경 3: HTF FVG override 모드 — "off"/"A"/"C".
+    # A = 진입 직전 차단만, C = 진입 + 봉 close 기준 flip + re-entry.
+    htf_override_mode: str = "C"
+    htf_fvg_tfs: tuple[str, ...] = ("15m", "1h", "2h", "4h", "1d", "1w")
+
+    # 변경 7: 실시간 flip watcher (WS primary + REST polling fallback).
+    flip_watch_enabled: bool = True
+    flip_watch_ws_url: str = "wss://stream.bybit.com/v5/public/linear"
+    flip_watch_polling_interval_sec: float = 0.2
+    flip_watch_ws_reconnect_max: int = 5
+    # FVG 약화 임계치 — touch 누적 도달 시 mitigation 후보 / flip target 제외.
+    htf_fvg_max_touch_count: int = 3
+
     # Partial TP 분배 — TP1/TP2/TP3 비율 (합 = 1.0). ICT 정통 50/25/25.
     tp_distribution: tuple[float, float, float] = (0.5, 0.25, 0.25)
 
@@ -177,6 +204,17 @@ class BotIctInstance:
     _htf_cache: dict[str, tuple[int, pd.DataFrame]] = field(default_factory=dict)
     # Multi-TF tracker — multi_tf=True 시 lazy init.
     _htf_tracker: HtfSetupTracker | None = field(default=None)
+    # 변경 3: HTF FVG map 캐시 — TF 봉 길이 만큼 지나야 재 빌드.
+    _htf_fvg_map_cache: list[HtfFvgEntry] = field(default_factory=list)
+    _htf_fvg_map_built_at_ms: int = field(default=0)
+    # 봉당 1회 flip 검사 — 마지막으로 검사한 5m 봉 ts.
+    _last_flip_check_bar_ts: int = field(default=0)
+    # 변경 7: 같은 봉 ts 에 WS 가 이미 flip 했으면 step() 보조 검사 skip.
+    _flip_done_for_ts: int = field(default=0)
+    # 변경 7: 실시간 flip watcher.
+    _flip_watcher: object | None = field(default=None)
+    # 추세 평가 캐시 — (tf → (last_bar_ts, TrendState)).
+    _trend_cache: dict[str, tuple[int, TrendState]] = field(default_factory=dict)
 
     async def start(self) -> None:
         """봇 기동 (background task 생성).
@@ -190,6 +228,16 @@ class BotIctInstance:
         await self._recover_position_from_exchange()
         self.state = BotState.RUNNING
         self._task = asyncio.create_task(self._run_loop())
+        # 변경 7: 실시간 flip watcher 가동 (mode C + 활성화 시).
+        if self.flip_watch_enabled and self.htf_override_mode == "C":
+            from aurora_ict.bot.flip_watcher import FlipWatcher
+            self._flip_watcher = FlipWatcher(
+                self,
+                ws_url=self.flip_watch_ws_url,
+                polling_interval_sec=self.flip_watch_polling_interval_sec,
+                reconnect_max=self.flip_watch_ws_reconnect_max,
+            )
+            await self._flip_watcher.start()  # type: ignore[attr-defined]
         logger.info("BotIctInstance %s 시작", self.symbol)
 
     async def _recover_position_from_exchange(self) -> None:
@@ -242,6 +290,13 @@ class BotIctInstance:
     async def stop(self) -> None:
         """봇 정지 (background task cancel)."""
         self.state = BotState.STOPPED
+        # 변경 7: flip watcher 정지.
+        if self._flip_watcher is not None:
+            try:
+                await self._flip_watcher.stop()  # type: ignore[attr-defined]
+            except Exception as e:  # noqa: BLE001
+                logger.warning("flip watcher 정지 실패: %s", e)
+            self._flip_watcher = None
         if self._task is not None:
             self._task.cancel()
             try:
@@ -296,12 +351,17 @@ class BotIctInstance:
             expand_to_killzone=self.expand_to_killzone,
             disable_time_filter=self.disable_time_filter,
             min_sl_distance_pct=self.min_sl_distance_pct,
+            sl_buffer_ratio=self.sl_buffer_ratio,
         )
 
-        # 진입 중인 position이 있으면 신규 진입은 막고 상태만 동기화 + trail tick.
+        # 추세 평가 캐시 갱신 (현재는 로깅용, 향후 가중치 확장 여지).
+        await self._refresh_trend_cache()
+
+        # 진입 중인 position이 있으면 신규 진입은 막고 상태만 동기화 + trail tick + flip.
         if self.active_position is not None:
             if self.enable_trail:
                 await self._tick_trail(df)
+            await self._maybe_flip(df)
             await self._sync_position_state()
             return signal
 
@@ -316,7 +376,17 @@ class BotIctInstance:
             self._last_setup_ts_ms = signal.setup.ts_ms
             return signal
 
-        await self._execute_setup(signal.setup)
+        # 변경 3: HTF FVG override — 진입 직전 반대 방향 HTF FVG 가중치 평가.
+        htf_target = await self._evaluate_htf_override(signal.setup, df)
+        if self.htf_override_mode == "A" and htf_target is not None:
+            logger.info(
+                "HTF override(A) 진입 차단 — setup=%s 반대 HTF FVG=%s",
+                signal.setup.direction.value, htf_target.tf,
+            )
+            self._last_setup_ts_ms = signal.setup.ts_ms
+            return signal
+
+        await self._execute_setup(signal.setup, htf_flip_target=htf_target)
         self._last_setup_ts_ms = signal.setup.ts_ms
         return signal
 
@@ -458,6 +528,9 @@ class BotIctInstance:
         """
         if not self.htf_ema_bias_enabled:
             return True
+        # 변경 4: override 모드 활성이면 ema_bias 는 의미 없음 (override 가 강력).
+        if self.htf_override_mode != "off":
+            return True
         period = max(2, int(self.htf_ema_bias_period))
         try:
             df = await self._fetch_ohlcv_tf(self.htf_ema_bias_tf, period + 30)
@@ -569,7 +642,11 @@ class BotIctInstance:
             self._htf_cache[tf] = (last_ts, df)
         return compute_bias_from_df(df)
 
-    async def _execute_setup(self, setup: SilverBulletSetup) -> None:
+    async def _execute_setup(
+        self,
+        setup: SilverBulletSetup,
+        htf_flip_target: HtfFvgEntry | None = None,
+    ) -> None:
         """setup 한 건을 실제 주문으로 실행 (ICT 정통 partial TP).
 
         - entry limit order 등록 (SL 만, TP X — 별도 partial 처리)
@@ -688,7 +765,15 @@ class BotIctInstance:
             take_profit=effective_tp,
             qty=qty,
             setup_ts_ms=setup.ts_ms,
+            htf_flip_target=htf_flip_target,
+            ltf_weight=TF_WEIGHT.get(self.timeframe, 1),
         )
+        if htf_flip_target is not None:
+            logger.info(
+                "HTF flip target armed — %s zone=[%.4f,%.4f] weight=%d",
+                htf_flip_target.tf, htf_flip_target.low, htf_flip_target.high,
+                htf_flip_target.weight,
+            )
 
     async def _tick_trail(self, df: pd.DataFrame) -> None:
         """진입 중 새 swing 형성 시 SL 을 그 자리로 이동 (structure-based trail).
@@ -782,6 +867,238 @@ class BotIctInstance:
             # 거래소 측 position 없음 → SL/TP hit으로 청산된 것으로 간주
             logger.info("position 종료 감지 (SL/TP hit 추정) — state reset")
             self.active_position = None
+
+    # ----- 변경 2: 추세 평가 캐시 ---------------------------------------
+    async def _refresh_trend_cache(self) -> None:
+        """7개 TF (5m/15m/1h/2h/4h/1d/1w) 추세를 봉 ts 변경 시에만 재평가.
+
+        매 step 호출되지만 TF 마지막 봉 ts 가 캐시와 동일하면 skip → fetch 부담 ↓.
+        """
+        tfs = ("5m", "15m", "1h", "2h", "4h", "1d", "1w")
+        for tf in tfs:
+            try:
+                df = await self._fetch_ohlcv_tf(tf, 60)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("trend fetch 실패 (%s): %s", tf, e)
+                continue
+            if len(df) == 0:
+                continue
+            last_ts = int(df.index[-1].value // 10**6)
+            cached = self._trend_cache.get(tf)
+            if cached is not None and cached[0] == last_ts:
+                continue
+            state = evaluate_trend(df)
+            self._trend_cache[tf] = (last_ts, state)
+
+    # ----- 변경 3: HTF FVG map 빌드 + override + flip ------------------
+    async def _ensure_htf_fvg_map(self, current_ltf_ts_ms: int) -> list[HtfFvgEntry]:
+        """HTF FVG map 캐시 — LTF 봉 (5m 가정) 1개 길이 = 5분 = 300_000ms 마다 재 빌드.
+
+        실패 시 기존 캐시 유지 (없으면 빈 리스트).
+        """
+        rebuild_interval_ms = 300_000  # 5m TF 봉 길이 기준.
+        if (
+            self._htf_fvg_map_cache
+            and (current_ltf_ts_ms - self._htf_fvg_map_built_at_ms) < rebuild_interval_ms
+        ):
+            return self._htf_fvg_map_cache
+        try:
+            new_map = await build_htf_fvg_map(
+                self._fetch_ohlcv_tf,
+                tfs=self.htf_fvg_tfs,
+                fvg_min_size_pct=self.fvg_min_size_pct,
+                limit=200,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("HTF FVG map 빌드 실패: %s — 기존 캐시 유지", e)
+            return self._htf_fvg_map_cache
+        # 변경 7: 재빌드 후에도 동일 FVG 의 touch_count 누적 유지.
+        prev_touch: dict[tuple, int] = {
+            e.key(): e.touch_count for e in self._htf_fvg_map_cache
+        }
+        for e in new_map:
+            tc = prev_touch.get(e.key())
+            if tc:
+                e.touch_count = tc
+        self._htf_fvg_map_cache = new_map
+        self._htf_fvg_map_built_at_ms = current_ltf_ts_ms
+        return new_map
+
+    async def _evaluate_htf_override(
+        self,
+        setup: SilverBulletSetup,
+        ltf_df: pd.DataFrame,
+    ) -> HtfFvgEntry | None:
+        """setup 진입 직전 호출 — 반대 방향 HTF FVG 가중치 합이 LTF setup 가중치를
+        넘으면 가장 가까운 반대 HTF FVG 반환 (flip target 후보).
+
+        ``htf_override_mode == "off"`` 면 항상 None.
+        """
+        if self.htf_override_mode == "off":
+            return None
+        if len(ltf_df) == 0:
+            return None
+        current_ts = int(ltf_df.index[-1].value // 10**6)
+        current_price = float(ltf_df["close"].iloc[-1])
+        htf_map = await self._ensure_htf_fvg_map(current_ts)
+        if not htf_map:
+            return None
+        ltf_weight = TF_WEIGHT.get(self.timeframe, 1)
+        cands = find_opposite_htf_fvg(
+            htf_map,
+            ltf_direction="buy" if setup.direction is Direction.LONG else "sell",
+            current_price=current_price,
+            threshold_weight=ltf_weight,
+            max_touch_count=self.htf_fvg_max_touch_count,
+        )
+        if not cands:
+            return None
+        return cands[0]
+
+    async def _maybe_flip(self, ltf_df: pd.DataFrame) -> None:
+        """봉 close 보조 flip 검사 — WS/polling 이 놓친 거 catch-up.
+
+        - htf_override_mode != "C" 면 동작 안 함.
+        - 같은 LTF 봉 ts 에서는 한 번만 검사.
+        - WS 가 이미 같은 봉에 flip 발동했으면 (_flip_done_for_ts) skip.
+        """
+        if self.htf_override_mode != "C":
+            return
+        pos = self.active_position
+        if pos is None or pos.htf_flip_target is None:
+            return
+        if len(ltf_df) == 0:
+            return
+        last_ts = int(ltf_df.index[-1].value // 10**6)
+        if last_ts == self._last_flip_check_bar_ts:
+            return
+        self._last_flip_check_bar_ts = last_ts
+        # 변경 7: WS 가 이미 같은 봉에 flip 발동했으면 보조 검사 skip.
+        if last_ts == self._flip_done_for_ts:
+            return
+
+        last_close = float(ltf_df["close"].iloc[-1])
+        target = pos.htf_flip_target
+        if not target.contains(last_close):
+            return
+        await self.handle_htf_flip(last_close, last_ts, target)
+
+    async def handle_htf_flip(
+        self,
+        trigger_price: float,
+        ts_ms: int,
+        target: HtfFvgEntry,
+    ) -> None:
+        """HTF FVG flip 실제 실행 — 청산 → 진입 sequential.
+
+        WS flip watcher 와 step() 보조 검사 양쪽에서 호출되는 공통 경로.
+
+        Args:
+            trigger_price: flip 발동 시점 가격 (REST 재확인 끝난 값).
+            ts_ms: 발동 시점 ts (LTF 봉 ts 또는 tick ts).
+            target: 진입 대상 HTF FVG.
+        """
+        pos = self.active_position
+        if pos is None:
+            return
+        # 같은 봉에 다시 안 박이게 flag.
+        self._flip_done_for_ts = ts_ms
+
+        new_direction = (
+            Direction.SHORT if pos.direction is Direction.LONG else Direction.LONG
+        )
+        exit_side = "sell" if pos.direction is Direction.LONG else "buy"
+        new_side = "buy" if new_direction is Direction.LONG else "sell"
+        logger.info(
+            "HTF flip — ltf_%s_%.2f → htf_%s_%.2f (%s FVG, weight %d)",
+            "buy" if pos.direction is Direction.LONG else "sell", pos.entry,
+            new_side, trigger_price, target.tf, target.weight,
+        )
+
+        # 1) 기존 포지션 시장가 청산 — 응답 검증, 실패 시 1회 retry.
+        exit_ok = False
+        for attempt in (1, 2):
+            try:
+                resp = await self.client.place_order(
+                    symbol=self.symbol, side=exit_side, qty=pos.qty,
+                    price=None, reduce_only=True,
+                )
+                if isinstance(resp, dict) and resp.get("error"):
+                    raise RuntimeError(str(resp.get("error")))
+                exit_ok = True
+                break
+            except Exception as e:  # noqa: BLE001
+                logger.error(
+                    "flip — 기존 포지션 청산 실패 (시도 %d): %s", attempt, e,
+                )
+                await asyncio.sleep(0.5)
+        if not exit_ok:
+            logger.error("flip — 청산 최종 실패 — 신규 진입 중단 (포지션 유지)")
+            return
+
+        # 2) 신규 진입 — entry = trigger_price, SL = FVG 반대쪽 + buffer, TP = min_rr R.
+        new_entry = trigger_price
+        last_ts = ts_ms
+        if new_direction is Direction.LONG:
+            new_sl = target.low - new_entry * self.sl_buffer_ratio
+        else:
+            new_sl = target.high + new_entry * self.sl_buffer_ratio
+        sl_dist = abs(new_entry - new_sl)
+        if sl_dist <= 0:
+            logger.warning("flip — SL 거리 0 이하, skip")
+            self.active_position = None
+            return
+        if new_direction is Direction.LONG:
+            new_tp = new_entry + sl_dist * self.min_rr
+        else:
+            new_tp = new_entry - sl_dist * self.min_rr
+
+        # qty 재산정 — 기존 _calc_qty 재사용 (confluence_score=0 → base pct).
+        try:
+            equity = await self._fetch_equity()
+        except Exception:  # noqa: BLE001
+            equity = 1000.0
+        fake_setup = SilverBulletSetup(
+            ts_ms=last_ts,
+            direction=new_direction,
+            window="htf_flip",
+            entry=new_entry,
+            stop_loss=new_sl,
+            take_profit=new_tp,
+            risk_reward=self.min_rr,
+            fvg=None,  # type: ignore[arg-type]
+            confluence_score=0,
+        )
+        new_qty = self._calc_qty(fake_setup, equity)
+        try:
+            resp = await self.client.place_order(
+                symbol=self.symbol, side=new_side, qty=new_qty,
+                price=None, stop_loss=new_sl, take_profit=None,
+            )
+            if isinstance(resp, dict) and resp.get("error"):
+                raise RuntimeError(str(resp.get("error")))
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                "flip — 신규 진입 실패: %s — 포지션 없는 상태 (봇 가동 유지)", e,
+            )
+            self.active_position = None
+            return
+        # SL 별도 박기 (place_order 가 inline 으로 못 받는 경우 보강).
+        try:
+            await self.client.modify_stop_loss(self.symbol, new_sl)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("flip — SL 적용 실패 (%.4f): %s — 포지션은 유지", new_sl, e)
+
+        self.active_position = _ActivePosition(
+            direction=new_direction,
+            entry=new_entry,
+            stop_loss=new_sl,
+            take_profit=new_tp,
+            qty=new_qty,
+            setup_ts_ms=last_ts,
+            htf_flip_target=None,  # flip 완료 — 같은 target 재발동 방지.
+            ltf_weight=TF_WEIGHT.get(self.timeframe, 1),
+        )
 
 
 __all__ = [

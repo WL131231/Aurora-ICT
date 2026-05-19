@@ -229,6 +229,7 @@ def detect_silver_bullet_setups(
     expand_to_killzone: bool = False,
     disable_time_filter: bool = False,
     min_sl_distance_pct: float = 0.0,
+    sl_buffer_ratio: float = 0.0,
 ) -> list[SilverBulletSetup]:
     """Silver Bullet setup 후보 검출.
 
@@ -308,6 +309,15 @@ def detect_silver_bullet_setups(
             stop_loss = fvg.low - (fvg.size * 0.1)
         else:
             stop_loss = fvg.high + (fvg.size * 0.1)
+
+        # 변경 1: SL 버퍼 — FVG / sweep 경계에서 entry * ratio 만큼 더 멀리 둔다.
+        # wick 한 번에 stop hit 되는 문제 완화.
+        if sl_buffer_ratio > 0:
+            buf = entry * sl_buffer_ratio
+            if direction is Direction.LONG:
+                stop_loss -= buf
+            else:
+                stop_loss += buf
 
         target_swing = _next_liquidity_target(swings, direction, entry)
         if target_swing is None:
