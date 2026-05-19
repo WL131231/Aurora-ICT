@@ -70,6 +70,7 @@ def generate_ict_signal(
     expand_to_killzone: bool = False,
     disable_time_filter: bool = False,
     min_sl_distance_pct: float = 0.0,
+    sl_buffer_ratio: float = 0.0,
 ) -> ICTSignal:
     """OHLCV DataFrame으로부터 ICT signal을 한 건 생성.
 
@@ -107,6 +108,7 @@ def generate_ict_signal(
         expand_to_killzone=expand_to_killzone,
         disable_time_filter=disable_time_filter,
         min_sl_distance_pct=min_sl_distance_pct,
+        sl_buffer_ratio=sl_buffer_ratio,
     )
 
     if not setups:
