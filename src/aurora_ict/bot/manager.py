@@ -109,6 +109,9 @@ class BotManager:
             min_sl_distance_pct=self.settings.min_sl_distance_pct,
             max_sl_distance_pct=self.settings.max_sl_distance_pct,
             heartbeat_interval_sec=self.settings.heartbeat_interval_sec,
+            htf_ema_bias_enabled=self.settings.htf_ema_bias_enabled,
+            htf_ema_bias_tf=self.settings.htf_ema_bias_tf,
+            htf_ema_bias_period=self.settings.htf_ema_bias_period,
         )
         # 거래소 측 leverage 를 settings 에 맞춤 — qty 계산 일치 보장.
         # 실패해도 봇 시작 자체는 진행 (warning 만, 사용자가 수동 박은 거 박혀있을 수 있음).

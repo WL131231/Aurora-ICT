@@ -159,6 +159,12 @@ class BotIctInstance:
     # heartbeat_interval_sec: step loop 살아있음 INFO 로그 주기. 0 = 비활성.
     heartbeat_interval_sec: int = 0
 
+    # HTF EMA bias 필터 — multi_tf 와 별개. 진입 직전 htf_ema_bias_tf EMA20 vs 가격
+    # 비교 → setup.direction 이 bias 와 반대면 진입 skip.
+    htf_ema_bias_enabled: bool = False
+    htf_ema_bias_tf: str = "1h"
+    htf_ema_bias_period: int = 20
+
     # Partial TP 분배 — TP1/TP2/TP3 비율 (합 = 1.0). ICT 정통 50/25/25.
     tp_distribution: tuple[float, float, float] = (0.5, 0.25, 0.25)
 
@@ -306,6 +312,10 @@ class BotIctInstance:
         if signal.setup.ts_ms == self._last_setup_ts_ms:
             return signal
 
+        if not await self._passes_htf_ema_bias(signal.setup.direction):
+            self._last_setup_ts_ms = signal.setup.ts_ms
+            return signal
+
         await self._execute_setup(signal.setup)
         self._last_setup_ts_ms = signal.setup.ts_ms
         return signal
@@ -379,6 +389,9 @@ class BotIctInstance:
             if confirmed is None:
                 continue
             setup = self._confirmed_to_setup(confirmed)
+            if not await self._passes_htf_ema_bias(setup.direction):
+                self._last_setup_ts_ms = htf_active.setup.ts_ms
+                return no_action
             await self._execute_setup(setup)
             self._last_setup_ts_ms = htf_active.setup.ts_ms
             return ICTSignal(
@@ -436,6 +449,51 @@ class BotIctInstance:
         df.index = pd.DatetimeIndex(pd.to_datetime(df["ts_ms"], unit="ms", utc=True))
         df = df[["open", "high", "low", "close", "volume"]]
         return df
+
+    async def _passes_htf_ema_bias(self, direction: Direction) -> bool:
+        """HTF EMA bias 필터 — setup 방향이 EMA bias 와 일치할 때만 True.
+
+        htf_ema_bias_enabled=False 면 항상 True (필터 비활성).
+        OHLCV fetch / EMA 계산 실패 시 안전하게 진입 허용 (True 반환).
+        """
+        if not self.htf_ema_bias_enabled:
+            return True
+        period = max(2, int(self.htf_ema_bias_period))
+        try:
+            df = await self._fetch_ohlcv_tf(self.htf_ema_bias_tf, period + 30)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "HTF EMA bias fetch 실패 (tf=%s): %s — bias filter skip",
+                self.htf_ema_bias_tf, e,
+            )
+            return True
+        if len(df) < period + 1:
+            return True
+        closes = df["close"].astype(float).to_numpy()
+        k = 2.0 / (period + 1)
+        ema = float(closes[:period].mean())  # SMA 시드
+        for px in closes[period:]:
+            ema = float(px) * k + ema * (1.0 - k)
+        last_close = float(closes[-1])
+        if last_close > ema:
+            bias = "bullish"
+        elif last_close < ema:
+            bias = "bearish"
+        else:
+            bias = "neutral"
+        want_long = direction is Direction.LONG
+        if bias == "bullish" and want_long:
+            return True
+        if bias == "bearish" and not want_long:
+            return True
+        if bias == "neutral":
+            return True  # 정확히 동일 가격이면 통과
+        logger.info(
+            "HTF bias 역방향 setup skip — bias=%s setup=%s (tf=%s ema%d=%.4f close=%.4f)",
+            bias, "buy" if want_long else "sell",
+            self.htf_ema_bias_tf, period, ema, last_close,
+        )
+        return False
 
     async def _compute_htf_bias(self) -> TrendDirection | None:
         """Trade TF 의 상위 HTF1/HTF2 봉을 fetch 해 bias 산출.
