@@ -81,25 +81,21 @@ async def test_step_executes_long_setup() -> None:
     )
     sig = await bot.step()
     assert sig.action is SignalAction.ENTER_LONG
-    # entry + tp1 + tp2 + tp3 = 4 호출
-    assert client.place_order.await_count == 4
+    # 정통 ICT 단일 TP (변형 5 정통화): entry + reduce_only TP = 2 호출
+    assert client.place_order.await_count == 2
     entry_call = client.place_order.await_args_list[0].kwargs
     assert entry_call["symbol"] == "BTCUSDT"
     assert entry_call["side"] == "buy"
     assert entry_call["qty"] > 0
     assert entry_call["price"] > 0
     assert entry_call["stop_loss"] < entry_call["price"]
-    # entry 주문은 take_profit None (partial TP 별도 등록)
+    # entry 주문은 take_profit None (단일 TP 는 별도 reduce_only 로 등록)
     assert entry_call["take_profit"] is None
-    # tp1/tp2/tp3 reduce_only sell
-    tp_calls = client.place_order.await_args_list[1:]
-    for tp_call in tp_calls:
-        assert tp_call.kwargs["side"] == "sell"
-        assert tp_call.kwargs["reduce_only"] is True
-        assert tp_call.kwargs["price"] > entry_call["price"]
-    # tp1 < tp2 < tp3 (1R, 2R, 3R)
-    tp_prices = [c.kwargs["price"] for c in tp_calls]
-    assert tp_prices == sorted(tp_prices)
+    # 두 번째 호출 = 단일 reduce_only TP (sell)
+    tp_call = client.place_order.await_args_list[1].kwargs
+    assert tp_call["side"] == "sell"
+    assert tp_call["reduce_only"] is True
+    assert tp_call["price"] > entry_call["price"]
     # active position 살아있음
     assert bot.active_position is not None
     assert bot.active_position.direction is Direction.LONG
@@ -171,8 +167,8 @@ async def test_step_duplicate_setup_filtered() -> None:
     bot.active_position = None
     # 두 번째 step — 같은 OHLCV
     await bot.step()
-    # 같은 setup_ts_ms 라 신규 진입 X — place_order 첫 step 의 4호출 (entry+tp1+tp2+tp3) 만
-    assert client.place_order.await_count == 4
+    # 같은 setup_ts_ms 라 신규 진입 X — 첫 step 의 2호출 (entry + 단일 TP) 만 남음
+    assert client.place_order.await_count == 2
 
 
 @pytest.mark.asyncio

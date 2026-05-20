@@ -16,6 +16,10 @@ jobs:
     name: Lint + Test
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # 2026-06-02 부터 Node 24 강제 — actions/checkout@v4, actions/setup-python@v5
+    # 는 Node 20 기반이라 deprecation 경고. opt-in 으로 Node 24 사용.
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
     steps:
       - name: Checkout

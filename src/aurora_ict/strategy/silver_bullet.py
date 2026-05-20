@@ -60,11 +60,8 @@ class SilverBulletSetup:
         window: ``"london_sb"`` / ``"am_sb"`` / ``"pm_sb"``.
         entry: limit order 가격 (FVG mean threshold).
         stop_loss: SL 가격.
-        take_profit: TP final 가격 (next liquidity target — 가변).
-        risk_reward: TP final / SL ratio (절대값).
-        tp1: 1R partial TP (entry ± 1R) — ICT 정통 첫 청산점.
-        tp2: 2R partial TP.
-        tp3: 3R partial TP.
+        take_profit: TP 가격 (next liquidity target). ICT 정통 단일 TP.
+        risk_reward: TP / SL ratio (절대값). min_rr 2.0 이상 강제.
         fvg: 트리거 FVG 객체.
         target_swing_idx: TP로 잡은 swing index (없으면 None).
         confluence_score: 같은 시점/방향 보강 지표 수 (0~3). OB/Macro/Sweep 각 +1.
@@ -80,9 +77,6 @@ class SilverBulletSetup:
     take_profit: float
     risk_reward: float
     fvg: FVG
-    tp1: float = 0.0
-    tp2: float = 0.0
-    tp3: float = 0.0
     target_swing_idx: int | None = None
     confluence_score: int = 0
     confluences: list[str] = field(default_factory=list)
@@ -91,17 +85,6 @@ class SilverBulletSetup:
     # entry limit 가 FVG mean 인데, 가격이 그 raw 까지 실제로 닿았는지 확인.
     # True → active setup (entry 가능). False → retrace 미발생 (대기 또는 skip).
     retraced: bool = False
-
-    def __post_init__(self) -> None:
-        """tp1/tp2/tp3 자동 계산 — 명시 안 됐을 때 1R/2R/3R 으로 채움."""
-        r = abs(self.entry - self.stop_loss)
-        sign = 1.0 if self.direction is Direction.LONG else -1.0
-        if self.tp1 == 0.0:
-            self.tp1 = self.entry + sign * r
-        if self.tp2 == 0.0:
-            self.tp2 = self.entry + sign * 2 * r
-        if self.tp3 == 0.0:
-            self.tp3 = self.entry + sign * 3 * r
 
 
 def _bias_from_structure(
@@ -229,7 +212,6 @@ def detect_silver_bullet_setups(
     expand_to_killzone: bool = False,
     disable_time_filter: bool = False,
     min_sl_distance_pct: float = 0.0,
-    sl_buffer_ratio: float = 0.0,
 ) -> list[SilverBulletSetup]:
     """Silver Bullet setup 후보 검출.
 
@@ -305,19 +287,13 @@ def detect_silver_bullet_setups(
 
         entry = fvg.mean_threshold
 
+        # 정통 ICT: SL = FVG 영역 가장자리 (단순). 추가 버퍼 없음.
+        # Why: Silver Bullet PDF / Practical 모두 wick 너머 단순 정의.
+        # FVG 폭의 10% 버퍼 + sl_buffer_ratio 는 정통 이탈이라 제거.
         if direction is Direction.LONG:
-            stop_loss = fvg.low - (fvg.size * 0.1)
+            stop_loss = fvg.low
         else:
-            stop_loss = fvg.high + (fvg.size * 0.1)
-
-        # 변경 1: SL 버퍼 — FVG / sweep 경계에서 entry * ratio 만큼 더 멀리 둔다.
-        # wick 한 번에 stop hit 되는 문제 완화.
-        if sl_buffer_ratio > 0:
-            buf = entry * sl_buffer_ratio
-            if direction is Direction.LONG:
-                stop_loss -= buf
-            else:
-                stop_loss += buf
+            stop_loss = fvg.high
 
         target_swing = _next_liquidity_target(swings, direction, entry)
         if target_swing is None:

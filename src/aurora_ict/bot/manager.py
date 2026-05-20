@@ -105,15 +105,13 @@ class BotManager:
             enable_trail=self.settings.enable_trail,
             trail_buffer_ratio=self.settings.trail_buffer_ratio,
             use_market_entry=self.settings.use_market_entry,
-            enable_partial_tp=self.settings.enable_partial_tp,
             min_sl_distance_pct=self.settings.min_sl_distance_pct,
             max_sl_distance_pct=self.settings.max_sl_distance_pct,
             heartbeat_interval_sec=self.settings.heartbeat_interval_sec,
             htf_ema_bias_enabled=self.settings.htf_ema_bias_enabled,
             htf_ema_bias_tf=self.settings.htf_ema_bias_tf,
             htf_ema_bias_period=self.settings.htf_ema_bias_period,
-            # 신규 — SL buffer + HTF FVG override.
-            sl_buffer_ratio=self.settings.sl_buffer_ratio,
+            # HTF FVG override (변형 7).
             htf_override_mode=self.settings.htf_override_mode,
             htf_fvg_tfs=self.settings.htf_fvg_tfs,
         )

@@ -87,9 +87,9 @@ class IctSettings(BaseSettings):
     # confluence_score 0 → base, 1/2/3+ → base + step * score (max capped).
     # 사용자 정책: 0→40, 1→55, 2→70, 3+→90 (step=15).
     position_pct_step: float = Field(default=15.0, ge=0.0, le=50.0)
-    # min_rr 1.5 — 진입 빈도 위해 기존 2.0 에서 완화. partial 1R/2R/3R 청산 구조라
-    # final RR 1.5 도 평균 ~1.5R 의 실제 수익 챙길 수 있음.
-    min_rr: float = Field(default=1.5, ge=1.0)
+    # min_rr 2.0 — ICT 정통 Silver Bullet PDF / Practical 기준. partial TP 제거(변형 5
+    # 정통화)에 맞춰 단일 TP 기준 RR 2.0 강제. 진입 빈도 ↓ 가능하지만 정통 우선.
+    min_rr: float = Field(default=2.0, ge=1.0)
     # FVG 최소 % size — 지난 12거래 분석 결과 작은 FVG 노이즈 비중 커서 0.0004 → 0.0006 상향.
     fvg_min_size_pct: float = Field(default=0.0006, ge=0)
     step_interval_sec: int = Field(default=60, ge=10)
@@ -110,10 +110,6 @@ class IctSettings(BaseSettings):
     # use_market_entry: True 면 setup 검출 시 limit (FVG mean retest) 대신 즉시 시장가 진입.
     # 진입률 100% 보장 (limit 미체결 문제 해소), ICT 정통 retrace 진입 철학에서 살짝 벗어남.
     use_market_entry: bool = Field(default=False)
-    # enable_partial_tp: False 면 partial TP1/TP2/TP3 (50/25/25%) 안 박음. 시장가 진입 시
-    # setup entry vs 실제 fill price 차이로 partial TP 가 즉시 손실 fill 되는 자기-트랩
-    # 회피용. trail SL 만으로 청산.
-    enable_partial_tp: bool = Field(default=True)
     # min_sl_distance_pct: SL 거리가 entry 의 이 비율 미만이면 setup skip.
     # 지난 12거래 분석 결과 SL 너무 짧은 setup 손실 비중 커서 0.0005 → 0.0007 상향.
     min_sl_distance_pct: float = Field(default=0.0007, ge=0.0, le=0.05)
@@ -130,12 +126,6 @@ class IctSettings(BaseSettings):
     htf_ema_bias_enabled: bool = Field(default=True)
     htf_ema_bias_tf: str = Field(default="1h")
     htf_ema_bias_period: int = Field(default=20, ge=2, le=200)
-
-    # --- 신규 (변경 1) SL 버퍼 ---------------------------------------------
-    # SL 을 FVG / sweep 경계에서 추가로 얼마나 더 멀리 둘지 (entry 가격 대비 비율).
-    # BUY 면 SL 을 entry * ratio 만큼 더 아래로, SELL 이면 더 위로 이동.
-    # wick 한 번에 stop hit 되는 문제 완화용. 0.0005 = 0.05%.
-    sl_buffer_ratio: float = Field(default=0.0005, ge=0.0, le=0.01)
 
     # --- 신규 (변경 3) HTF FVG 가중치 override ----------------------------
     # off → 사용 안 함, A → 진입 직전 차단만, C → 진입 + 봉 close 기준 flip + re-entry.

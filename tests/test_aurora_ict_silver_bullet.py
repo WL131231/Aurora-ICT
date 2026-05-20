@@ -11,7 +11,6 @@ from aurora_ict.indicators.fvg import FVG, FVGType
 from aurora_ict.indicators.structure import TrendDirection
 from aurora_ict.strategy.silver_bullet import (
     Direction,
-    SilverBulletSetup,
     detect_silver_bullet_setups,
 )
 
@@ -343,53 +342,5 @@ def _dummy_fvg() -> FVG:
     )
 
 
-def test_tp_levels_long_setup() -> None:
-    """LONG: tp1 = entry + 1R, tp2 = +2R, tp3 = +3R."""
-    setup = SilverBulletSetup(
-        ts_ms=0,
-        direction=Direction.LONG,
-        window="am_sb",
-        entry=100.0,
-        stop_loss=95.0,   # R = 5
-        take_profit=120.0,
-        risk_reward=4.0,
-        fvg=_dummy_fvg(),
-    )
-    assert setup.tp1 == 105.0
-    assert setup.tp2 == 110.0
-    assert setup.tp3 == 115.0
-
-
-def test_tp_levels_short_setup() -> None:
-    """SHORT: tp1 = entry - 1R, tp2 = -2R, tp3 = -3R."""
-    setup = SilverBulletSetup(
-        ts_ms=0,
-        direction=Direction.SHORT,
-        window="am_sb",
-        entry=100.0,
-        stop_loss=105.0,   # R = 5
-        take_profit=85.0,
-        risk_reward=3.0,
-        fvg=_dummy_fvg(),
-    )
-    assert setup.tp1 == 95.0
-    assert setup.tp2 == 90.0
-    assert setup.tp3 == 85.0
-
-
-def test_tp_levels_explicit_override_kept() -> None:
-    """tp1/tp2/tp3 명시 주입 시 자동 계산 안 함."""
-    setup = SilverBulletSetup(
-        ts_ms=0,
-        direction=Direction.LONG,
-        window="am_sb",
-        entry=100.0,
-        stop_loss=95.0,
-        take_profit=120.0,
-        risk_reward=4.0,
-        fvg=_dummy_fvg(),
-        tp1=108.0, tp2=115.0, tp3=119.0,
-    )
-    assert setup.tp1 == 108.0
-    assert setup.tp2 == 115.0
-    assert setup.tp3 == 119.0
+# 변형 5 정통화: partial TP (tp1/tp2/tp3) 제거됨. 단일 take_profit 만 사용.
+# 기존 test_tp_levels_* / test_tp_levels_explicit_override_kept 케이스는 폐기.

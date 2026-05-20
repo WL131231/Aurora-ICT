@@ -55,20 +55,21 @@ def test_markers_fvg_and_swings() -> None:
 
 
 def test_markers_killzone_detection() -> None:
-    """NY 10:00 시작 60분 → NY_AM (08:30-11:00) + Silver Bullet AM (10:00-11:00).
+    """NY 10:00 시작 60분 → London Close (10:00-12:00) + Silver Bullet AM (10:00-11:00).
 
-    NY_AM 시간대가 ICT 표준 08:30-11:00 으로 정렬된 후, 10:00-11:00 봉은
-    ny_am 으로 분류됨.
+    변형 2 정통화 (NY AM = 07:00-10:00, London Close = 10:00-12:00) 적용 후,
+    10:00-11:00 봉은 london_close 로 분류됨. Silver Bullet AM 윈도우 자체는
+    그대로 10:00-11:00 이라 겹침 발생.
     """
     start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
     df = _make_df_ny(start, [(100, 101, 99, 100) for _ in range(60)])
     markers = to_chart_markers(df)
     assert len(markers.killzones) >= 1
-    # 10:00 ~ 10:59 NY → ny_am (08:30-11:00 안)
-    am_zones = [k for k in markers.killzones if k.name == "ny_am"]
-    assert len(am_zones) >= 1
-    # Silver Bullet AM (10-11am) 시그널 — ny_am 의 일부 시간이 SB 와 겹침
-    assert any(k.is_silver_bullet for k in am_zones)
+    # 10:00 ~ 10:59 NY → london_close (10:00-12:00 안)
+    lc_zones = [k for k in markers.killzones if k.name == "london_close"]
+    assert len(lc_zones) >= 1
+    # Silver Bullet AM (10-11am) 시그널 — london_close 첫 시간이 SB 와 겹침
+    assert any(k.is_silver_bullet for k in lc_zones)
 
 
 def test_markers_setups_detected() -> None:

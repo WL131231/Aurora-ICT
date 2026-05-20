@@ -23,7 +23,7 @@ import asyncio
 import json
 import logging
 import math
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
 import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
@@ -123,7 +123,7 @@ async def subscribe_ticker(
                         logger.exception("on_tick 콜백 예외: %s", e)
         except asyncio.CancelledError:
             raise
-        except (ConnectionClosed, WebSocketException, OSError, asyncio.TimeoutError) as e:
+        except (TimeoutError, ConnectionClosed, WebSocketException, OSError) as e:
             fail_count += 1
             backoff = min(2 ** fail_count, 30)
             logger.warning(

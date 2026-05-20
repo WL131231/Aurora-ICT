@@ -8,7 +8,7 @@ ICT 표준 정의 (NY EST 기준):
 | London          | 02:00 – 05:00    | 최고 directional move 빈도            |
 | NY AM           | 07:00 – 10:00    | London-NY overlap (highest volume)   |
 | London Close    | 10:00 – 12:00    | retrace 자주 발생                     |
-| PM Session      | 13:30 – 16:00    | reversal                              |
+| PM Session      | 13:30 – 16:00    | reversal (Aurora 보강)               |
 
 Silver Bullet (3개 1시간 윈도우 — ICT 핵심 entry 시간):
 
@@ -62,14 +62,14 @@ class Killzone:
     crosses_midnight: bool = False
 
 
-# 표준 Killzone 정의 (NY local time).
-# NY AM = 08:30-11:00 — ICT 책 표준 (Wall Street 정규장 open + 첫 2.5시간).
-# 기존 07:00 시작은 pre-market 까지 포함된 변형. LuxAlgo Killzones Toolkit 과 동일하게 08:30 으로 정렬.
+# 표준 Killzone 정의 (NY local time) — ICT 정통 시간대.
+# NY AM = 07:00-10:00 (Bible / Practical / Silver Bullet PDF 모두 동일 정통 정의).
+# London Close = 10:00-12:00 정통. PM 13:30-16:00 은 Aurora 보강 (정통 NY KZ 연장).
 STANDARD_KILLZONES: tuple[Killzone, ...] = (
     Killzone(KillzoneName.ASIAN, time(19, 0), time(23, 59, 59), crosses_midnight=False),
     Killzone(KillzoneName.LONDON, time(2, 0), time(5, 0)),
-    Killzone(KillzoneName.NY_AM, time(8, 30), time(11, 0)),
-    Killzone(KillzoneName.LONDON_CLOSE, time(11, 0), time(12, 0)),
+    Killzone(KillzoneName.NY_AM, time(7, 0), time(10, 0)),
+    Killzone(KillzoneName.LONDON_CLOSE, time(10, 0), time(12, 0)),
     Killzone(KillzoneName.PM, time(13, 30), time(16, 0)),
 )
 

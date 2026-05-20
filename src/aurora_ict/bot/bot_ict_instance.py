@@ -30,6 +30,12 @@ from aurora_ict.signal.ict_signal import (
     SignalAction,
     generate_ict_signal,
 )
+from aurora_ict.strategy.htf_fvg_map import (
+    TF_WEIGHT,
+    HtfFvgEntry,
+    build_htf_fvg_map,
+    find_opposite_htf_fvg,
+)
 from aurora_ict.strategy.htf_setup_tracker import HtfSetupTracker
 from aurora_ict.strategy.ltf_entry_confirmer import (
     ConfirmedEntry,
@@ -39,12 +45,6 @@ from aurora_ict.strategy.multi_tf_bias import (
     combine_bias,
     compute_bias_from_df,
     htf_pair,
-)
-from aurora_ict.strategy.htf_fvg_map import (
-    TF_WEIGHT,
-    HtfFvgEntry,
-    build_htf_fvg_map,
-    find_opposite_htf_fvg,
 )
 from aurora_ict.strategy.silver_bullet import Direction, SilverBulletSetup
 from aurora_ict.strategy.trend_state import TrendState, evaluate_trend
@@ -160,8 +160,6 @@ class BotIctInstance:
     # use_market_entry: True 면 setup 검출 시 limit (FVG mean retest) 대신 즉시 시장가 진입.
     # 진입률 100%, ICT 정통 retrace 철학에서 살짝 벗어남.
     use_market_entry: bool = False
-    # enable_partial_tp: False 면 partial TP1/TP2/TP3 안 박음. 자기-트랩 회피용.
-    enable_partial_tp: bool = True
     # min_sl_distance_pct: SL 거리 / entry 가 이 비율 미만이면 setup skip (noise-trap 회피).
     min_sl_distance_pct: float = 0.0
     # max_sl_distance_pct: SL 거리 / entry 가 이 비율 초과면 setup skip (비정상 큰 SL 차단).
@@ -176,9 +174,6 @@ class BotIctInstance:
     htf_ema_bias_tf: str = "1h"
     htf_ema_bias_period: int = 20
 
-    # 변경 1: SL 버퍼 (entry 대비 비율). 0 = 비활성.
-    sl_buffer_ratio: float = 0.0
-
     # 변경 3: HTF FVG override 모드 — "off"/"A"/"C".
     # A = 진입 직전 차단만, C = 진입 + 봉 close 기준 flip + re-entry.
     htf_override_mode: str = "C"
@@ -191,9 +186,6 @@ class BotIctInstance:
     flip_watch_ws_reconnect_max: int = 5
     # FVG 약화 임계치 — touch 누적 도달 시 mitigation 후보 / flip target 제외.
     htf_fvg_max_touch_count: int = 3
-
-    # Partial TP 분배 — TP1/TP2/TP3 비율 (합 = 1.0). ICT 정통 50/25/25.
-    tp_distribution: tuple[float, float, float] = (0.5, 0.25, 0.25)
 
     state: BotState = field(default=BotState.STOPPED)
     active_position: _ActivePosition | None = field(default=None)
@@ -351,7 +343,6 @@ class BotIctInstance:
             expand_to_killzone=self.expand_to_killzone,
             disable_time_filter=self.disable_time_filter,
             min_sl_distance_pct=self.min_sl_distance_pct,
-            sl_buffer_ratio=self.sl_buffer_ratio,
         )
 
         # 추세 평가 캐시 갱신 (현재는 로깅용, 향후 가중치 확장 여지).
@@ -647,11 +638,10 @@ class BotIctInstance:
         setup: SilverBulletSetup,
         htf_flip_target: HtfFvgEntry | None = None,
     ) -> None:
-        """setup 한 건을 실제 주문으로 실행 (ICT 정통 partial TP).
+        """setup 한 건을 실제 주문으로 실행 (ICT 정통 단일 TP).
 
-        - entry limit order 등록 (SL 만, TP X — 별도 partial 처리)
-        - tp1/tp2/tp3 각각 reduce_only limit (Bybit V5 multiple reduce-only 허용)
-        - qty 는 tp_distribution 비율로 분배
+        - entry limit order 등록 (SL 동봉, 시장가 진입은 fill 후 SL 별도)
+        - take_profit = next BSL/SSL 단일 reduce_only limit 1건
         """
         side = "buy" if setup.direction is Direction.LONG else "sell"
         exit_side = "sell" if setup.direction is Direction.LONG else "buy"
@@ -673,25 +663,17 @@ class BotIctInstance:
             logger.warning("qty 계산 결과 0 이하 → skip: setup=%s", setup.ts_ms)
             return
 
-        # tp 분배 — 마지막은 나머지로 보정 (rounding 손실 방지)
-        pct1, pct2, _pct3 = self.tp_distribution
-        qty1 = qty * pct1
-        qty2 = qty * pct2
-        qty3 = qty - qty1 - qty2
-
         logger.info(
-            "Execute setup %s %s entry=%.4f sl=%.4f "
-            "tp1=%.4f tp2=%.4f tp3=%.4f qty=%.4f (%.2f/%.2f/%.2f)",
+            "Execute setup %s %s entry=%.4f sl=%.4f tp=%.4f qty=%.4f rr=%.2f",
             self.symbol, side, setup.entry, setup.stop_loss,
-            setup.tp1, setup.tp2, setup.tp3, qty, qty1, qty2, qty3,
+            setup.take_profit, qty, setup.risk_reward,
         )
 
         # 실제 fill 가격 / SL / TP — 시장가 진입 시 fill 가격이 setup 과 다를 수 있어
-        # 응답에서 추출 후 SL/TP/trail 모두 fill 기준으로 재계산.
+        # 응답에서 추출 후 SL/TP 모두 fill 기준으로 재계산.
         effective_entry = setup.entry
         effective_sl = setup.stop_loss
         effective_tp = setup.take_profit
-        effective_tp1, effective_tp2, effective_tp3 = setup.tp1, setup.tp2, setup.tp3
         try:
             # 시장가 진입 시: SL 은 entry 주문에 동봉하지 않고 fill 확인 후 별도 박음.
             # 그래야 SL 이 실제 fill 가격 기준의 risk distance 로 정확하게 박힘.
@@ -712,18 +694,12 @@ class BotIctInstance:
                 if isinstance(v, (int, float)) and v > 0:
                     avg_fill = float(v)
             if self.use_market_entry and avg_fill is not None and avg_fill > 0:
-                # setup 가격 → fill 가격 shift. SL/TP 모두 동일 risk distance 유지.
+                # setup 가격 → fill 가격 shift. SL/TP 동일 distance 유지.
                 sl_dist = setup.entry - setup.stop_loss
                 tp_dist = setup.take_profit - setup.entry
-                tp1_dist = setup.tp1 - setup.entry
-                tp2_dist = setup.tp2 - setup.entry
-                tp3_dist = setup.tp3 - setup.entry
                 effective_entry = avg_fill
                 effective_sl = avg_fill - sl_dist
                 effective_tp = avg_fill + tp_dist
-                effective_tp1 = avg_fill + tp1_dist
-                effective_tp2 = avg_fill + tp2_dist
-                effective_tp3 = avg_fill + tp3_dist
                 logger.info(
                     "fill 가격 반영 — setup=%.4f fill=%.4f sl=%.4f→%.4f tp=%.4f→%.4f",
                     setup.entry, avg_fill, setup.stop_loss, effective_sl,
@@ -734,26 +710,14 @@ class BotIctInstance:
                     await self.client.modify_stop_loss(self.symbol, effective_sl)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("fill 기반 SL 적용 실패: %s", e)
-            # Partial TP — fill 기반 effective_tp{1,2,3} 사용.
-            if self.enable_partial_tp:
-                for tp_price, tp_qty in (
-                    (effective_tp1, qty1),
-                    (effective_tp2, qty2),
-                    (effective_tp3, qty3),
-                ):
-                    if tp_qty <= 0:
-                        continue
-                    await self.client.place_order(
-                        symbol=self.symbol,
-                        side=exit_side,
-                        qty=tp_qty,
-                        price=tp_price,
-                        reduce_only=True,
-                    )
-            else:
-                logger.info(
-                    "partial TP skip (enable_partial_tp=False) — trail SL 청산 의존",
-                )
+            # 정통 ICT: 단일 TP 한 건 (next BSL/SSL).
+            await self.client.place_order(
+                symbol=self.symbol,
+                side=exit_side,
+                qty=qty,
+                price=effective_tp,
+                reduce_only=True,
+            )
         except Exception as e:  # noqa: BLE001 — 주문 실패도 봇은 계속 돌아야 함
             logger.exception("place_order 실패: %s", e)
             return
@@ -1036,13 +1000,14 @@ class BotIctInstance:
             logger.error("flip — 청산 최종 실패 — 신규 진입 중단 (포지션 유지)")
             return
 
-        # 2) 신규 진입 — entry = trigger_price, SL = FVG 반대쪽 + buffer, TP = min_rr R.
+        # 2) 신규 진입 — entry = trigger_price, SL = FVG 반대쪽 (정통 ICT 단순), TP = min_rr R.
+        # Why: sl_buffer_ratio 제거(변형 4 정통화). FVG zone 자체 가장자리를 SL 로.
         new_entry = trigger_price
         last_ts = ts_ms
         if new_direction is Direction.LONG:
-            new_sl = target.low - new_entry * self.sl_buffer_ratio
+            new_sl = target.low
         else:
-            new_sl = target.high + new_entry * self.sl_buffer_ratio
+            new_sl = target.high
         sl_dist = abs(new_entry - new_sl)
         if sl_dist <= 0:
             logger.warning("flip — SL 거리 0 이하, skip")
