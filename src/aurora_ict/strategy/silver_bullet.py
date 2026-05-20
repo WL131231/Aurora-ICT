@@ -206,7 +206,7 @@ def detect_silver_bullet_setups(
     bias: TrendDirection | None = None,
     swing_left: int = 1,
     swing_right: int = 1,
-    min_rr: float = 2.0,
+    min_rr: float = 1.5,
     fvg_min_size_pct: float | None = 0.0005,
     min_confluence: int = 0,
     expand_to_killzone: bool = False,
