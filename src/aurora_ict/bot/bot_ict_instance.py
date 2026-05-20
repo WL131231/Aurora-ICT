@@ -813,8 +813,11 @@ class BotIctInstance:
         if setup.entry <= 0:
             return 0.0
         qty = notional / setup.entry
-        # Bybit BTC 최소 주문수량 0.001
-        return max(qty, 0.001)
+        # Bybit BTC 최소 주문수량 0.001 — 미달 시 floor 가 아니라 skip (작은 잔고에서
+        # 의도 notional 초과 박는 회귀 회피, 호출처에서 qty 0 이하 skip 분기 활용).
+        if qty < 0.001:
+            return 0.0
+        return qty
 
     async def _sync_position_state(self) -> None:
         """거래소 fetch_position()으로 현재 position 상태 동기화.

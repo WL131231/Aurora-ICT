@@ -87,9 +87,10 @@ class IctSettings(BaseSettings):
     # confluence_score 0 → base, 1/2/3+ → base + step * score (max capped).
     # 사용자 정책: 0→40, 1→55, 2→70, 3+→90 (step=15).
     position_pct_step: float = Field(default=15.0, ge=0.0, le=50.0)
-    # min_rr 2.0 — ICT 정통 Silver Bullet PDF / Practical 기준. partial TP 제거(변형 5
-    # 정통화)에 맞춰 단일 TP 기준 RR 2.0 강제. 진입 빈도 ↓ 가능하지만 정통 우선.
-    min_rr: float = Field(default=2.0, ge=1.0)
+    # min_rr 1.5 — v0.4.60 정통화(2.0) 후 진입 빈도 너무 깎여 1.5 로 rollback.
+    # SL = FVG 가장자리 단순 + 단일 TP 조합에서 RR 2.0 만족 setup 빈도 급감 관찰
+    # (2026-05-21 새벽 데모 0건). 정통보다 빈도 우선 (장수 결정).
+    min_rr: float = Field(default=1.5, ge=1.0)
     # FVG 최소 % size — 지난 12거래 분석 결과 작은 FVG 노이즈 비중 커서 0.0004 → 0.0006 상향.
     fvg_min_size_pct: float = Field(default=0.0006, ge=0)
     step_interval_sec: int = Field(default=60, ge=10)

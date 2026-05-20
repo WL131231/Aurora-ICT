@@ -63,7 +63,7 @@ def generate_ict_signal(
     df: pd.DataFrame,
     symbol: str,
     bias: TrendDirection | None = None,
-    min_rr: float = 2.0,
+    min_rr: float = 1.5,
     fvg_min_size_pct: float | None = 0.0005,
     stale_bars: int = 5,
     require_retrace: bool = False,
