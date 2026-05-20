@@ -122,8 +122,6 @@ def confirm_ltf_entry(
     *,
     lookback_bars: int = 30,
     fvg_min_size_pct: float | None = 0.0005,
-    sl_buffer_ratio: float = 0.1,
-    sl_entry_buffer_ratio: float = 0.0,
 ) -> ConfirmedEntry | None:
     """HTF setup 활성 시 LTF 에서 진입 trigger 검증.
 
@@ -137,7 +135,6 @@ def confirm_ltf_entry(
         ltf_df: LTF OHLCV DataFrame.
         lookback_bars: LTF structure shift 검색 lookback.
         fvg_min_size_pct: LTF FVG 최소 % size.
-        sl_buffer_ratio: SL = FVG wick + size * ratio.
 
     Returns:
         확정된 진입 신호, 없으면 None.
@@ -163,18 +160,11 @@ def confirm_ltf_entry(
         return None
 
     entry = fvg.mean_threshold
+    # 정통 ICT: SL = FVG 영역 가장자리 (변형 4 정통화 — 추가 버퍼 없음).
     if direction is Direction.LONG:
-        stop_loss = fvg.low - (fvg.size * sl_buffer_ratio)
+        stop_loss = fvg.low
     else:
-        stop_loss = fvg.high + (fvg.size * sl_buffer_ratio)
-
-    # 변경 1: entry 가격 기반 추가 SL buffer (wick fakeout 회피).
-    if sl_entry_buffer_ratio > 0 and entry > 0:
-        buf = entry * sl_entry_buffer_ratio
-        if direction is Direction.LONG:
-            stop_loss -= buf
-        else:
-            stop_loss += buf
+        stop_loss = fvg.high
 
     return ConfirmedEntry(
         direction=direction,

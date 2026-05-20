@@ -113,7 +113,6 @@ def _settings_safe_dict(settings: IctSettings) -> dict[str, Any]:
         "enable_trail": settings.enable_trail,
         "trail_buffer_ratio": settings.trail_buffer_ratio,
         "use_market_entry": settings.use_market_entry,
-        "enable_partial_tp": settings.enable_partial_tp,
         "min_sl_distance_pct": settings.min_sl_distance_pct,
         "min_rr": settings.min_rr,
         "fvg_min_size_pct": settings.fvg_min_size_pct,

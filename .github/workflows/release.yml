@@ -35,6 +35,9 @@ permissions:
 env:
   PYTHONIOENCODING: utf-8
   MACOSX_DEPLOYMENT_TARGET: "13.0"
+  # 2026-06-02 부터 Node 24 강제 — actions/checkout@v4, setup-python@v5 등
+  # Node 20 기반 actions 의 deprecation 경고 회피.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   build:
