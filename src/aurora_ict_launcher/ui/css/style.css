@@ -449,3 +449,28 @@ body {
     border-color: rgba(251, 191, 36, 0.4);
     color: #fbbf24;
 }
+
+/* v0.4.67 (G-3a) — 만료 D-3 / D-1 / today 경고 색 */
+.license-badge.warn-d3 {
+    border-color: rgba(251, 191, 36, 0.5);
+    color: #fbbf24;
+    background: rgba(45, 35, 15, 0.75);
+}
+
+.license-badge.warn-d1 {
+    border-color: rgba(251, 113, 133, 0.6);
+    color: #fb7185;
+    background: rgba(45, 15, 25, 0.8);
+}
+
+.license-badge.warn-today {
+    border-color: rgba(239, 68, 68, 0.8);
+    color: #fca5a5;
+    background: rgba(60, 15, 20, 0.9);
+    animation: license-badge-pulse 2s ease-in-out infinite;
+}
+
+@keyframes license-badge-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+    50%      { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+}

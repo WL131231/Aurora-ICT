@@ -52,6 +52,12 @@ LICENSE_HTTP_TIMEOUT_SEC = 15
 GRACE_DAYS_REFERRAL = 7
 """레퍼럴 (평생) 라이선스의 오프라인 허용 기간 (일). 2026-05-21 합의."""
 
+EXPIRY_NOTIFY_DAYS = (3, 1)
+"""구독제 만료 D-3 / D-1 알림 트리거 (일). 0 = 만료일 당일은 별도 표시."""
+
+VERIFY_INTERVAL_SEC = 24 * 60 * 60
+"""백그라운드 verify 주기 (초). 24시간 = 하루 1회 자동 검증."""
+
 LICENSE_FILE_NAME = "license.json"
 
 USER_AGENT = "Aurora-ICT-Launcher"
@@ -381,6 +387,36 @@ def _parse_iso(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except (ValueError, AttributeError):
         return None
+
+
+def days_until_expiry(
+    license_payload: dict,
+    *,
+    now: datetime | None = None,
+) -> int | None:
+    """``expires_at`` 까지 남은 일수 (소수점 버림).
+
+    Args:
+        license_payload: ``load_license()`` 결과.
+        now: 현재 시각 (UTC). 기본 ``datetime.now(timezone.utc)``.
+
+    Returns:
+        - 구독제 + 유효한 ``expires_at``: 남은 일수 (음수면 이미 만료).
+        - 레퍼럴 또는 ``expires_at`` 없음: ``None`` (만료 개념 없음).
+
+    Note:
+        ``ceil`` 대신 정수 나눗셈으로 truncate — D-1 알림은 정확히 "1일 미만 남음"
+        시점부터 켜지게 (보수적). 23시간 50분 남으면 0일로 표시.
+    """
+    now = now or datetime.now(UTC)
+    license_type = license_payload.get("type", "")
+    if not license_type.startswith("sub_"):
+        return None
+    expires_at = _parse_iso(license_payload.get("expires_at"))
+    if expires_at is None:
+        return None
+    delta = expires_at - now
+    return delta.days
 
 
 def is_within_grace(
