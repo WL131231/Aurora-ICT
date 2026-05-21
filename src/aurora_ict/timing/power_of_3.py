@@ -19,6 +19,7 @@ ICT 정의:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from enum import StrEnum
 from zoneinfo import ZoneInfo
@@ -71,5 +72,108 @@ def amd_phase(ts_ms: int) -> AmdPhase | None:
 
 __all__ = [
     "AmdPhase",
+    "ClassicPo3Day",
+    "ClassicPo3Type",
     "amd_phase",
+    "classify_classic_po3_day",
 ]
+
+
+# ============================================================
+# Classic Po3 (그룹 2 — 가격 동작 기반 day 분류)
+# ============================================================
+#
+# ICT 정의 (Practical Po3 + [[ict-canon-models]]):
+#     기존 amd_phase 는 *시간만* 으로 분류 — 단순하지만 가격이 정통 패턴 안 따를 때
+#     phase 오인식 가능. Classic Po3 는 *가격 동작 기반* 으로 일일 buy / sell day
+#     분류.
+#
+#     - **00:00 NY local (midnight) open** = 진정한 일일 opening price ([[ict-canon-killzones]])
+#     - **Classic Buy Day**: 00:00 open *아래로* manipulation (London 가 low 형성)
+#       → NY 에서 open *위로* distribution (위쪽이 진짜 방향)
+#     - **Classic Sell Day**: 00:00 open *위로* manipulation (London 가 high 형성)
+#       → NY 에서 open *아래로* distribution (아래쪽이 진짜 방향)
+#     - **Neutral / Indecision Day**: 명확한 manipulation 방향 안 보임
+#
+# 활용:
+#     - Daily Bias 확정 자료 — PDH/PDL 돌파 방식과 보완
+#     # Buy Day 면 long 매매만 채택, Sell Day 면 short 만, Neutral 이면 양방향 또는 패스
+
+
+class ClassicPo3Type(StrEnum):
+    """가격 동작 기반 일일 분류."""
+
+    BUY_DAY = "buy_day"           # London 이 daily open 아래로 sweep → NY 위로
+    SELL_DAY = "sell_day"         # London 이 daily open 위로 sweep → NY 아래로
+    NEUTRAL = "neutral"           # 명확한 패턴 없음
+
+
+@dataclass(slots=True, frozen=True)
+class ClassicPo3Day:
+    """하루치 Classic Po3 분류 결과.
+
+    Attributes:
+        date: NY local 날짜 (YYYY-MM-DD).
+        type: BUY_DAY / SELL_DAY / NEUTRAL.
+        midnight_open: 00:00 NY 의 진정한 일일 open 가격.
+        london_extreme: London phase 의 manipulation 극점
+            (Buy Day = low, Sell Day = high). NEUTRAL 이면 None.
+    """
+
+    date: str
+    type: ClassicPo3Type
+    midnight_open: float
+    london_extreme: float | None
+
+
+def classify_classic_po3_day(
+    midnight_open: float,
+    london_low: float,
+    london_high: float,
+    *,
+    min_sweep_pct: float = 0.001,
+) -> ClassicPo3Day:
+    """하루의 가격 동작으로 Classic Po3 분류.
+
+    Args:
+        midnight_open: 00:00 NY 의 일일 open 가격.
+        london_low: London phase (02:00-07:00) 의 최저가.
+        london_high: 같은 시간대 최고가.
+        min_sweep_pct: midnight_open 대비 sweep 최소 깊이 (%). 너무 작은 wick
+            는 manipulation 으로 안 봄. 0.001 = 0.1%.
+
+    Returns:
+        ``ClassicPo3Day`` — date 는 별도로 채워야 (호출자 책임).
+
+    Note:
+        date 필드는 빈 문자열로 채워서 반환 — 호출자가 NY local 날짜 박을 것.
+        시계열 검출 단순화를 위해 hour-level filter 는 호출자가 미리 처리한다고 가정.
+    """
+    threshold = midnight_open * min_sweep_pct
+
+    swept_below = midnight_open - london_low > threshold
+    swept_above = london_high - midnight_open > threshold
+
+    if swept_below and not swept_above:
+        # Buy Day: London 이 일일 open 아래로 sweep
+        return ClassicPo3Day(
+            date="",
+            type=ClassicPo3Type.BUY_DAY,
+            midnight_open=midnight_open,
+            london_extreme=london_low,
+        )
+    if swept_above and not swept_below:
+        # Sell Day
+        return ClassicPo3Day(
+            date="",
+            type=ClassicPo3Type.SELL_DAY,
+            midnight_open=midnight_open,
+            london_extreme=london_high,
+        )
+    # 양방향 sweep 또는 sweep 없음 → 명확한 manipulation X
+    return ClassicPo3Day(
+        date="",
+        type=ClassicPo3Type.NEUTRAL,
+        midnight_open=midnight_open,
+        london_extreme=None,
+    )
