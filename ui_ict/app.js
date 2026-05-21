@@ -519,16 +519,16 @@ function renderMarkers(payload) {
   // Structure / Internal / Large 박은 마커는 LineSeries segment 로 박혀있어
   // 차트 위 텍스트 마커는 제거 — 도배 방지 (renderBosSegments 가 segment+label 박음)
 
-  // Setups
+  // Setups — v0.4.69: RR 텍스트 제거 (도배 방지). confluence ★N 만 유지 (정보성).
   m.setups.forEach(s => {
     const score = s.confluence_score ?? 0;
-    const conf = score > 0 ? ` · ★${score}` : "";
+    const conf = score > 0 ? `★${score}` : "";
     markers.push({
       time: tsToTimeSec(s.ts_ms),
       position: s.direction === "long" ? "belowBar" : "aboveBar",
       color: s.direction === "long" ? "#34d399" : "#fb7185",
       shape: s.direction === "long" ? "arrowUp" : "arrowDown",
-      text: `${s.direction.toUpperCase()} RR=${s.risk_reward.toFixed(1)}${conf}`,
+      text: conf,
     });
   });
 
