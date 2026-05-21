@@ -17,6 +17,9 @@ const licenseInput = document.getElementById("license-code-input");
 const licenseSubmit = document.getElementById("license-submit-btn");
 const licenseMessage = document.getElementById("license-message");
 const licenseBadge = document.getElementById("license-badge");
+// v0.4.70: license-bar (badge + 코드 재입력 버튼 묶음)
+const licenseBar = document.querySelector(".license-bar");
+const btnRelicense = document.getElementById("btn-relicense");
 
 function log(msg) {
     const li = document.createElement("li");
@@ -162,7 +165,7 @@ function showMainScreen(status) {
     licenseGate.style.display = "none";
     mainScreen.style.display = "";
 
-    // 라이선스 배지 (좌상단) — type + 만료일 + D-3/D-1 경고 + grace
+    // v0.4.70: 라이선스 배지 + 코드 재입력 버튼 (license-bar 컨테이너) — Trading Start 위
     if (status && status.has_license) {
         const typeLabel = status.type === "referral" ? "레퍼럴" :
                           status.type === "sub_30d" ? "30일 구독" :
@@ -196,7 +199,8 @@ function showMainScreen(status) {
         }
 
         licenseBadge.textContent = text;
-        licenseBadge.style.display = "";
+        // v0.4.70: license-bar 컨테이너로 show (배지 + 재입력 버튼 같이)
+        if (licenseBar) licenseBar.style.display = "";
 
         // d1/today 면 status-line 에도 한 번 알림 (시작 시 한정, 사용자 주의 환기)
         if (level === "d1" || level === "today") {
@@ -205,7 +209,7 @@ function showMainScreen(status) {
             setStatus(msg, "#fbbf24");
         }
     } else {
-        licenseBadge.style.display = "none";
+        if (licenseBar) licenseBar.style.display = "none";
     }
 }
 
@@ -293,6 +297,27 @@ async function checkLicenseGate() {
         setLicenseMessage(`라이선스 확인 실패: ${e.message}`, "error");
         return false;
     }
+}
+
+// v0.4.70 — 코드 재입력 버튼: 로컬 license.json 삭제 후 게이트 화면으로
+if (btnRelicense) {
+    btnRelicense.addEventListener("click", async () => {
+        if (!Api) return;
+        const ok = confirm("저장된 라이선스를 삭제하고 코드 입력 화면으로 돌아갈까요?\n\n(백엔드의 코드는 그대로 살아있고, 같은 코드 다시 입력 가능)");
+        if (!ok) return;
+        try {
+            await Api.reset_license();
+            log("라이선스 재입력 모드 진입");
+            // 메인 숨기고 게이트 표시 + input 비우기 + 메시지 초기화
+            if (licenseBar) licenseBar.style.display = "none";
+            showLicenseGate();
+            licenseInput.value = "";
+            setLicenseMessage("", "");
+            licenseSubmit.disabled = false;
+        } catch (e) {
+            log(`라이선스 재입력 실패: ${e.message}`);
+        }
+    });
 }
 
 window.addEventListener("pywebviewready", async () => {
