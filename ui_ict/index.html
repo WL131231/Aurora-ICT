@@ -489,6 +489,16 @@
     <h2>Bot Enable</h2>
     <button id="btn-toggle-enabled">ENABLE</button>
 
+    <h2>Daily Loss Limit</h2>
+    <div class="row" style="margin-top:4px">
+      <span class="k">Limit %</span>
+      <input id="dll-input" type="number" step="0.1" min="0" max="50" placeholder="0 = off"
+             style="width:78px;background:#1a1a1a;border:1px solid #333;color:#ddd;padding:3px 6px;border-radius:3px"/>
+      <button id="btn-dll-set" style="margin-left:4px;padding:3px 10px">SET</button>
+    </div>
+    <div class="row"><span class="k">Today PnL</span><span id="dll-today" class="v">—</span></div>
+    <div class="row"><span class="k">Status</span><span id="dll-status" class="v">—</span></div>
+
     <h2>Control</h2>
     <button id="btn-start">START</button>
     <button id="btn-stop" class="danger">STOP</button>
