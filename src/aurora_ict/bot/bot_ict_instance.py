@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
@@ -25,6 +26,12 @@ import pandas as pd
 from aurora_ict.bot.structure_trail import compute_structure_trail
 from aurora_ict.indicators.daily_bias import compute_daily_bias
 from aurora_ict.indicators.structure import TrendDirection
+from aurora_ict.interfaces.trades_store import (
+    TradeEvent,
+    TradeEventType,
+    TradesStore,
+)
+from aurora_ict.paths import data_dir as _ict_data_dir
 from aurora_ict.signal.ict_signal import (
     ICTSignal,
     SignalAction,
@@ -208,6 +215,8 @@ class BotIctInstance:
     _flip_watcher: object | None = field(default=None)
     # 추세 평가 캐시 — (tf → (last_bar_ts, TrendState)).
     _trend_cache: dict[str, tuple[int, TrendState]] = field(default_factory=dict)
+    # 매매 이벤트 영구 저장 (#BUG-2 해소) — lazy init in _record_trade.
+    _trades_store: TradesStore | None = field(default=None)
 
     async def start(self) -> None:
         """봇 기동 (background task 생성).
@@ -278,6 +287,14 @@ class BotIctInstance:
         logger.info(
             "recover: 활성 포지션 복원 — %s %s entry=%.4f qty=%.4f sl=%.4f tp=%.4f",
             self.symbol, direction.value, entry_price, contracts, sl, tp,
+        )
+        # #BUG-2 해소: trades_store 에 RECOVERED 이벤트 기록.
+        self._record_trade(
+            TradeEventType.RECOVERED,
+            direction=direction,
+            price=entry_price,
+            qty=contracts,
+            reason="bot startup — exchange position fetch",
         )
 
     async def stop(self) -> None:
@@ -737,6 +754,18 @@ class BotIctInstance:
             htf_flip_target=htf_flip_target,
             ltf_weight=TF_WEIGHT.get(self.timeframe, 1),
         )
+        # #BUG-2 해소: ENTRY 이벤트 기록.
+        self._record_trade(
+            TradeEventType.ENTRY,
+            direction=setup.direction,
+            price=effective_entry,
+            qty=qty,
+            setup_ts_ms=setup.ts_ms,
+            reason=(
+                f"confluence={setup.confluence_score} "
+                f"window={setup.window} rr={setup.risk_reward:.2f}"
+            ),
+        )
         if htf_flip_target is not None:
             logger.info(
                 "HTF flip target armed — %s zone=[%.4f,%.4f] weight=%d",
@@ -824,6 +853,57 @@ class BotIctInstance:
             return 0.0
         return qty
 
+    def _record_trade(
+        self,
+        event_type: TradeEventType,
+        *,
+        direction: Direction,
+        price: float,
+        qty: float,
+        entry_for_pnl: float | None = None,
+        setup_ts_ms: int | None = None,
+        reason: str = "",
+    ) -> None:
+        """매매 이벤트 1건을 trades_store 에 기록 (#BUG-2 해소).
+
+        Args:
+            event_type: TradeEventType (ENTRY / SL_HIT / TP_HIT / FLIP_* / RECOVERED /
+                SYNC_CLOSE / MANUAL_CLOSE).
+            direction: 포지션 방향 (LONG/SHORT).
+            price: 체결/발생 가격.
+            qty: 수량.
+            entry_for_pnl: 청산 이벤트일 때 entry 가격 (PnL 계산용). 진입 이벤트는 None.
+            setup_ts_ms: ENTRY/청산 매칭용 setup ts. RECOVERED 등은 None.
+            reason: 디버그/분석 사유.
+
+        TradesStore lazy init — 첫 호출 시 ``data_dir()`` 디렉토리 보장.
+        실패해도 봇 전체는 멈추지 않게 try/warning 처리.
+        """
+        if self._trades_store is None:
+            try:
+                self._trades_store = TradesStore(_ict_data_dir())
+            except Exception as e:  # noqa: BLE001
+                logger.warning("TradesStore 초기화 실패 — 매매 기록 skip: %s", e)
+                return
+        pnl_usdt: float | None = None
+        if entry_for_pnl is not None and qty > 0:
+            sign = 1.0 if direction is Direction.LONG else -1.0
+            pnl_usdt = sign * (price - entry_for_pnl) * qty
+        try:
+            self._trades_store.record(TradeEvent(
+                ts_ms=int(time.time() * 1000),
+                event_type=event_type,
+                symbol=self.symbol,
+                direction="long" if direction is Direction.LONG else "short",
+                price=price,
+                qty=qty,
+                pnl_usdt=pnl_usdt,
+                setup_ts_ms=setup_ts_ms,
+                reason=reason,
+            ))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("trades record 실패: %s", e)
+
     async def _sync_position_state(self) -> None:
         """거래소 fetch_position()으로 현재 position 상태 동기화.
 
@@ -838,6 +918,19 @@ class BotIctInstance:
         if pos is None or float(pos.get("contracts", 0) or 0) == 0:
             # 거래소 측 position 없음 → SL/TP hit으로 청산된 것으로 간주
             logger.info("position 종료 감지 (SL/TP hit 추정) — state reset")
+            # #BUG-2: SYNC_CLOSE 기록 — close 가격은 정확히 모름 (SL or TP 중).
+            # entry 가격으로 PnL 0 표기, reason 으로 추정 명시.
+            last_known = self.active_position
+            if last_known is not None:
+                self._record_trade(
+                    TradeEventType.SYNC_CLOSE,
+                    direction=last_known.direction,
+                    price=last_known.entry,  # 정확한 close 가격 모름 — entry placeholder
+                    qty=last_known.qty,
+                    entry_for_pnl=last_known.entry,
+                    setup_ts_ms=last_known.setup_ts_ms,
+                    reason="exchange-side closed (SL/TP 추정)",
+                )
             self.active_position = None
 
     # ----- 변경 2: 추세 평가 캐시 ---------------------------------------
@@ -1066,6 +1159,17 @@ class BotIctInstance:
             logger.error("flip — 청산 최종 실패 — 신규 진입 중단 (포지션 유지)")
             return
 
+        # #BUG-2: FLIP_CLOSE 기록 — trigger_price 가 실제 청산 가격에 가장 가까운 추정.
+        self._record_trade(
+            TradeEventType.FLIP_CLOSE,
+            direction=pos.direction,
+            price=trigger_price,
+            qty=pos.qty,
+            entry_for_pnl=pos.entry,
+            setup_ts_ms=pos.setup_ts_ms,
+            reason=f"htf flip target hit @{target.tf} (weight={target.weight})",
+        )
+
         # 2) 신규 진입 — entry = trigger_price, SL = FVG 반대쪽 (정통 ICT 단순), TP = min_rr R.
         # Why: sl_buffer_ratio 제거(변형 4 정통화). FVG zone 자체 가장자리를 SL 로.
         new_entry = trigger_price
@@ -1129,6 +1233,15 @@ class BotIctInstance:
             setup_ts_ms=last_ts,
             htf_flip_target=None,  # flip 완료 — 같은 target 재발동 방지.
             ltf_weight=TF_WEIGHT.get(self.timeframe, 1),
+        )
+        # #BUG-2: FLIP_OPEN 기록 — 반대 방향 신규 진입.
+        self._record_trade(
+            TradeEventType.FLIP_OPEN,
+            direction=new_direction,
+            price=new_entry,
+            qty=new_qty,
+            setup_ts_ms=last_ts,
+            reason=f"htf flip into {target.tf} (weight={target.weight})",
         )
 
 
