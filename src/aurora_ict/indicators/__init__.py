@@ -1,5 +1,12 @@
 """Aurora-ICT indicators — ICT PD-Array / Liquidity / Structure detectors."""
 
+from aurora_ict.indicators.cbdr import (
+    CBDRBiasState,
+    CBDRBox,
+    classify_price_vs_cbdr,
+    detect_cbdr_boxes,
+    is_within_acceptable_range,
+)
 from aurora_ict.indicators.fvg import (
     FVG,
     FVGType,
@@ -12,6 +19,11 @@ from aurora_ict.indicators.liquidity import (
     SweepType,
     detect_equal_levels,
     detect_liquidity_sweeps,
+)
+from aurora_ict.indicators.mitigation_block import (
+    MitigationBlock,
+    detect_mitigation_blocks,
+    filter_retested,
 )
 from aurora_ict.indicators.order_block import (
     OrderBlock,
@@ -44,8 +56,19 @@ from aurora_ict.indicators.trailing_extremes import (
     TrailingExtremes,
     compute_trailing_extremes,
 )
+from aurora_ict.indicators.turtle_soup import (
+    TurtleSoupDirection,
+    TurtleSoupSetup,
+    detect_turtle_soup_setups,
+)
 
 __all__ = [
+    # CBDR
+    "CBDRBiasState",
+    "CBDRBox",
+    "classify_price_vs_cbdr",
+    "detect_cbdr_boxes",
+    "is_within_acceptable_range",
     # FVG
     "FVG",
     "FVGType",
@@ -57,6 +80,10 @@ __all__ = [
     "SweepType",
     "detect_equal_levels",
     "detect_liquidity_sweeps",
+    # Mitigation Block
+    "MitigationBlock",
+    "detect_mitigation_blocks",
+    "filter_retested",
     # Order Block
     "OrderBlock",
     "OrderBlockType",
@@ -82,4 +109,8 @@ __all__ = [
     # Trailing Extremes
     "TrailingExtremes",
     "compute_trailing_extremes",
+    # Turtle Soup
+    "TurtleSoupDirection",
+    "TurtleSoupSetup",
+    "detect_turtle_soup_setups",
 ]
