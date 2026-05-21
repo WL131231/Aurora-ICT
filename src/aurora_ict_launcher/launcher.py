@@ -219,6 +219,30 @@ def _attach_expiry_fields(result: dict, payload: dict | None) -> dict:
     return result
 
 
+def _inject_license_type_env(env: dict) -> None:
+    """본체 spawn 시 env 에 ``AURORA_ICT_LICENSE_TYPE`` 박기 (G-3b).
+
+    license.json 의 type 을 본체에 전달해서 ``IctSettings`` 가 자동 분기:
+        - referral (평생): ``disable_time_filter=True`` (24h 매매, 기존 동작)
+        - sub_* (구독제): ``disable_time_filter=False`` (Killzone 시간만, 강제)
+
+    license.json 없거나 type 누락 시 env 안 박음 — 본체가 IctSettings 기본값
+    (24h) 그대로. 라이선스 게이트는 이미 launcher 측에서 처리하니 본체는
+    license type 만 settings 분기 자료로 사용.
+
+    Args:
+        env: ``os.environ.copy()`` 결과. mutation in place.
+    """
+    payload = license_client.load_license(_aurora_ict_data_dir())
+    if not payload:
+        return
+    license_type = payload.get("type")
+    if not license_type:
+        return
+    env["AURORA_ICT_LICENSE_TYPE"] = license_type
+    logger.info("본체 env 박음: AURORA_ICT_LICENSE_TYPE=%s", license_type)
+
+
 def _launcher_dir() -> Path:
     """launcher .exe 가 있는 디렉토리 (본체 .exe 도 같은 폴더 가정)."""
     if _is_frozen():
@@ -1003,6 +1027,10 @@ def launch_aurora() -> subprocess.Popen | None:
     # auto-start env 는 launcher 가 본체 spawn 시 절대 박지 않음 — 새 본체가 자기
     # 다시 재시작 명령 무한 루프 위험 차단.
     env.pop(LAUNCHER_AUTO_START_ENV, None)
+
+    # v0.4.68 (G-3b): 본체에 license_type 전달 — 구독제=Killzone / 레퍼럴=24h
+    # 매매 시간대 자동 분기. IctSettings 의 env_prefix="AURORA_ICT_" 와 정합.
+    _inject_license_type_env(env)
 
     sys_name = platform.system()
     try:
