@@ -162,9 +162,58 @@ def find_opposite_htf_fvg(
     return cands
 
 
+def find_supporting_htf_fvg(
+    htf_map: list[HtfFvgEntry],
+    ltf_direction: str,  # "buy"/"sell" 또는 "long"/"short"
+    current_price: float,
+    max_touch_count: int = 3,
+) -> list[HtfFvgEntry]:
+    """LTF setup 의 같은 방향 HTF FVG 중 지지/저항 역할인 것들 반환.
+
+    변형 7 B+A 합성의 A 부분 — *같은 방향* HTF FVG 가 LTF setup 을 보강 (confluence).
+    호출처 (``_apply_htf_supporting_boost``) 에서 합산 가중치 → 계단식 점수 매핑.
+
+    조건 (엄격 안 — 사용자 결정 2026-05-20):
+    - LTF buy → 같은 = bullish FVG, 위치는 current_price 보다 **아래** (지지 역할).
+    - LTF sell → 같은 = bearish FVG, 위치는 current_price 보다 **위** (저항 역할).
+
+    정렬: 거리 (mid - current_price 절대값) 가까운 것부터.
+
+    Args:
+        htf_map: build_htf_fvg_map 결과.
+        ltf_direction: LTF setup 의 방향. "buy"/"long" 또는 "sell"/"short".
+        current_price: 현재 가격.
+        max_touch_count: touch 누적 임계치 (find_opposite_htf_fvg 와 동일 정책).
+
+    Returns:
+        조건 만족 후보 리스트 — 가까운 순. 합산 가중치는 호출처에서 ``sum(e.weight ...)``.
+        threshold 없음 — supporting 은 *진입 차단* 아니라 *보강* 이라 임계 불필요.
+    """
+    is_buy = ltf_direction.lower() in ("buy", "long")
+    supporting_type = FVGType.BULLISH if is_buy else FVGType.BEARISH
+    cands: list[HtfFvgEntry] = []
+    for e in htf_map:
+        if e.type is not supporting_type:
+            continue
+        # touch 누적 약화 — opposite 와 동일 정책. 약화된 FVG 는 보강 효과도 약함.
+        if e.touch_count >= max_touch_count:
+            continue
+        # 엄격 안: 같은 방향 HTF FVG 가 가격 *반대편* 에 있어야 지지/저항 역할.
+        # - LTF buy → bullish FVG 가 가격 아래 (= e.high < current_price) 이면 지지
+        # - LTF sell → bearish FVG 가 가격 위 (= e.low > current_price) 이면 저항
+        if is_buy and e.high >= current_price:
+            continue
+        if (not is_buy) and e.low <= current_price:
+            continue
+        cands.append(e)
+    cands.sort(key=lambda e: abs(e.mid - current_price))
+    return cands
+
+
 __all__ = [
     "TF_WEIGHT",
     "HtfFvgEntry",
     "build_htf_fvg_map",
     "find_opposite_htf_fvg",
+    "find_supporting_htf_fvg",
 ]

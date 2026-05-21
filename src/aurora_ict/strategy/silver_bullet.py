@@ -64,7 +64,14 @@ class SilverBulletSetup:
         risk_reward: TP / SL ratio (절대값). min_rr 2.0 이상 강제.
         fvg: 트리거 FVG 객체.
         target_swing_idx: TP로 잡은 swing index (없으면 None).
-        confluence_score: 같은 시점/방향 보강 지표 수 (0~3). OB/Macro/Sweep 각 +1.
+        confluence_score: 같은 시점/방향 보강 지표 합산 점수. 점수 매핑:
+            - OB confluence (mitigated 안 된 같은 방향 OB lookback 12봉): +1
+            - Macro priority high (예: am_macro_2 9:50-10:10): +2
+            - Macro priority normal: +1 / low: +0 (기록만)
+            - Sweep confluence (같은 방향 sweep lookback 12봉): +1
+            - HTF supporting (변형 7 B+A, 외부 ``_apply_htf_supporting_boost`` 가 가산):
+              합산 weight 4-9 → +1, 10-19 → +2, 20+ → +3
+            range 는 0~10+ 까지 가능. 호출처 ``_calc_qty`` 가 position_pct 단계 결정.
         confluences: 어떤 confluence 가 발견됐는지 (디버그 / UI 표시용).
         reasons: 디버그용 사유 문자열 리스트.
     """
