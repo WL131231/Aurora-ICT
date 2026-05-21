@@ -12,11 +12,54 @@
     <div class="bg-texture"></div>
     <div class="bg-hands"></div>
 
-    <main class="cinematic">
+    <!-- v0.4.66 (G-2b): 라이선스 게이트 화면 — license.json 없거나 verify fail 시 보임 -->
+    <section id="license-gate" class="license-gate" style="display:none">
+        <div class="license-gate-inner">
+            <div class="brand-row">
+                <div class="logo-mark">
+                    <svg width="40" height="40" viewBox="0 0 28 28" fill="none">
+                        <defs>
+                            <linearGradient id="logoGradGate" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" stop-color="#DBDBDE" />
+                                <stop offset="100%" stop-color="#8b8b90" />
+                            </linearGradient>
+                        </defs>
+                        <path d="M14 2 L26 14 L14 26 L2 14 Z" stroke="url(#logoGradGate)" stroke-width="1.5" fill="none" />
+                        <path d="M14 8 L20 14 L14 20 L8 14 Z" fill="url(#logoGradGate)" opacity="0.6" />
+                    </svg>
+                </div>
+                <span class="brand-text">AURORA · ICT</span>
+            </div>
+
+            <h2 class="license-title">라이선스 코드를 입력해주세요</h2>
+            <p class="license-sub">관리자에게 발급받은 16자리 코드를 입력하면 봇이 활성화됩니다.</p>
+
+            <div class="license-form">
+                <input id="license-code-input"
+                       type="text"
+                       placeholder="AICT-XXXX-XXXX-XXXX"
+                       autocomplete="off"
+                       spellcheck="false"
+                       maxlength="19" />
+                <button id="license-submit-btn" class="btn-license">등록</button>
+            </div>
+
+            <div id="license-message" class="license-message"></div>
+
+            <p class="license-footnote">
+                코드는 PC 1대에 묶입니다. 다른 PC 에서 사용하려면 관리자에게 재발급을 요청하세요.
+            </p>
+        </div>
+    </section>
+
+    <main id="main-screen" class="cinematic" style="display:none">
         <!-- 우측 상단 끝 버전 표시 (창 전체 기준 absolute) -->
         <div class="global-version">
             <span id="version-info">v—</span>
         </div>
+
+        <!-- v0.4.66 (G-2b): 라이선스 상태 배지 — main-screen 진입 후 표시 -->
+        <div id="license-badge" class="license-badge" style="display:none"></div>
 
         <!-- 좌측 — 부제 / Start / 로그 -->
         <section class="hero">

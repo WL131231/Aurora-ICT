@@ -302,3 +302,150 @@ body {
     letter-spacing: 0.05em;
     text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
 }
+
+/* ============================================================
+   v0.4.66 (G-2b) — 라이선스 게이트 화면
+   ============================================================ */
+
+.license-gate {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    padding: 2rem;
+}
+
+.license-gate-inner {
+    max-width: 520px;
+    width: 100%;
+    text-align: center;
+    background: rgba(20, 22, 32, 0.85);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(219, 219, 222, 0.18);
+    border-radius: 14px;
+    padding: 2.5rem 2.25rem;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+
+.license-gate .brand-row {
+    justify-content: center;
+    margin-bottom: 1.75rem;
+}
+
+.license-title {
+    color: #f3f4f6;
+    font-size: 1.35rem;
+    font-weight: 600;
+    margin: 0 0 0.5rem;
+    letter-spacing: 0.02em;
+}
+
+.license-sub {
+    color: #9ca3af;
+    font-size: 0.9rem;
+    line-height: 1.55;
+    margin: 0 0 1.75rem;
+}
+
+.license-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.license-form input {
+    width: 100%;
+    padding: 0.85rem 1rem;
+    background: rgba(10, 12, 18, 0.7);
+    border: 1px solid rgba(219, 219, 222, 0.18);
+    border-radius: 8px;
+    color: #f3f4f6;
+    font-family: "Courier New", monospace;
+    font-size: 1.05rem;
+    letter-spacing: 0.15em;
+    text-align: center;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.license-form input::placeholder {
+    color: rgba(156, 163, 175, 0.5);
+    letter-spacing: 0.15em;
+}
+
+.license-form input:focus {
+    border-color: rgba(219, 219, 222, 0.45);
+    box-shadow: 0 0 0 3px rgba(219, 219, 222, 0.08);
+}
+
+.btn-license {
+    width: 100%;
+    padding: 0.85rem;
+    background: linear-gradient(135deg, #DBDBDE, #8b8b90);
+    color: #1a1c26;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: transform 0.1s ease, opacity 0.15s ease;
+}
+
+.btn-license:hover:not(:disabled) {
+    transform: translateY(-1px);
+}
+
+.btn-license:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.license-message {
+    min-height: 1.25rem;
+    margin-bottom: 1rem;
+    font-size: 0.85rem;
+    line-height: 1.4;
+}
+
+.license-message.error {
+    color: #fb7185;
+}
+
+.license-message.success {
+    color: #4ade80;
+}
+
+.license-message.info {
+    color: #fbbf24;
+}
+
+.license-footnote {
+    color: rgba(156, 163, 175, 0.7);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    margin: 0;
+}
+
+/* main-screen 진입 후 표시되는 작은 라이선스 배지 (상태/만료일 노출) */
+.license-badge {
+    position: absolute;
+    top: 1rem;
+    left: 1.25rem;
+    padding: 0.35rem 0.75rem;
+    background: rgba(20, 22, 32, 0.65);
+    border: 1px solid rgba(219, 219, 222, 0.15);
+    border-radius: 6px;
+    color: #d1d5db;
+    font-size: 0.7rem;
+    letter-spacing: 0.05em;
+    z-index: 5;
+}
+
+.license-badge.grace {
+    border-color: rgba(251, 191, 36, 0.4);
+    color: #fbbf24;
+}

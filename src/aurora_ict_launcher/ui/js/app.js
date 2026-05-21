@@ -1,5 +1,7 @@
 // Aurora Launcher GUI v0.1.16 — Start 단일 흐름.
 // 사용자가 START 클릭 → 자동 update check → has_update 면 download+swap → 본체 실행.
+// v0.4.66 (G-2b): 시작 시 라이선스 게이트 추가 — license.json 없거나 verify fail 시
+// 코드 입력 화면 표시, 통과 후 메인 화면.
 
 let Api = null;
 
@@ -7,6 +9,14 @@ const versionInfo = document.getElementById("version-info");
 const statusLine = document.getElementById("status-line");
 const logList = document.getElementById("log-list");
 const btnStart = document.getElementById("btn-start");
+
+// 라이선스 게이트 요소 (v0.4.66)
+const licenseGate = document.getElementById("license-gate");
+const mainScreen = document.getElementById("main-screen");
+const licenseInput = document.getElementById("license-code-input");
+const licenseSubmit = document.getElementById("license-submit-btn");
+const licenseMessage = document.getElementById("license-message");
+const licenseBadge = document.getElementById("license-badge");
 
 function log(msg) {
     const li = document.createElement("li");
@@ -133,10 +143,145 @@ window.hideProgress = () => {
 
 btnStart.addEventListener("click", startFlow);
 
+// ========================================================================
+// v0.4.66 (G-2b) — 라이선스 게이트
+// ========================================================================
+
+function setLicenseMessage(text, kind) {
+    licenseMessage.textContent = text || "";
+    licenseMessage.className = "license-message" + (kind ? " " + kind : "");
+}
+
+function showLicenseGate() {
+    licenseGate.style.display = "flex";
+    mainScreen.style.display = "none";
+    setTimeout(() => licenseInput.focus(), 100);
+}
+
+function showMainScreen(status) {
+    licenseGate.style.display = "none";
+    mainScreen.style.display = "";
+
+    // 라이선스 배지 (좌상단) — type + 만료일 또는 grace 경고
+    if (status && status.has_license) {
+        const typeLabel = status.type === "referral" ? "레퍼럴" :
+                          status.type === "sub_30d" ? "30일 구독" :
+                          status.type === "sub_90d" ? "90일 구독" :
+                          status.type === "sub_365d" ? "365일 구독" : status.type;
+        let text = typeLabel;
+        if (status.expires_at) {
+            const d = new Date(status.expires_at);
+            text += ` · 만료 ${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        }
+        if (status.verify_ok === false && status.grace_ok) {
+            text += " · 오프라인 (grace)";
+            licenseBadge.classList.add("grace");
+        } else {
+            licenseBadge.classList.remove("grace");
+        }
+        licenseBadge.textContent = text;
+        licenseBadge.style.display = "";
+    } else {
+        licenseBadge.style.display = "none";
+    }
+}
+
+// 코드 입력 자동 포맷 — AICT- prefix 자동 + 4글자마다 - 삽입
+function formatCodeInput(raw) {
+    let cleaned = raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    // AICT prefix 정리 — 앞 4글자가 AICT 가 아니면 prepend X (사용자가 직접)
+    const groups = cleaned.match(/.{1,4}/g) || [];
+    return groups.slice(0, 4).join("-");
+}
+
+licenseInput.addEventListener("input", (e) => {
+    const formatted = formatCodeInput(e.target.value);
+    if (formatted !== e.target.value) {
+        e.target.value = formatted;
+    }
+});
+
+licenseInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+        e.preventDefault();
+        licenseSubmit.click();
+    }
+});
+
+licenseSubmit.addEventListener("click", async () => {
+    if (!Api) return;
+    const code = licenseInput.value.trim();
+    if (!code) {
+        setLicenseMessage("코드를 입력해주세요", "error");
+        return;
+    }
+    licenseSubmit.disabled = true;
+    setLicenseMessage("등록 중...", "info");
+    try {
+        const result = await Api.redeem_code(code);
+        if (result.ok) {
+            setLicenseMessage(result.message || "라이선스 등록 완료", "success");
+            // 잠깐 메시지 보여주고 메인 화면으로
+            setTimeout(async () => {
+                const status = await Api.get_license_status();
+                showMainScreen(status);
+            }, 800);
+        } else {
+            setLicenseMessage(result.message || "등록 실패", "error");
+            licenseSubmit.disabled = false;
+        }
+    } catch (e) {
+        setLicenseMessage(`오류: ${e.message}`, "error");
+        licenseSubmit.disabled = false;
+    }
+});
+
+async function checkLicenseGate() {
+    // 라이선스 게이트 — 진입 시 한 번만 호출
+    try {
+        const status = await Api.get_license_status();
+        if (!status.has_license) {
+            showLicenseGate();
+            return false;
+        }
+        if (status.verify_ok) {
+            showMainScreen(status);
+            return true;
+        }
+        // verify fail — grace 안이면 메인 진입 (경고 배지), 아니면 게이트
+        if (status.grace_ok) {
+            showMainScreen(status);
+            return true;
+        }
+        // grace 도 만료 — 게이트 진입 + 사유 표시
+        showLicenseGate();
+        const reason = status.verify_error === "expired" ? "라이선스가 만료되었습니다" :
+                       status.verify_error === "pc_mismatch" ? "다른 PC 에서 사용 중인 코드입니다" :
+                       status.verify_error === "voided" ? "무효화된 코드입니다 — 관리자에게 문의" :
+                       status.verify_error === "bad_token" ? "라이선스 토큰이 손상되었습니다 — 재발급 필요" :
+                       status.verify_error === "network" ? "네트워크 오프라인 + grace 만료 — 인터넷 연결 후 재시도" :
+                       `라이선스 무효 (${status.verify_error || "unknown"})`;
+        setLicenseMessage(reason, "error");
+        return false;
+    } catch (e) {
+        // get_license_status 자체가 깨졌으면 일단 게이트 진입
+        log(`라이선스 확인 실패: ${e.message}`);
+        showLicenseGate();
+        setLicenseMessage(`라이선스 확인 실패: ${e.message}`, "error");
+        return false;
+    }
+}
+
 window.addEventListener("pywebviewready", async () => {
     Api = window.pywebview.api;
     await loadVersionInfo();
     log("Launcher 시작");
+
+    // v0.4.66 (G-2b): 라이선스 게이트 — main-screen 진입 전 통과 필수.
+    const licenseOk = await checkLicenseGate();
+    if (!licenseOk) {
+        return;  // 게이트에 멈춤 — 코드 입력 대기
+    }
 
     // v0.1.43: 본체 /relaunch 흐름 — auto-start 모드면 START 자동 클릭.
     // 사용자가 본체 UI 의 업데이트 팝업 "재시작하기" 클릭 → 본체가 launcher

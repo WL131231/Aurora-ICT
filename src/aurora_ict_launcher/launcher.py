@@ -34,9 +34,10 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 
-from aurora_ict_launcher import __version__
+from aurora_ict_launcher import __version__, license_client
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,19 @@ def _acquire_launcher_single_instance_mutex() -> bool:
 def _is_frozen() -> bool:
     """PyInstaller bundle 환경 여부."""
     return bool(getattr(sys, "frozen", False))
+
+
+def _mask_code(code: str) -> str:
+    """라이선스 코드 마스킹 — ``AICT-XXXX-XXXX-XXXX`` → ``AICT-****-****-XXXX``.
+
+    UI 에 표시할 때 앞 8자리는 가리고 마지막 4자리 (그룹) 만 노출. 사용자
+    본인은 어느 코드인지 식별 가능 + 화면 캡쳐 등으로 전체 코드 유출 방지.
+    """
+    if not code:
+        return "AICT-****-****-****"
+    parts = code.split("-")
+    last = parts[-1] if parts else code[-4:]
+    return f"AICT-****-****-{last}"
 
 
 def _launcher_dir() -> Path:
@@ -1049,6 +1063,146 @@ class LauncherApi:
         """v0.1.43: auto-start 모드 여부 — 본체 재시작 흐름에서 launcher 가
         spawn 됐을 때 True. UI 가 START 자동 클릭 결정에 사용."""
         return self._auto_start
+
+    # ─────────────────────────────────────────────────────────────
+    # 라이선스 게이트 (v0.4.66 — G-2b)
+    # ─────────────────────────────────────────────────────────────
+
+    def get_license_status(self) -> dict:
+        """라이선스 상태 — UI 첫 로드 시 호출. 게이트 화면 vs 메인 화면 결정.
+
+        흐름:
+            1. license.json 없으면 ``has_license=False`` 즉시 반환 (게이트 화면).
+            2. 있으면 POST /api/verify 호출 후 결과 반영.
+            3. verify 네트워크 실패 시 ``is_within_grace()`` 로 grace 판정.
+
+        Returns:
+            ``{
+                "has_license": bool,
+                "type": str | None,
+                "code_masked": str | None,   # "AICT-****-****-57O7"
+                "expires_at": str | None,
+                "verify_ok": bool | None,    # None = verify 호출 X (코드 없음)
+                "verify_error": str | None,  # 4xx 응답의 error 필드
+                "grace_ok": bool,            # network fail 후 grace 안 인지
+            }``
+        """
+        data_dir = _aurora_ict_data_dir()
+        payload = license_client.load_license(data_dir)
+        if payload is None:
+            return {
+                "has_license": False,
+                "type": None,
+                "code_masked": None,
+                "expires_at": None,
+                "verify_ok": None,
+                "verify_error": None,
+                "grace_ok": False,
+            }
+
+        code = payload.get("code") or ""
+        license_token = payload.get("license_token") or ""
+        machine_id = license_client.get_machine_id()
+
+        # 백엔드 /api/verify 호출
+        status, body = license_client.verify_license(
+            code, machine_id, license_token, _SSL_CONTEXT,
+        )
+
+        result: dict = {
+            "has_license": True,
+            "type": payload.get("type"),
+            "code_masked": _mask_code(code),
+            "expires_at": payload.get("expires_at"),
+            "verify_ok": False,
+            "verify_error": None,
+            "grace_ok": False,
+        }
+
+        if status == 200 and body.get("ok"):
+            # verify 성공 — last_verified_at 갱신 + 서버의 최신 expires_at 반영
+            payload["last_verified_at"] = datetime.now(UTC).isoformat()
+            if body.get("expires_at"):
+                payload["expires_at"] = body["expires_at"]
+                result["expires_at"] = body["expires_at"]
+            license_client.save_license(data_dir, payload)
+            result["verify_ok"] = True
+            return result
+
+        if status == 0:
+            # 네트워크 실패 — grace 판정
+            result["verify_error"] = "network"
+            result["grace_ok"] = license_client.is_within_grace(payload)
+            logger.info("verify 네트워크 실패 — grace_ok=%s", result["grace_ok"])
+            return result
+
+        # 4xx — 라이선스 자체 무효 (만료/PC변경/위조)
+        err = body.get("error") or f"http_{status}"
+        result["verify_error"] = err
+        logger.warning("verify 실패 (%s): %s", status, err)
+        return result
+
+    def redeem_code(self, code: str) -> dict:
+        """코드 입력 → POST /api/redeem → license.json 저장.
+
+        Args:
+            code: 사용자 입력 (대소문자/공백 자동 정리).
+
+        Returns:
+            ``{"ok": bool, "type": str | None, "expires_at": str | None,
+              "message": str}`` — UI 에 그대로 표시 가능.
+        """
+        cleaned = (code or "").strip().upper()
+        if not cleaned:
+            return {"ok": False, "type": None, "expires_at": None,
+                    "message": "코드를 입력해주세요"}
+
+        machine_id = license_client.get_machine_id()
+        status, body = license_client.redeem_code(cleaned, machine_id, _SSL_CONTEXT)
+
+        if status == 200 and body.get("ok"):
+            data_dir = _aurora_ict_data_dir()
+            payload = {
+                "code": cleaned,
+                "type": body.get("type"),
+                "license_token": body.get("license_token"),
+                "expires_at": body.get("expires_at"),
+                "last_verified_at": datetime.now(UTC).isoformat(),
+            }
+            license_client.save_license(data_dir, payload)
+            logger.info("redeem 성공: type=%s expires_at=%s",
+                        body.get("type"), body.get("expires_at"))
+            return {
+                "ok": True,
+                "type": body.get("type"),
+                "expires_at": body.get("expires_at"),
+                "message": "라이선스 등록 완료",
+            }
+
+        if status == 0:
+            return {"ok": False, "type": None, "expires_at": None,
+                    "message": "네트워크 오류 — 인터넷 연결 확인"}
+
+        err = body.get("error") or f"http_{status}"
+        msg_map = {
+            "invalid": "존재하지 않는 코드입니다",
+            "voided": "무효화된 코드입니다 — 관리자에게 문의",
+            "already_used": "다른 PC 에서 이미 사용된 코드입니다",
+            "missing_fields": "코드 형식이 올바르지 않습니다",
+        }
+        logger.warning("redeem 실패 (%s): %s", status, err)
+        return {
+            "ok": False, "type": None, "expires_at": None,
+            "message": msg_map.get(err, f"등록 실패: {err}"),
+        }
+
+    def verify_license_now(self) -> dict:
+        """수동 / 재시도 verify — UI 의 "다시 시도" 버튼 등에서 호출.
+
+        Returns:
+            ``get_license_status()`` 와 동일한 dict.
+        """
+        return self.get_license_status()
 
     def get_local_version(self) -> str:
         """현재 설치된 본체 버전. 모르면 'unknown'."""
