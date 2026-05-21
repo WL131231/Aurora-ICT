@@ -2,7 +2,22 @@
    좌→우 그라디언트 배경 (#31323e → #60519b) + painterly 텍스처.
    좌측 = 타이틀/부제/Start, 우측 = 거대 다이아몬드. */
 
-/* v0.1.70: 한글 글씨체 — HSBombaram 2.1 (한섬 봄바람체, 배포/상업 허용). */
+/* v0.4.68: 한글 글씨체 — Nanum Myeongjo YetHangul (Naver, SIL OFL).
+   unicode-range 로 한글 코드포인트만 매핑 — 영문/숫자는 chain 의 다음 폰트
+   (Pretendard / Space Grotesk) 가 사용된다. 한글만 명조체로 표시. */
+@font-face {
+    font-family: "NanumMyeongjoYetHangul";
+    src: url("../fonts/NanumMyeongjo-YetHangul.ttf") format("truetype");
+    font-display: swap;
+    unicode-range:
+        U+AC00-D7A3,   /* Hangul Syllables (완성형) */
+        U+1100-11FF,   /* Hangul Jamo */
+        U+3130-318F,   /* Hangul Compatibility Jamo */
+        U+A960-A97F,   /* Hangul Jamo Extended-A */
+        U+D7B0-D7FF;   /* Hangul Jamo Extended-B */
+}
+
+/* v0.1.70: 한글 글씨체 (구버전, fallback 용 유지) — HSBombaram 2.1. */
 @font-face {
     font-family: "HSBombaram";
     src: url("../fonts/HSBombaram2.1.ttf") format("truetype");
@@ -44,7 +59,7 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-    font-family: "HSBombaram", 'Pretendard Variable', 'Space Grotesk', system-ui, sans-serif;
+    font-family: "NanumMyeongjoYetHangul", "HSBombaram", 'Pretendard Variable', 'Space Grotesk', system-ui, sans-serif;
     color: var(--text-1);
     overflow: hidden;
     height: 100vh;
