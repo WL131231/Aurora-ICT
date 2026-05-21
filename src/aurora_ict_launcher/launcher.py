@@ -1271,6 +1271,25 @@ class LauncherApi:
         """
         return self.get_license_status()
 
+    def reset_license(self) -> dict:
+        """v0.4.70 — 로컬 license.json 삭제 + 게이트 재진입 신호.
+
+        "코드 재입력" 버튼이 호출. 라이선스 자체는 백엔드에서 그대로 살아있고
+        (다른 PC 로 옮기는 게 아니라 같은 PC 가 새 코드 받는 시나리오), 단순히
+        로컬 토큰만 삭제. 다시 코드 입력하면 redeem 가능 (같은 코드든 새 코드든).
+
+        같은 PC 에서 같은 코드 재입력 시 백엔드는 ok_repeat 으로 토큰 재발급.
+        다른 코드 입력 시 새 코드의 redeem 시도 (구코드 토큰은 그대로 살아있음).
+        """
+        try:
+            data_dir = _aurora_ict_data_dir()
+            license_client.delete_license(data_dir)
+            logger.info("로컬 라이선스 삭제 — 게이트 재진입")
+            return {"ok": True}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("라이선스 삭제 실패: %s", exc)
+            return {"ok": False, "error": str(exc)}
+
     # ─────────────────────────────────────────────────────────────
     # v0.4.67 (G-3a) — 24h 백그라운드 verify
     # ─────────────────────────────────────────────────────────────
