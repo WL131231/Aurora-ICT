@@ -162,7 +162,7 @@ function showMainScreen(status) {
     licenseGate.style.display = "none";
     mainScreen.style.display = "";
 
-    // 라이선스 배지 (좌상단) — type + 만료일 또는 grace 경고
+    // 라이선스 배지 (좌상단) — type + 만료일 + D-3/D-1 경고 + grace
     if (status && status.has_license) {
         const typeLabel = status.type === "referral" ? "레퍼럴" :
                           status.type === "sub_30d" ? "30일 구독" :
@@ -173,14 +173,37 @@ function showMainScreen(status) {
             const d = new Date(status.expires_at);
             text += ` · 만료 ${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
         }
-        if (status.verify_ok === false && status.grace_ok) {
+
+        // v0.4.67 (G-3a): D-3/D-1/today 알림 — 배지에 남은 일수 + 색상
+        const days = status.days_until_expiry;
+        const level = status.expiry_warning_level || "none";
+        licenseBadge.classList.remove("grace", "warn-d3", "warn-d1", "warn-today");
+
+        if (level === "today") {
+            text += ` · ⚠ 오늘 만료`;
+            licenseBadge.classList.add("warn-today");
+        } else if (level === "d1") {
+            text += ` · ⚠ 1일 남음`;
+            licenseBadge.classList.add("warn-d1");
+        } else if (level === "d3" && days !== null && days !== undefined) {
+            text += ` · ⚠ ${days}일 남음`;
+            licenseBadge.classList.add("warn-d3");
+        }
+
+        if (status.verify_ok === false && status.grace_ok && level === "none") {
             text += " · 오프라인 (grace)";
             licenseBadge.classList.add("grace");
-        } else {
-            licenseBadge.classList.remove("grace");
         }
+
         licenseBadge.textContent = text;
         licenseBadge.style.display = "";
+
+        // d1/today 면 status-line 에도 한 번 알림 (시작 시 한정, 사용자 주의 환기)
+        if (level === "d1" || level === "today") {
+            const msg = level === "today" ? "라이선스가 오늘 만료됩니다 — 갱신 필요"
+                                          : "라이선스 만료 1일 남음 — 갱신 필요";
+            setStatus(msg, "#fbbf24");
+        }
     } else {
         licenseBadge.style.display = "none";
     }

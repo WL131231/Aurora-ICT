@@ -185,6 +185,40 @@ def _mask_code(code: str) -> str:
     return f"AICT-****-****-{last}"
 
 
+def _compute_expiry_warning_level(days_left: int | None) -> str:
+    """``days_until_expiry`` → UI 경고 등급.
+
+    Returns:
+        - ``"none"``: 알림 X (레퍼럴 / 만료까지 4일 이상)
+        - ``"d3"``: 만료까지 2~3일 남음
+        - ``"d1"``: 만료까지 1일 남음
+        - ``"today"``: 만료 당일 (0일)
+        - ``"expired"``: 이미 만료 (음수)
+    """
+    if days_left is None:
+        return "none"
+    if days_left < 0:
+        return "expired"
+    if days_left == 0:
+        return "today"
+    if days_left <= 1:
+        return "d1"
+    if days_left <= 3:
+        return "d3"
+    return "none"
+
+
+def _attach_expiry_fields(result: dict, payload: dict | None) -> dict:
+    """``get_license_status`` result 에 만료 알림 필드 추가 (G-3a).
+
+    모든 return path 에서 일관되게 호출 — UI 가 매 응답에서 두 필드를 받음.
+    """
+    days = license_client.days_until_expiry(payload) if payload else None
+    result["days_until_expiry"] = days
+    result["expiry_warning_level"] = _compute_expiry_warning_level(days)
+    return result
+
+
 def _launcher_dir() -> Path:
     """launcher .exe 가 있는 디렉토리 (본체 .exe 도 같은 폴더 가정)."""
     if _is_frozen():
@@ -1058,6 +1092,11 @@ class LauncherApi:
         # crash → 자동 respawn (최대 3회). spawn 시각 + 카운트 박음.
         self._aurora_spawn_at: float = 0.0  # time.time() 박음
         self._aurora_crash_respawn_count: int = 0
+        # v0.4.67 (G-3a): 24h 백그라운드 verify thread.
+        # start_background_verify() 호출 전엔 미동작 (단위 테스트가 실 verify 호출
+        # 안 하게 — 외부 의존 0 정책).
+        self._license_verify_thread: threading.Thread | None = None
+        self._license_verify_stop = threading.Event()
 
     def is_auto_start(self) -> bool:
         """v0.1.43: auto-start 모드 여부 — 본체 재시작 흐름에서 launcher 가
@@ -1090,7 +1129,7 @@ class LauncherApi:
         data_dir = _aurora_ict_data_dir()
         payload = license_client.load_license(data_dir)
         if payload is None:
-            return {
+            return _attach_expiry_fields({
                 "has_license": False,
                 "type": None,
                 "code_masked": None,
@@ -1098,7 +1137,7 @@ class LauncherApi:
                 "verify_ok": None,
                 "verify_error": None,
                 "grace_ok": False,
-            }
+            }, None)
 
         code = payload.get("code") or ""
         license_token = payload.get("license_token") or ""
@@ -1127,20 +1166,20 @@ class LauncherApi:
                 result["expires_at"] = body["expires_at"]
             license_client.save_license(data_dir, payload)
             result["verify_ok"] = True
-            return result
+            return _attach_expiry_fields(result, payload)
 
         if status == 0:
             # 네트워크 실패 — grace 판정
             result["verify_error"] = "network"
             result["grace_ok"] = license_client.is_within_grace(payload)
             logger.info("verify 네트워크 실패 — grace_ok=%s", result["grace_ok"])
-            return result
+            return _attach_expiry_fields(result, payload)
 
         # 4xx — 라이선스 자체 무효 (만료/PC변경/위조)
         err = body.get("error") or f"http_{status}"
         result["verify_error"] = err
         logger.warning("verify 실패 (%s): %s", status, err)
-        return result
+        return _attach_expiry_fields(result, payload)
 
     def redeem_code(self, code: str) -> dict:
         """코드 입력 → POST /api/redeem → license.json 저장.
@@ -1203,6 +1242,49 @@ class LauncherApi:
             ``get_license_status()`` 와 동일한 dict.
         """
         return self.get_license_status()
+
+    # ─────────────────────────────────────────────────────────────
+    # v0.4.67 (G-3a) — 24h 백그라운드 verify
+    # ─────────────────────────────────────────────────────────────
+
+    def start_background_verify(self) -> None:
+        """24시간 주기로 verify_license_now() 자동 호출 — daemon thread 시작.
+
+        Why: launcher 가 사용자 패러다임상 본체와 함께 살아있는 시간이 길다
+        (v0.1.80 — 본체 spawn 시 hide / 본체 종료 시 show). 그 동안 라이선스
+        상태가 변할 수 있어 (관리자가 /void / 만료 임박) 주기적 재검증 필요.
+
+        스레드는 daemon — launcher 프로세스 종료 시 자동 정리.
+        ``main()`` 에서만 호출 (테스트 단위 인스턴스가 외부 verify 호출 안 하게).
+        """
+        if self._license_verify_thread is not None:
+            logger.debug("background verify thread 이미 시작됨 — skip")
+            return
+        self._license_verify_thread = threading.Thread(
+            target=self._license_verify_loop,
+            daemon=True,
+            name="license-verify-loop",
+        )
+        self._license_verify_thread.start()
+        logger.info("background verify thread 시작 (주기 %ds)",
+                    license_client.VERIFY_INTERVAL_SEC)
+
+    def _license_verify_loop(self) -> None:
+        """24h sleep → verify → 반복. ``Event.wait`` 로 stop 신호 받으면 즉시 종료."""
+        while not self._license_verify_stop.is_set():
+            # Event.wait 가 timeout 안에 set 되면 True 반환 → 종료
+            if self._license_verify_stop.wait(license_client.VERIFY_INTERVAL_SEC):
+                logger.info("background verify thread 종료 신호 수신")
+                return
+            try:
+                self.get_license_status()  # verify 호출 + license.json 갱신
+                logger.info("background verify 완료")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("background verify 실패: %s", e)
+
+    def stop_background_verify(self) -> None:
+        """백그라운드 verify thread 중단 — 종료/테스트 정리용."""
+        self._license_verify_stop.set()
 
     def get_local_version(self) -> str:
         """현재 설치된 본체 버전. 모르면 'unknown'."""
@@ -1795,6 +1877,8 @@ def main() -> None:
         or "--auto-start" in sys.argv
     )
     api = LauncherApi(auto_start=auto_start)
+    # v0.4.67 (G-3a): 24h 주기 백그라운드 verify daemon thread 시작.
+    api.start_background_verify()
     ui_path = _ui_index_path()
 
     webview.create_window(
