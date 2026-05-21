@@ -19,7 +19,7 @@ from __future__ import annotations
 from enum import StrEnum
 from pathlib import Path
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 매매 timeframe 허용 목록 — 5m 이상.
@@ -155,6 +155,37 @@ class IctSettings(BaseSettings):
     demo_api_secret: SecretStr = Field(default=SecretStr(""))
     live_api_key: SecretStr = Field(default=SecretStr(""))
     live_api_secret: SecretStr = Field(default=SecretStr(""))
+
+    # --- 라이선스 티어 (G-3b, 2026-05-21 합의) ---------------------------
+    # launcher 가 spawn 시 ``AURORA_ICT_LICENSE_TYPE`` env 로 박음.
+    # 매매 시간대 정책 자동 분기:
+    #   - referral (평생): 24h 매매 (disable_time_filter=True 유지)
+    #   - sub_30d/90d/365d (구독제): Killzone 시간만 (disable_time_filter=False 강제)
+    # 사용자가 settings UI/.env 로 override 시도해도 라이선스 정책이 우선.
+    license_type: str = Field(default="referral")
+
+    @field_validator("license_type")
+    @classmethod
+    def _validate_license_type(cls, v: str) -> str:
+        allowed = {"referral", "sub_30d", "sub_90d", "sub_365d"}
+        if v not in allowed:
+            # 잘못된 값이면 가장 제한적인 referral 로 fallback (보수적 — 봇 끊기지 X)
+            return "referral"
+        return v
+
+    @model_validator(mode="after")
+    def _enforce_license_tier_policy(self) -> IctSettings:
+        """라이선스 티어별 매매 시간 정책 강제 (G-3b).
+
+        구독제 (``sub_*``): ``disable_time_filter`` 를 False 로 강제 — 사용자가
+        ``.env`` 로 ``AURORA_ICT_DISABLE_TIME_FILTER=true`` 박아도 무시.
+        Killzone 시간대 (London/NY AM/Close/PM) 만 매매.
+
+        레퍼럴 (``referral``): 별도 강제 X — 사용자 settings 그대로 (기본 24h).
+        """
+        if self.license_type.startswith("sub_"):
+            self.disable_time_filter = False
+        return self
 
     @property
     def active_api_key(self) -> str:
