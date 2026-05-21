@@ -23,11 +23,18 @@ from enum import StrEnum
 import pandas as pd
 
 from aurora_ict.indicators.fvg import FVG, FVGType, detect_fvgs
+from aurora_ict.indicators.implied_fvg import ImpliedFVG, ImpliedFVGType, detect_implied_fvgs
 from aurora_ict.indicators.liquidity import detect_liquidity_sweeps
+from aurora_ict.indicators.mitigation_block import MitigationBlock, detect_mitigation_blocks
 from aurora_ict.indicators.order_block import (
     OrderBlock,
     OrderBlockType,
     detect_order_blocks,
+)
+from aurora_ict.indicators.rejection_block import (
+    RejectionBlock,
+    RejectionBlockType,
+    detect_rejection_blocks,
 )
 from aurora_ict.indicators.structure import (
     StructureType,
@@ -35,6 +42,11 @@ from aurora_ict.indicators.structure import (
     detect_structure_events,
 )
 from aurora_ict.indicators.swing_points import SwingPoint, SwingType, detect_swing_points
+from aurora_ict.indicators.turtle_soup import (
+    TurtleSoupDirection,
+    TurtleSoupSetup,
+    detect_turtle_soup_setups,
+)
 from aurora_ict.timing.killzone import (
     classify_killzone,
     in_macro,
@@ -48,6 +60,20 @@ class Direction(StrEnum):
 
     LONG = "long"
     SHORT = "short"
+
+
+class SetupSource(StrEnum):
+    """Setup 의 생성 출처 (v0.4.71+ Phase B 통합).
+
+    봇 진입 흐름은 모든 source 의 setup 을 동일 ``SilverBulletSetup`` dataclass
+    로 받지만, source 에 따라 SL/TP 위치 / confluence / fvg 의존성이 다름.
+    """
+
+    FVG = "fvg"                     # 기존 — Silver Bullet FVG retest
+    TURTLE_SOUP = "turtle_soup"     # N-bar swing wick sweep + close 안쪽
+    MITIGATION_BLOCK = "mitigation_block"   # mitigated OB 의 2차 retest
+    IMPLIED_FVG = "implied_fvg"     # body gap (wick overlap)
+    REJECTION_BLOCK = "rejection_block"     # wick 정밀 진입 zone
 
 
 @dataclass(slots=True)
@@ -83,7 +109,7 @@ class SilverBulletSetup:
     stop_loss: float
     take_profit: float
     risk_reward: float
-    fvg: FVG
+    fvg: FVG | None = None
     target_swing_idx: int | None = None
     confluence_score: int = 0
     confluences: list[str] = field(default_factory=list)
@@ -92,6 +118,46 @@ class SilverBulletSetup:
     # entry limit 가 FVG mean 인데, 가격이 그 raw 까지 실제로 닿았는지 확인.
     # True → active setup (entry 가능). False → retrace 미발생 (대기 또는 skip).
     retraced: bool = False
+    # v0.4.71+ Phase B: 모든 source 공통 zone 필드 (fvg 가 None 인 새 source 용).
+    # source="fvg" 면 자동 fvg.high/low/idx 로 채워짐 (post_init 또는 property).
+    source: SetupSource = SetupSource.FVG
+    _zone_high: float | None = None
+    _zone_low: float | None = None
+    _anchor_idx: int | None = None
+
+    @property
+    def zone_high(self) -> float:
+        """모든 source 공통 zone 상단 — sb 진입 박스 + UI markers 등에서 사용.
+
+        source=FVG 면 fvg.high 자동 반환. 다른 source 는 builder 에서 박은
+        _zone_high 반환.
+        """
+        if self._zone_high is not None:
+            return self._zone_high
+        if self.fvg is not None:
+            return self.fvg.high
+        raise ValueError(f"setup ({self.source}) has no zone_high")
+
+    @property
+    def zone_low(self) -> float:
+        if self._zone_low is not None:
+            return self._zone_low
+        if self.fvg is not None:
+            return self.fvg.low
+        raise ValueError(f"setup ({self.source}) has no zone_low")
+
+    @property
+    def anchor_idx(self) -> int:
+        """setup 의 시간 기준 봉 index — stale 봉 계산용.
+
+        FVG: fvg.idx. Turtle: sweep_idx. Mitigation: retest_idx. Implied: idx.
+        Rejection: idx.
+        """
+        if self._anchor_idx is not None:
+            return self._anchor_idx
+        if self.fvg is not None:
+            return self.fvg.idx
+        raise ValueError(f"setup ({self.source}) has no anchor_idx")
 
 
 def _bias_from_structure(
@@ -385,6 +451,345 @@ def detect_silver_bullet_setups(
 
 __all__ = [
     "Direction",
+    "SetupSource",
     "SilverBulletSetup",
+    "build_extra_source_setups",
     "detect_silver_bullet_setups",
 ]
+
+
+# ============================================================
+# v0.4.71+ Phase B: 새 source 별 setup builder
+# ============================================================
+#
+# Turtle Soup / Mitigation Block / Implied FVG / Rejection Block 의 detect
+# 결과를 ``SilverBulletSetup`` 으로 변환. ICT 정통 SL/TP 위치를 각 source 별
+# 정확히 박는다.
+#
+# SL/TP 정통 ICT 위치 (Practical + Bible):
+#     - Turtle Soup: SL = sweep wick 너머 (+ buffer) / TP = opposite_target (N-bar 반대편 swing)
+#     - Mitigation Block: SL = zone 반대편 (bullish 면 zone.low 아래) / TP = 다음 BSL/SSL
+#     - Implied FVG: SL = body gap 반대편 wick 너머 / TP = 다음 BSL/SSL
+#     - Rejection Block: SL = wick_extreme 너머 (+ buffer) / TP = 다음 BSL/SSL
+#
+# Entry 위치:
+#     - 모두 zone mean (50% — CE Fibo) 박음. retest 진입 — 정통 OTE 접근.
+#
+# Confluence score:
+#     - 새 source 자체 +1 (정통 setup 으로 인정)
+#     - 같은 zone 안에 OB / sweep / macro 있으면 추가 가산 (기존 score 와 합산)
+
+_SL_BUFFER_RATIO = 0.0005  # 0.05% — SL 살짝 여유 (정확한 wick 노이즈 회피)
+
+
+def _find_target_swing(
+    swings: list[SwingPoint],
+    *,
+    direction: Direction,
+    after_idx: int,
+    current_price: float,
+) -> SwingPoint | None:
+    """LONG: ``after_idx`` 이후 unswept swing high. SHORT: swing low.
+
+    가장 가까운 (currently 가격 기준) 미체결 swing 만 채택 — TP target.
+    """
+    target_type = SwingType.HIGH if direction is Direction.LONG else SwingType.LOW
+    candidates = [
+        s for s in swings
+        if s.type is target_type and s.idx > after_idx and not s.swept
+    ]
+    if not candidates:
+        return None
+    if direction is Direction.LONG:
+        # 가장 가까운 (현재 가격 위쪽) swing high
+        valid = [s for s in candidates if s.price > current_price]
+        if not valid:
+            return None
+        return min(valid, key=lambda s: s.price - current_price)
+    # SHORT — 가장 가까운 (가격 아래) swing low
+    valid = [s for s in candidates if s.price < current_price]
+    if not valid:
+        return None
+    return min(valid, key=lambda s: current_price - s.price)
+
+
+def _calc_rr(
+    direction: Direction,
+    entry: float,
+    sl: float,
+    tp: float,
+) -> float:
+    """Risk-Reward 비율 (절대값)."""
+    risk = abs(entry - sl)
+    if risk <= 0:
+        return 0.0
+    reward = abs(tp - entry)
+    return reward / risk
+
+
+def _build_turtle_setup(
+    ts: TurtleSoupSetup,
+    df: pd.DataFrame,
+    swings: list[SwingPoint],
+    *,
+    min_rr: float,
+) -> SilverBulletSetup | None:
+    """Turtle Soup → SilverBulletSetup. None 반환 시 setup 무효 (RR/swing 부족)."""
+    direction = (Direction.SHORT if ts.direction is TurtleSoupDirection.SHORT
+                 else Direction.LONG)
+
+    # Entry = sweep_price 자체 (sweep 봉의 close 안쪽 자리)
+    entry = ts.sweep_price
+    # SL = wick_extreme 너머 (방향별 buffer)
+    if direction is Direction.SHORT:
+        sl = ts.wick_extreme * (1 + _SL_BUFFER_RATIO)
+    else:
+        sl = ts.wick_extreme * (1 - _SL_BUFFER_RATIO)
+
+    # TP = opposite_target (N-bar 반대편). swing 보다 그게 더 명확 (Turtle 정통).
+    tp = ts.opposite_target
+    rr = _calc_rr(direction, entry, sl, tp)
+    if rr < min_rr:
+        return None
+
+    return SilverBulletSetup(
+        ts_ms=int(df["timestamp"].iloc[ts.sweep_idx]) if "timestamp" in df.columns else 0,
+        direction=direction,
+        window="turtle",   # source 식별 — killzone window 아님
+        entry=entry,
+        stop_loss=sl,
+        take_profit=tp,
+        risk_reward=rr,
+        fvg=None,
+        target_swing_idx=None,
+        confluence_score=1,        # Turtle 자체 +1 (정통 setup)
+        confluences=["turtle_soup"],
+        reasons=[f"turtle soup {direction.value} sweep at {ts.sweep_price:.2f}"],
+        retraced=True,             # sweep 봉 자체가 zone retest
+        source=SetupSource.TURTLE_SOUP,
+        _zone_high=max(ts.sweep_price, ts.wick_extreme),
+        _zone_low=min(ts.sweep_price, ts.wick_extreme),
+        _anchor_idx=ts.sweep_idx,
+    )
+
+
+def _build_mitigation_setup(
+    mb: MitigationBlock,
+    df: pd.DataFrame,
+    swings: list[SwingPoint],
+    *,
+    min_rr: float,
+) -> SilverBulletSetup | None:
+    """Mitigation Block (retest 완료된) → SilverBulletSetup."""
+    if mb.retest_idx is None:
+        return None  # 아직 retest 안 됨
+
+    direction = (Direction.LONG if mb.type is OrderBlockType.BULLISH
+                 else Direction.SHORT)
+
+    # Entry = zone 중간 (50% retest)
+    entry = (mb.high + mb.low) / 2.0
+    # SL = zone 반대편 너머 (FVG 와 동일 패턴)
+    if direction is Direction.LONG:
+        sl = mb.low * (1 - _SL_BUFFER_RATIO)
+    else:
+        sl = mb.high * (1 + _SL_BUFFER_RATIO)
+
+    target_swing = _find_target_swing(
+        swings, direction=direction, after_idx=mb.retest_idx,
+        current_price=entry,
+    )
+    if target_swing is None:
+        return None
+    tp = target_swing.price
+    rr = _calc_rr(direction, entry, sl, tp)
+    if rr < min_rr:
+        return None
+
+    return SilverBulletSetup(
+        ts_ms=int(df["timestamp"].iloc[mb.retest_idx]) if "timestamp" in df.columns else 0,
+        direction=direction,
+        window="mitigation",
+        entry=entry,
+        stop_loss=sl,
+        take_profit=tp,
+        risk_reward=rr,
+        fvg=None,
+        target_swing_idx=target_swing.idx,
+        confluence_score=1,
+        confluences=["mitigation_block"],
+        reasons=[f"mitigation block {direction.value} 2nd retest"],
+        retraced=True,
+        source=SetupSource.MITIGATION_BLOCK,
+        _zone_high=mb.high,
+        _zone_low=mb.low,
+        _anchor_idx=mb.retest_idx,
+    )
+
+
+def _build_implied_fvg_setup(
+    ifvg: ImpliedFVG,
+    df: pd.DataFrame,
+    swings: list[SwingPoint],
+    *,
+    min_rr: float,
+) -> SilverBulletSetup | None:
+    """Implied FVG → SilverBulletSetup. zone = body_high ~ body_low."""
+    direction = (Direction.LONG if ifvg.type is ImpliedFVGType.BULLISH
+                 else Direction.SHORT)
+
+    entry = ifvg.mean_threshold
+    if direction is Direction.LONG:
+        sl = ifvg.body_low * (1 - _SL_BUFFER_RATIO)
+    else:
+        sl = ifvg.body_high * (1 + _SL_BUFFER_RATIO)
+
+    target_swing = _find_target_swing(
+        swings, direction=direction, after_idx=ifvg.idx, current_price=entry,
+    )
+    if target_swing is None:
+        return None
+    tp = target_swing.price
+    rr = _calc_rr(direction, entry, sl, tp)
+    if rr < min_rr:
+        return None
+
+    return SilverBulletSetup(
+        ts_ms=int(df["timestamp"].iloc[ifvg.idx]) if "timestamp" in df.columns else 0,
+        direction=direction,
+        window="implied_fvg",
+        entry=entry,
+        stop_loss=sl,
+        take_profit=tp,
+        risk_reward=rr,
+        fvg=None,
+        target_swing_idx=target_swing.idx,
+        confluence_score=1,
+        confluences=["implied_fvg"],
+        reasons=[f"implied fvg {direction.value} body gap"],
+        retraced=True,
+        source=SetupSource.IMPLIED_FVG,
+        _zone_high=ifvg.body_high,
+        _zone_low=ifvg.body_low,
+        _anchor_idx=ifvg.idx,
+    )
+
+
+def _build_rejection_setup(
+    rb: RejectionBlock,
+    df: pd.DataFrame,
+    swings: list[SwingPoint],
+    *,
+    min_rr: float,
+) -> SilverBulletSetup | None:
+    """Rejection Block → SilverBulletSetup. zone = wick_high ~ wick_low."""
+    direction = (Direction.LONG if rb.type is RejectionBlockType.BULLISH
+                 else Direction.SHORT)
+
+    # Entry = wick 중간 (정밀 진입)
+    entry = (rb.wick_high + rb.wick_low) / 2.0
+    if direction is Direction.LONG:
+        sl = rb.wick_low * (1 - _SL_BUFFER_RATIO)
+    else:
+        sl = rb.wick_high * (1 + _SL_BUFFER_RATIO)
+
+    target_swing = _find_target_swing(
+        swings, direction=direction, after_idx=rb.idx, current_price=entry,
+    )
+    if target_swing is None:
+        return None
+    tp = target_swing.price
+    rr = _calc_rr(direction, entry, sl, tp)
+    if rr < min_rr:
+        return None
+
+    return SilverBulletSetup(
+        ts_ms=int(df["timestamp"].iloc[rb.idx]) if "timestamp" in df.columns else 0,
+        direction=direction,
+        window="rejection",
+        entry=entry,
+        stop_loss=sl,
+        take_profit=tp,
+        risk_reward=rr,
+        fvg=None,
+        target_swing_idx=target_swing.idx,
+        confluence_score=1,
+        confluences=["rejection_block"],
+        reasons=[f"rejection block {direction.value} wick"],
+        retraced=True,
+        source=SetupSource.REJECTION_BLOCK,
+        _zone_high=rb.wick_high,
+        _zone_low=rb.wick_low,
+        _anchor_idx=rb.idx,
+    )
+
+
+def build_extra_source_setups(
+    df: pd.DataFrame,
+    *,
+    min_rr: float = 1.5,
+    bias: TrendDirection | None = None,
+) -> list[SilverBulletSetup]:
+    """v0.4.71+ Phase B: 새 4 source 의 detect 호출 + setup 변환.
+
+    Args:
+        df: OHLCV DataFrame.
+        min_rr: 최소 RR (RR 미달 setup skip).
+        bias: HTF bias. 박혀있으면 반대 방향 setup 제외 (bias 일치만).
+
+    Returns:
+        ``SilverBulletSetup`` 리스트 — 각 source 의 빈도 균등하게.
+    """
+    from aurora_ict.indicators.liquidity import detect_liquidity_sweeps
+    from aurora_ict.indicators.order_block import detect_order_blocks
+    from aurora_ict.indicators.swing_points import detect_swing_points
+
+    if len(df) < 25:
+        return []
+
+    swings = detect_swing_points(df)
+    setups: list[SilverBulletSetup] = []
+
+    # 1) Turtle Soup
+    ts_setups = detect_turtle_soup_setups(df, lookback=20)
+    for ts in ts_setups[-3:]:   # 최근 3개만 (오래된 거 stale)
+        built = _build_turtle_setup(ts, df, swings, min_rr=min_rr)
+        if built and _matches_bias(built.direction, bias):
+            setups.append(built)
+
+    # 2) Mitigation Block
+    detect_liquidity_sweeps(df, swings)   # mitigated 마킹
+    obs = detect_order_blocks(df, swings=swings)
+    mbs = detect_mitigation_blocks(obs, df)
+    for mb in mbs[-3:]:
+        built = _build_mitigation_setup(mb, df, swings, min_rr=min_rr)
+        if built and _matches_bias(built.direction, bias):
+            setups.append(built)
+
+    # 3) Implied FVG
+    ifvgs = detect_implied_fvgs(df)
+    for ifvg in ifvgs[-3:]:
+        built = _build_implied_fvg_setup(ifvg, df, swings, min_rr=min_rr)
+        if built and _matches_bias(built.direction, bias):
+            setups.append(built)
+
+    # 4) Rejection Block
+    rbs = detect_rejection_blocks(df)
+    for rb in rbs[-3:]:
+        built = _build_rejection_setup(rb, df, swings, min_rr=min_rr)
+        if built and _matches_bias(built.direction, bias):
+            setups.append(built)
+
+    return setups
+
+
+def _matches_bias(
+    direction: Direction,
+    bias: TrendDirection | None,
+) -> bool:
+    """bias 가 None 이면 양방향 OK. 박혀있으면 일치만."""
+    if bias is None or bias is TrendDirection.NONE:
+        return True
+    if bias is TrendDirection.UP:
+        return direction is Direction.LONG
+    return direction is Direction.SHORT

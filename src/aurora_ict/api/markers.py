@@ -551,14 +551,18 @@ def to_chart_markers(
                 name=prev_macro,
             ))
 
-    # 6. Silver Bullet setups
+    # 6. Silver Bullet setups + v0.4.71+ Phase B 새 4 source
     if include_setups:
+        from aurora_ict.strategy.silver_bullet import build_extra_source_setups
+
         setups = detect_silver_bullet_setups(
             df,
             min_rr=min_rr,
             fvg_min_size_pct=fvg_min_size_pct,
             disable_time_filter=disable_time_filter,
         )
+        # 새 4 source (Turtle / Mitigation / Implied / Rejection) setup 도 추가
+        setups = list(setups) + build_extra_source_setups(df, min_rr=min_rr)
         for s in setups:
             markers.setups.append(SetupMarker(
                 ts_ms=s.ts_ms,

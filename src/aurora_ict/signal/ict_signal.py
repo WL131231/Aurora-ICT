@@ -109,6 +109,15 @@ def generate_ict_signal(
         min_sl_distance_pct=min_sl_distance_pct,
     )
 
+    # v0.4.71+ Phase B: 새 4 source (Turtle / Mitigation / Implied / Rejection) setup
+    # 추가 — 기존 FVG setup 과 같은 후보 리스트로 통합.
+    from aurora_ict.strategy.silver_bullet import build_extra_source_setups
+    extra_setups = build_extra_source_setups(df, min_rr=min_rr, bias=bias)
+    if extra_setups:
+        setups = list(setups) + extra_setups
+        # anchor_idx 순 정렬 — 가장 최근 setup 이 마지막에 오게
+        setups.sort(key=lambda s: s.anchor_idx)
+
     if not setups:
         return ICTSignal(
             action=SignalAction.NO_ACTION,
@@ -122,7 +131,7 @@ def generate_ict_signal(
     setup = setups[-1]
 
     # 마지막 봉에서 setup 봉이 너무 멀면 stale 처리 (stale_bars 안에서만 신뢰).
-    bars_since = len(df) - 1 - setup.fvg.idx
+    bars_since = len(df) - 1 - setup.anchor_idx
     if bars_since > stale_bars:
         return ICTSignal(
             action=SignalAction.NO_ACTION,

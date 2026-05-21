@@ -43,8 +43,12 @@ class HtfActiveSetup:
     setup: SilverBulletSetup
 
     def contains_price(self, price: float) -> bool:
-        """현재 가격이 이 setup 의 FVG zone 안에 있는지."""
-        return self.setup.fvg.low <= price <= self.setup.fvg.high
+        """현재 가격이 이 setup 의 zone 안에 있는지.
+
+        v0.4.71+: setup.zone_low/high property 사용 — FVG / Turtle / Mitigation /
+        Implied / Rejection 모든 source 일관 처리.
+        """
+        return self.setup.zone_low <= price <= self.setup.zone_high
 
 
 @dataclass(slots=True)
