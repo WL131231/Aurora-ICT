@@ -35,6 +35,7 @@ from aurora_ict.strategy.htf_fvg_map import (
     HtfFvgEntry,
     build_htf_fvg_map,
     find_opposite_htf_fvg,
+    find_supporting_htf_fvg,
 )
 from aurora_ict.strategy.htf_setup_tracker import HtfSetupTracker
 from aurora_ict.strategy.ltf_entry_confirmer import (
@@ -367,8 +368,12 @@ class BotIctInstance:
             self._last_setup_ts_ms = signal.setup.ts_ms
             return signal
 
-        # 변경 3: HTF FVG override — 진입 직전 반대 방향 HTF FVG 가중치 평가.
+        # 변경 3: HTF FVG override — 진입 직전 반대 방향 HTF FVG 가중치 평가 (flip target).
         htf_target = await self._evaluate_htf_override(signal.setup, df)
+        # 변형 7 B+A 합성 (A): 같은 방향 HTF FVG → confluence_score 보강.
+        # qty 산정 (_calc_qty) 에서 confluence_score 가 사용되므로 boost 가 _execute_setup
+        # 이전에 적용되어야 효과 발생. _evaluate_htf_override 직후 호출.
+        await self._apply_htf_supporting_boost(signal.setup, df)
         if self.htf_override_mode == "A" and htf_target is not None:
             logger.info(
                 "HTF override(A) 진입 차단 — setup=%s 반대 HTF FVG=%s",
@@ -921,6 +926,64 @@ class BotIctInstance:
         if not cands:
             return None
         return cands[0]
+
+    async def _apply_htf_supporting_boost(
+        self,
+        setup: SilverBulletSetup,
+        ltf_df: pd.DataFrame,
+    ) -> None:
+        """변형 7 B+A 합성의 A — 같은 방향 HTF FVG 가중치로 ``confluence_score`` 보강.
+
+        엄격 안 (사용자 결정 2026-05-20):
+        - LTF LONG → 가격 *아래* unswept bullish HTF FVG 만 지지로 인정
+        - LTF SHORT → 가격 *위* unswept bearish HTF FVG 만 저항으로 인정
+
+        계단식 점수 매핑 (가중치 합산 기준):
+        - 합산 < 4   → +0 (15m 1개 이하 — 보강 X)
+        - 합산 4-9   → +1 (1h~4h 1개 정도)
+        - 합산 10-19 → +2 (4h 2개 또는 1d)
+        - 합산 20+   → +3 (1d 이상)
+
+        ``htf_override_mode == "off"`` 면 동작 안 함 (가중치 시스템 전체 비활성).
+        in-place 로 ``setup.confluence_score`` 가산 + ``setup.confluences`` 디버그 기록.
+        """
+        if self.htf_override_mode == "off":
+            return
+        if len(ltf_df) == 0:
+            return
+        current_ts = int(ltf_df.index[-1].value // 10**6)
+        current_price = float(ltf_df["close"].iloc[-1])
+        htf_map = await self._ensure_htf_fvg_map(current_ts)
+        if not htf_map:
+            return
+        cands = find_supporting_htf_fvg(
+            htf_map,
+            ltf_direction="buy" if setup.direction is Direction.LONG else "sell",
+            current_price=current_price,
+            max_touch_count=self.htf_fvg_max_touch_count,
+        )
+        if not cands:
+            return
+        total_weight = sum(e.weight for e in cands)
+        # 계단식 A — 사용자 결정 2026-05-20.
+        if total_weight >= 20:
+            boost = 3
+        elif total_weight >= 10:
+            boost = 2
+        elif total_weight >= 4:
+            boost = 1
+        else:
+            boost = 0
+        if boost <= 0:
+            return
+        setup.confluence_score += boost
+        setup.confluences.append(
+            f"htf_support_weight={total_weight}_boost+{boost}",
+        )
+        logger.info(
+            "HTF supporting boost — %s weight_sum=%d boost+%d (cands=%d)",
+            setup.direction.value, total_weight, boost, len(cands),
+        )
 
     async def _maybe_flip(self, ltf_df: pd.DataFrame) -> None:
         """봉 close 보조 flip 검사 — WS/polling 이 놓친 거 catch-up.
