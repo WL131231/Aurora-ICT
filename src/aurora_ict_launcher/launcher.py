@@ -1647,9 +1647,10 @@ def main() -> None:
         "Aurora Launcher",
         str(ui_path),
         js_api=api,
-        width=1137,                  # v0.4.45 — 사용자 지정 사이즈
+        width=1137,                  # v0.4.45 — 시작 시 기본 사이즈
         height=613,
-        resizable=False,             # v0.4.43 — 런처 창 크기 고정
+        min_size=(900, 500),         # 그 이하로 줄이면 ui 레이아웃 깨짐
+        resizable=True,              # 사용자가 자유롭게 조절 가능 (aurora_launcher 와 일관)
         background_color="#1e202c",  # v0.1.15 brand bg
     )
 
