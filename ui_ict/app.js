@@ -813,6 +813,52 @@ $("btn-toggle-enabled").onclick = async () => {
 };
 
 // ============================================================
+// #SAFETY-1 Daily Loss Limit — 입력 + 상태 폴링
+// ============================================================
+async function refreshDailyLossLimit() {
+  try {
+    const s = await api("/ict/daily_loss_limit", "GET");
+    const inp = $("dll-input");
+    // input 빈 상태일 때만 server 값 반영 (사용자 타이핑 중이면 덮어쓰지 않음)
+    if (document.activeElement !== inp) {
+      inp.value = (s.limit_pct > 0) ? s.limit_pct.toFixed(2) : "";
+    }
+    const pnl = s.today_pnl_usdt;
+    const pct = s.today_pct;
+    const sign = pnl > 0 ? "+" : (pnl < 0 ? "" : "±");
+    $("dll-today").textContent =
+      (s.start_equity > 0)
+        ? `${sign}${pnl.toFixed(2)} USDT (${sign}${pct.toFixed(2)}%)`
+        : "—";
+    if (s.limit_pct <= 0) {
+      $("dll-status").textContent = "OFF";
+      $("dll-status").style.color = "#888";
+    } else if (s.hit) {
+      $("dll-status").textContent = "HIT — 새 진입 차단";
+      $("dll-status").style.color = "#e74c3c";
+    } else {
+      $("dll-status").textContent = `Active @ ${s.limit_pct.toFixed(2)}%`;
+      $("dll-status").style.color = "#2ecc71";
+    }
+  } catch (e) {
+    // 봇 미가동 등 — 조용히 무시
+  }
+}
+
+$("btn-dll-set").onclick = async () => {
+  const v = parseFloat($("dll-input").value);
+  const pct = isNaN(v) ? 0 : Math.max(0, Math.min(50, v));
+  try {
+    await api("/ict/daily_loss_limit", "POST", { pct });
+    toast(pct > 0 ? `Daily loss limit ${pct}% 적용` : "Daily loss limit OFF");
+    await refreshDailyLossLimit();
+  } catch (e) { toast(e.message, true); }
+};
+
+setInterval(refreshDailyLossLimit, 5000);
+refreshDailyLossLimit();
+
+// ============================================================
 // resize
 // ============================================================
 function fit() {

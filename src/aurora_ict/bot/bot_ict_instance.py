@@ -18,8 +18,10 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -58,6 +60,8 @@ from aurora_ict.strategy.silver_bullet import Direction, SilverBulletSetup
 from aurora_ict.strategy.trend_state import TrendState, evaluate_trend
 
 logger = logging.getLogger(__name__)
+
+_NY_TZ = ZoneInfo("America/New_York")
 
 
 class ExchangeClientProtocol(Protocol):
@@ -175,6 +179,8 @@ class BotIctInstance:
     max_sl_distance_pct: float = 0.0
     # heartbeat_interval_sec: step loop 살아있음 INFO 로그 주기. 0 = 비활성.
     heartbeat_interval_sec: int = 0
+    # #SAFETY-1: 자본 대비 % 일일 손실 한도. 0 = 비활성. NY local 자정 reset.
+    daily_loss_limit_pct: float = 0.0
 
     # HTF EMA bias 필터 — multi_tf 와 별개. 진입 직전 htf_ema_bias_tf EMA20 vs 가격
     # 비교 → setup.direction 이 bias 와 반대면 진입 skip.
@@ -217,6 +223,11 @@ class BotIctInstance:
     _trend_cache: dict[str, tuple[int, TrendState]] = field(default_factory=dict)
     # 매매 이벤트 영구 저장 (#BUG-2 해소) — lazy init in _record_trade.
     _trades_store: TradesStore | None = field(default=None)
+    # #SAFETY-1 daily loss limit 추적 — NY local 자정 기준 reset.
+    _today_realized_pnl_usdt: float = field(default=0.0)
+    _today_date_str: str = field(default="")  # "YYYY-MM-DD" NY local
+    _today_start_equity: float = field(default=0.0)
+    _daily_limit_hit: bool = field(default=False)
 
     async def start(self) -> None:
         """봇 기동 (background task 생성).
@@ -668,6 +679,19 @@ class BotIctInstance:
         side = "buy" if setup.direction is Direction.LONG else "sell"
         exit_side = "sell" if setup.direction is Direction.LONG else "buy"
 
+        # #SAFETY-1: 일일 손실 한도 도달 시 새 진입 차단 (active position 은 유지).
+        # equity fetch 가 _execute_setup 본체에서도 필요해 한 번 미리 가져와 baseline.
+        equity_now = await self._fetch_equity()
+        self._maybe_reset_daily_pnl(equity_now)
+        if self._is_daily_loss_limit_hit():
+            logger.info(
+                "setup skip (#SAFETY-1) — daily loss limit %.2f%% hit "
+                "(today_pnl=%.2fUSDT / start=%.2f)",
+                self.daily_loss_limit_pct,
+                self._today_realized_pnl_usdt, self._today_start_equity,
+            )
+            return
+
         # max_sl_distance_pct skip (비정상 큰 SL 차단).
         if self.max_sl_distance_pct > 0 and setup.entry > 0:
             sl_dist_pct = abs(setup.entry - setup.stop_loss) / setup.entry
@@ -853,6 +877,59 @@ class BotIctInstance:
             return 0.0
         return qty
 
+    def _maybe_reset_daily_pnl(self, equity_now: float) -> None:
+        """NY local 자정 기준 일일 누적 손익 reset (#SAFETY-1).
+
+        매일 새 거래일이 시작하면 ``_today_realized_pnl_usdt`` 와 ``_today_start_equity``
+        를 갱신하고 ``_daily_limit_hit`` flag 풀어줌. ICT 정통 일일 boundary 정합.
+
+        Args:
+            equity_now: 현재 가용 자산 (USDT). 새 날짜 시작 시 baseline 으로 박힘.
+        """
+        ny_date = datetime.now(UTC).astimezone(_NY_TZ).strftime("%Y-%m-%d")
+        if ny_date != self._today_date_str:
+            self._today_date_str = ny_date
+            self._today_realized_pnl_usdt = 0.0
+            self._today_start_equity = equity_now if equity_now > 0 else 0.0
+            self._daily_limit_hit = False
+            logger.info(
+                "daily PnL reset (NY %s) — start_equity=%.2f",
+                ny_date, self._today_start_equity,
+            )
+
+    def _is_daily_loss_limit_hit(self) -> bool:
+        """일일 손실 한도 초과 여부 (#SAFETY-1).
+
+        Returns:
+            True 면 새 진입 차단. ``daily_loss_limit_pct == 0`` 또는 시작 equity
+            미정이면 항상 False.
+        """
+        if self.daily_loss_limit_pct <= 0:
+            return False
+        if self._today_start_equity <= 0:
+            return False
+        loss_pct = -self._today_realized_pnl_usdt / self._today_start_equity * 100.0
+        return loss_pct >= self.daily_loss_limit_pct
+
+    def daily_loss_status(self) -> dict[str, Any]:
+        """현재 일일 손익 상태 — API / UI 노출용 (#SAFETY-1).
+
+        Returns:
+            dict (limit_pct / today_pnl_usdt / today_pct / start_equity / hit / date).
+        """
+        loss_pct = (
+            -self._today_realized_pnl_usdt / self._today_start_equity * 100.0
+            if self._today_start_equity > 0 else 0.0
+        )
+        return {
+            "limit_pct": self.daily_loss_limit_pct,
+            "today_pnl_usdt": self._today_realized_pnl_usdt,
+            "today_pct": -loss_pct,  # 음수면 손실, 양수면 익절
+            "start_equity": self._today_start_equity,
+            "hit": self._daily_limit_hit,
+            "date_ny": self._today_date_str,
+        }
+
     def _record_trade(
         self,
         event_type: TradeEventType,
@@ -889,6 +966,18 @@ class BotIctInstance:
         if entry_for_pnl is not None and qty > 0:
             sign = 1.0 if direction is Direction.LONG else -1.0
             pnl_usdt = sign * (price - entry_for_pnl) * qty
+        # #SAFETY-1: 청산 이벤트의 PnL 을 일일 누적에 합산. 한도 초과 시 flag.
+        if pnl_usdt is not None:
+            self._today_realized_pnl_usdt += pnl_usdt
+            if self._is_daily_loss_limit_hit() and not self._daily_limit_hit:
+                self._daily_limit_hit = True
+                logger.warning(
+                    "daily loss limit HIT — limit=%.2f%% today=%.2fUSDT "
+                    "(start_equity=%.2f) — 새 진입 차단 시작",
+                    self.daily_loss_limit_pct,
+                    self._today_realized_pnl_usdt,
+                    self._today_start_equity,
+                )
         try:
             self._trades_store.record(TradeEvent(
                 ts_ms=int(time.time() * 1000),

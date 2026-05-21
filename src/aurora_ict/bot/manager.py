@@ -114,6 +114,8 @@ class BotManager:
             # HTF FVG override (변형 7).
             htf_override_mode=self.settings.htf_override_mode,
             htf_fvg_tfs=self.settings.htf_fvg_tfs,
+            # #SAFETY-1: 일일 손실 한도.
+            daily_loss_limit_pct=self.settings.daily_loss_limit_pct,
         )
         # 거래소 측 leverage 를 settings 에 맞춤 — qty 계산 일치 보장.
         # 실패해도 봇 시작 자체는 진행 (warning 만, 사용자가 수동 박은 거 박혀있을 수 있음).

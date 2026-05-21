@@ -60,6 +60,12 @@ class TimeframeRequest(BaseModel):
     timeframe: str
 
 
+class DailyLossLimitRequest(BaseModel):
+    """#SAFETY-1 일일 손실 한도 변경 — 자본 대비 % (0 = 비활성, 0~50)."""
+
+    pct: float
+
+
 def _env_path() -> Path:
     """`.env` 위치 — frozen(.exe 옆) / dev(cwd) 분기."""
     if getattr(sys, "frozen", False):
@@ -118,6 +124,7 @@ def _settings_safe_dict(settings: IctSettings) -> dict[str, Any]:
         "fvg_min_size_pct": settings.fvg_min_size_pct,
         "step_interval_sec": settings.step_interval_sec,
         "ohlcv_limit": settings.ohlcv_limit,
+        "daily_loss_limit_pct": settings.daily_loss_limit_pct,
         "has_demo_credentials": bool(
             settings.demo_api_key.get_secret_value()
             and settings.demo_api_secret.get_secret_value(),
@@ -280,6 +287,49 @@ def create_app(manager: BotManager) -> FastAPI:
             "allowed": list(TRADE_TIMEFRAMES),
             "restarted": was_running,
         }
+
+    @app.get("/ict/daily_loss_limit")
+    async def get_daily_loss_limit() -> dict[str, Any]:
+        """#SAFETY-1 한도 + 오늘 누적 손익 상태 (UI 좌측 박스).
+
+        Returns:
+            limit_pct / today_pnl_usdt / today_pct / start_equity / hit / date_ny.
+        """
+        bot = manager.bot
+        if bot is not None:
+            status = bot.daily_loss_status()
+        else:
+            status = {
+                "limit_pct": manager.settings.daily_loss_limit_pct,
+                "today_pnl_usdt": 0.0,
+                "today_pct": 0.0,
+                "start_equity": 0.0,
+                "hit": False,
+                "date_ny": "",
+            }
+        return status
+
+    @app.post("/ict/daily_loss_limit")
+    async def set_daily_loss_limit(req: DailyLossLimitRequest) -> dict[str, Any]:
+        """#SAFETY-1 한도 설정 — 0 = 비활성, 0~50 자본 % .
+
+        settings + 가동 중 bot 양쪽 in-memory 갱신. .env 파일은 손 안 댐
+        (다음 봇 재시작 시 .env 값이 다시 박힘 — 영구 적용은 .env 직접 수정).
+        """
+        if req.pct < 0 or req.pct > 50:
+            raise HTTPException(
+                status_code=400,
+                detail="daily_loss_limit_pct 는 0~50 범위 (0 = 비활성).",
+            )
+        manager.settings.daily_loss_limit_pct = req.pct
+        if manager.bot is not None:
+            manager.bot.daily_loss_limit_pct = req.pct
+            # 한도 ↑ 변경 시 이미 hit 였던 flag 해제 (사용자 의도).
+            if manager.bot._daily_limit_hit and not manager.bot._is_daily_loss_limit_hit():
+                manager.bot._daily_limit_hit = False
+                logger.info("daily loss limit 한도 ↑ — hit flag 해제")
+        logger.info("daily loss limit 설정 → %.2f%%", req.pct)
+        return {"limit_pct": req.pct}
 
     @app.post("/ict/credentials")
     async def set_credentials(req: CredentialsRequest) -> dict[str, Any]:

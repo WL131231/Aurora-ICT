@@ -8,11 +8,15 @@ ICT 정통 흐름:
 이 모듈은 (1) 의 HTF bias 만 담당. Trade TF 에 대응하는 HTF1, HTF2 두 단계를
 훑어 두 bias 가 일치할 때만 진입을 허용.
 
-Bias 결합 규칙:
+Bias 결합 규칙 (Aurora 변형 — 진입 빈도 우선):
     - HTF1 UP + HTF2 UP → UP (양쪽 합의 → 진입 OK)
     - HTF1 DOWN + HTF2 DOWN → DOWN
     - 한쪽이 NONE → 다른쪽 따름 (한쪽이 아직 미정이라도 다른쪽 추세 사용)
-    - 두 HTF 충돌 (UP vs DOWN) → NONE (진입 금지, 추세 불확실)
+    - 두 HTF 충돌 (UP vs DOWN) → **HTF1 우선** (직속 상위 TF 단기 추세 따름)
+
+보수적 정통 ICT 는 충돌 시 NONE 차단이지만 Aurora 는 진입 빈도 ↑ 위해
+HTF1 (Trade TF 직속) 신호도 유효 entry trigger 로 인정. ``combine_bias`` 의
+주석 참조.
 """
 
 from __future__ import annotations

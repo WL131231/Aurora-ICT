@@ -9,8 +9,11 @@ ICT 정의:
     - Asian range 위/아래 close → 그날 방향성 단서 (Power of 3 의 Distribution 방향)
     - 매매 진입 시 Asian range 안 = noise (Accumulation phase)
 
-본 모듈은 단순화: NY local time 기준 00:00 ~ 05:00 = "Asian session" 으로 잡고
-그 안의 high/low 를 추출. ICT 책의 일부 모델 (19:00 전일 시작) 과는 다소 차이.
+본 모듈은 봇 내 다른 timing 모듈 (``timing/killzone.py``, ``timing/power_of_3.py``) 과
+**Asian session 시간 정의 통일** — Lumi Traders ICT Killzones 차트 기준 19:00 ~ 23:59
+NY local. 이전엔 00:00-05:00 으로 박혀 #BUG-4 (모듈 간 정의 불일치) 발생 → 2026-05-21 통일.
+
+session 이 자정을 가로지르지 않으므로 ``crosses_midnight`` 처리 불필요.
 """
 
 from __future__ import annotations
@@ -23,9 +26,9 @@ import pandas as pd
 
 NY_TZ = ZoneInfo("America/New_York")
 
-# Asian session 정의 (NY local time)
-_ASIAN_START = time(0, 0)
-_ASIAN_END = time(5, 0)
+# Asian session 정의 (NY local time) — killzone.py 의 ASIAN 과 동일 (#BUG-4 해소).
+_ASIAN_START = time(19, 0)
+_ASIAN_END = time(23, 59, 59)
 
 
 @dataclass(slots=True)

@@ -119,6 +119,11 @@ class IctSettings(BaseSettings):
     max_sl_distance_pct: float = Field(default=0.005, ge=0.0, le=0.1)
     # heartbeat_interval_sec: bot loop 살아있음 INFO 로그 주기 (0 = 비활성).
     heartbeat_interval_sec: int = Field(default=900, ge=0)
+    # daily_loss_limit_pct (#SAFETY-1, 2026-05-21 사용자 결정):
+    # 자본 대비 % 단위 일일 손실 한도. 0 = 비활성. > 0 면 활성:
+    # 누적 손실 / 시작 equity * 100 ≥ 한도 → 새 진입 skip (active position 은 SL/TP 진행).
+    # Reset 시점: NY local 자정 (ICT 정통 일일 boundary 일관).
+    daily_loss_limit_pct: float = Field(default=0.0, ge=0.0, le=50.0)
 
     # HTF EMA bias 필터 — multi_tf 와 별개의 단순 directional filter.
     # 진입 직전 htf_ema_bias_tf (기본 1h) EMA20 vs 가격 비교 → 추세 방향 setup 만 진입.

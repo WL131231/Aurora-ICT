@@ -28,15 +28,15 @@ def test_asian_range_empty_df() -> None:
 
 
 def test_asian_range_no_asian_bars() -> None:
-    """NY 12:00 시작 봉만 있음 → Asian 봉 없음 → None."""
+    """NY 12:00 시작 봉만 있음 → Asian 봉 (19:00-23:59) 없음 → None."""
     start = datetime(2026, 5, 12, 12, 0, tzinfo=NY)
     df = _make_df(start, [(100, 101, 99, 100)] * 10)
     assert compute_asian_range(df) is None
 
 
 def test_asian_range_extracts_high_low() -> None:
-    """NY 01:00~01:04 봉 5개 안의 high/low 추출."""
-    start = datetime(2026, 5, 12, 1, 0, tzinfo=NY)
+    """NY 19:00~19:04 봉 5개 안의 high/low 추출 (#BUG-4 정의 통일)."""
+    start = datetime(2026, 5, 12, 19, 0, tzinfo=NY)
     df = _make_df(start, [
         (100, 102, 99, 101),
         (101, 105, 100, 103),    # high=105
@@ -51,8 +51,8 @@ def test_asian_range_extracts_high_low() -> None:
 
 
 def test_asian_range_picks_latest_session_only() -> None:
-    """오늘 + 어제 Asian 둘 다 있으면 오늘 (마지막 session) 만 사용."""
-    # 2026-05-11 01:00 부터 5분 + 2026-05-12 01:00 부터 5분
+    """어제 + 오늘 Asian 둘 다 있으면 오늘 (마지막 session) 만 사용."""
+    # 어제 (5/11) 19:00 부터 5분 + 5/12 19:00 부터 5분
     bars = []
     # 어제 — high=200 (이게 잡히면 안 됨)
     for _ in range(5):
@@ -67,15 +67,15 @@ def test_asian_range_picks_latest_session_only() -> None:
     rows = [{"open": o, "high": h, "low": lo, "close": c} for o, h, lo, c in bars]
     df = pd.DataFrame(rows)
     times = []
-    # 어제 01:00~01:04
-    yesterday_start = datetime(2026, 5, 11, 1, 0, tzinfo=NY)
+    # 어제 19:00~19:04
+    yesterday_start = datetime(2026, 5, 11, 19, 0, tzinfo=NY)
     for i in range(5):
         times.append(yesterday_start + timedelta(minutes=i))
-    # gap — 어제 12:00~12:04
+    # gap — 오늘 12:00~12:04
     for i in range(5):
-        times.append(datetime(2026, 5, 11, 12, 0, tzinfo=NY) + timedelta(minutes=i))
-    # 오늘 01:00~01:04
-    today_start = datetime(2026, 5, 12, 1, 0, tzinfo=NY)
+        times.append(datetime(2026, 5, 12, 12, 0, tzinfo=NY) + timedelta(minutes=i))
+    # 오늘 19:00~19:04
+    today_start = datetime(2026, 5, 12, 19, 0, tzinfo=NY)
     for i in range(5):
         times.append(today_start + timedelta(minutes=i))
 
