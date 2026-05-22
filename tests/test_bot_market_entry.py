@@ -39,6 +39,7 @@ def _mock_client() -> AsyncMock:
     client.modify_stop_loss = AsyncMock(return_value={"retCode": 0})
     client.cancel_all_orders = AsyncMock(return_value=None)
     client.fetch_closed_positions = AsyncMock(return_value=[])
+    client.set_position_tpsl = AsyncMock(return_value={"retCode": 0})
     return client
 
 
@@ -69,9 +70,14 @@ async def test_limit_entry_default_uses_setup_entry() -> None:
     first_call = client.place_order.await_args_list[0]
     # limit = setup.entry (계획가 100.0), 현재가(ticker 100.5) 아님
     assert first_call.kwargs["price"] == 100.0
-    # SL/TP 가 entry 주문에 동봉 (setup 기준 고정 레벨)
-    assert first_call.kwargs["stop_loss"] == 95.0
-    assert first_call.kwargs["take_profit"] == 115.0
+    # #LIVE-4: SL/TP 는 entry 주문에 동봉하지 않음 (체결 후 set_position_tpsl 로)
+    assert "stop_loss" not in first_call.kwargs
+    assert "take_profit" not in first_call.kwargs
+    # 즉시 체결 → set_position_tpsl 로 SL/TP 박음
+    client.set_position_tpsl.assert_awaited_once()
+    tpsl_kw = client.set_position_tpsl.await_args_list[0].kwargs
+    assert tpsl_kw["stop_loss"] == 95.0
+    assert tpsl_kw["take_profit"] == 115.0
 
 
 @pytest.mark.asyncio
@@ -85,14 +91,20 @@ async def test_market_entry_passes_price_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_entry_registers_sl_tp_inline_single_call() -> None:
-    """#LIVE-1 fix: entry 1회 호출에 SL/TP 동봉 (별도 reduce_only TP 주문 없음)."""
+async def test_entry_then_set_tpsl_after_fill() -> None:
+    """#LIVE-4: entry 주문은 SL/TP 없이 1회, 체결 후 set_position_tpsl 로 SL/TP 설정."""
     client = _mock_client()
     bot = BotIctInstance(client=client, use_market_entry=True)
     await bot._execute_setup(_dummy_setup())
-    # entry 1건만 — TP 는 동봉되어 별도 reduce_only 주문 없음
+    # entry 1건만 (별도 reduce_only TP 주문 없음)
     assert client.place_order.await_count == 1
     call = client.place_order.await_args_list[0].kwargs
     assert call.get("reduce_only", False) is False
-    assert call["stop_loss"] == 95.0
-    assert call["take_profit"] == 115.0
+    # entry 주문엔 SL/TP 동봉 안 함
+    assert "stop_loss" not in call
+    assert "take_profit" not in call
+    # 체결 후 set_position_tpsl 로 SL/TP conditional 설정
+    client.set_position_tpsl.assert_awaited_once()
+    tpsl_kw = client.set_position_tpsl.await_args_list[0].kwargs
+    assert tpsl_kw["stop_loss"] == 95.0
+    assert tpsl_kw["take_profit"] == 115.0

@@ -382,5 +382,55 @@ class AuroraClientAdapter:
             return {}
         return dict(result) if isinstance(result, dict) else {"raw": str(result)}
 
+    async def set_position_tpsl(
+        self,
+        symbol: str,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+    ) -> dict[str, Any]:
+        """Bybit V5 set_trading_stop — 활성 포지션에 SL/TP conditional 동시 설정.
+
+        #LIVE-4 fix: limit entry 주문에 SL/TP 동봉하면 Bybit 가 주문 시점 현재가 기준
+        검증 (10001 "StopLoss should greater/lower base_price") 으로 거부 — 계획가가
+        현재가에서 벗어나면 방향 위반. 그래서 entry 는 SL/TP 없이 limit 으로 넣고,
+        체결되어 포지션이 생긴 뒤 이 메서드로 conditional SL/TP 를 박는다. 체결 시점엔
+        가격=계획가라 SL/TP 방향이 유효하다.
+
+        Returns:
+            Bybit API 응답 dict. 실패 시 빈 dict (호출처가 warning 처리).
+        """
+        ex = getattr(self._client, "_ex", None)
+        if ex is None:
+            logger.warning("set_position_tpsl: _ex 없음 — skip")
+            return {}
+        await self._ensure_time_sync()
+        raw_symbol = symbol.replace("/", "").split(":")[0]
+        params: dict[str, Any] = {
+            "category": "linear",
+            "symbol": raw_symbol,
+            "tpslMode": "Full",
+            "positionIdx": 0,
+        }
+        if stop_loss is not None:
+            params["stopLoss"] = str(stop_loss)
+        if take_profit is not None:
+            params["takeProfit"] = str(take_profit)
+        try:
+            result = await ex.private_post_v5_position_trading_stop(params)
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            if "34040" in msg or "not modified" in msg:
+                logger.debug(
+                    "set_position_tpsl skip (%s sl=%s tp=%s 이미 적용)",
+                    raw_symbol, stop_loss, take_profit,
+                )
+                return {"retCode": 34040, "alreadySet": True}
+            logger.warning(
+                "set_position_tpsl 실패 (%s sl=%s tp=%s): %s",
+                raw_symbol, stop_loss, take_profit, e,
+            )
+            return {}
+        return dict(result) if isinstance(result, dict) else {"raw": str(result)}
+
 
 __all__ = ["AuroraClientAdapter"]
