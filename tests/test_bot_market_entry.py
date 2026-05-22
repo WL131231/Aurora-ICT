@@ -29,10 +29,15 @@ def _ohlcv_rows(bars: list[tuple[float, float, float, float]]) -> list[list[Any]
 def _mock_client() -> AsyncMock:
     client = AsyncMock()
     client.fetch_ohlcv = AsyncMock(return_value=_ohlcv_rows([(100, 101, 99, 100)] * 20))
-    client.place_order = AsyncMock(return_value={"orderId": "T1"})
+    client.fetch_ticker = AsyncMock(return_value=100.5)   # marketable limit 현재가
+    # 즉시 체결 시뮬 (filled_qty/avg_fill_price 포함).
+    client.place_order = AsyncMock(return_value={
+        "orderId": "T1", "filled_qty": 1.0, "avg_fill_price": 100.5,
+    })
     client.fetch_position = AsyncMock(return_value=None)
     client.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0}})
     client.modify_stop_loss = AsyncMock(return_value={"retCode": 0})
+    client.cancel_all_orders = AsyncMock(return_value=None)
     return client
 
 
@@ -51,14 +56,17 @@ def _dummy_setup() -> SilverBulletSetup:
 
 
 @pytest.mark.asyncio
-async def test_limit_entry_default_passes_setup_price() -> None:
-    """use_market_entry=False (default) → place_order price=setup.entry."""
+async def test_limit_entry_default_uses_marketable_limit() -> None:
+    """use_market_entry=False (default) → marketable limit (현재가) + SL/TP 동봉 (#LIVE-1)."""
     client = _mock_client()
     bot = BotIctInstance(client=client, use_market_entry=False)
     await bot._execute_setup(_dummy_setup())
-    # 첫 호출 (entry) — kwargs price 확인.
     first_call = client.place_order.await_args_list[0]
-    assert first_call.kwargs["price"] == 100.0
+    # marketable limit = 현재가 (fetch_ticker), setup.entry(100.0) 아님
+    assert first_call.kwargs["price"] == 100.5
+    # SL/TP 가 entry 주문에 동봉 (setup 기준 고정 레벨)
+    assert first_call.kwargs["stop_loss"] == 95.0
+    assert first_call.kwargs["take_profit"] == 115.0
 
 
 @pytest.mark.asyncio
@@ -72,14 +80,14 @@ async def test_market_entry_passes_price_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_market_entry_registers_single_tp() -> None:
-    """정통 ICT 단일 TP (변형 5 정통화) — entry + reduce_only TP, 총 2건 호출."""
+async def test_entry_registers_sl_tp_inline_single_call() -> None:
+    """#LIVE-1 fix: entry 1회 호출에 SL/TP 동봉 (별도 reduce_only TP 주문 없음)."""
     client = _mock_client()
     bot = BotIctInstance(client=client, use_market_entry=True)
     await bot._execute_setup(_dummy_setup())
-    # 호출 2건: entry + 단일 reduce_only TP
-    assert client.place_order.await_count == 2
-    # 첫 호출 = entry (reduce_only 미설정 또는 False)
-    assert client.place_order.await_args_list[0].kwargs.get("reduce_only", False) is False
-    # 두 번째 호출 = TP reduce_only
-    assert client.place_order.await_args_list[1].kwargs.get("reduce_only") is True
+    # entry 1건만 — TP 는 동봉되어 별도 reduce_only 주문 없음
+    assert client.place_order.await_count == 1
+    call = client.place_order.await_args_list[0].kwargs
+    assert call.get("reduce_only", False) is False
+    assert call["stop_loss"] == 95.0
+    assert call["take_profit"] == 115.0

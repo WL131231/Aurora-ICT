@@ -286,8 +286,15 @@ class CcxtClient:
         qty: float,
         price: float | None = None,
         reduce_only: bool = False,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
     ) -> Order:
         """주문 전송 — ``price=None`` 이면 시장가, 아니면 지정가.
+
+        ``stop_loss`` / ``take_profit`` 가 주어지면 entry 주문에 동봉 (Bybit V5
+        ``create_order`` params 의 ``stopLoss`` / ``takeProfit``). 주문 체결 시
+        거래소가 포지션에 SL/TP 를 conditional 로 자동 적용 — 지정가 미체결
+        주문에도 예약되어 체결 시점에 붙는다. 별도 set_trading_stop 호출 불필요.
 
         paper 모드 = 가짜 Order 반환 (실 호출 X). DESIGN.md §3.2 / E-3.
         """
@@ -295,7 +302,13 @@ class CcxtClient:
             return self._fake_order(symbol, side, qty, price)
         await self._ensure_init()
         order_type = "market" if price is None else "limit"
-        params: dict[str, Any] = {"reduceOnly": True} if reduce_only else {}
+        params: dict[str, Any] = {}
+        if reduce_only:
+            params["reduceOnly"] = True
+        if stop_loss is not None:
+            params["stopLoss"] = str(stop_loss)
+        if take_profit is not None:
+            params["takeProfit"] = str(take_profit)
         raw = await self._ex.create_order(symbol, order_type, side, qty, price, params)
         return self._parse_order(raw, symbol, side, qty, price)
 
