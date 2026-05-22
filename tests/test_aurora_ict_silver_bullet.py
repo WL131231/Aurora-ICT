@@ -344,3 +344,42 @@ def _dummy_fvg() -> FVG:
 
 # 변형 5 정통화: partial TP (tp1/tp2/tp3) 제거됨. 단일 take_profit 만 사용.
 # 기존 test_tp_levels_* / test_tp_levels_explicit_override_kept 케이스는 폐기.
+
+
+# ============================================================
+# #LIVE-2 fix: 새 source build 의 ts_ms — timestamp 컬럼 없어도 0 아님
+# (봇 df 는 DatetimeIndex + timestamp 컬럼 없음 → 0 박히면 step 중복차단됨)
+# ============================================================
+
+
+def test_ts_ms_at_idx_datetime_index() -> None:
+    """timestamp 컬럼 없는 DatetimeIndex df 에서도 ts_ms 추출 (0 아님)."""
+    import pandas as pd
+
+    from aurora_ict.strategy.silver_bullet import _ts_ms_at_idx
+
+    idx = pd.to_datetime(
+        ["2026-05-22T00:00:00", "2026-05-22T00:05:00"], utc=True,
+    )
+    df = pd.DataFrame(
+        {"open": [1.0, 2.0], "high": [1.0, 2.0],
+         "low": [1.0, 2.0], "close": [1.0, 2.0]},
+        index=idx,
+    )
+    assert "timestamp" not in df.columns
+    assert _ts_ms_at_idx(df, 1) == int(idx[1].value // 10**6)
+    assert _ts_ms_at_idx(df, 1) != 0
+
+
+def test_ts_ms_at_idx_timestamp_column() -> None:
+    """timestamp 컬럼 있으면 그 값 사용."""
+    import pandas as pd
+
+    from aurora_ict.strategy.silver_bullet import _ts_ms_at_idx
+
+    df = pd.DataFrame({
+        "timestamp": [1700000000000, 1700000300000],
+        "open": [1.0, 2.0], "high": [1.0, 2.0],
+        "low": [1.0, 2.0], "close": [1.0, 2.0],
+    })
+    assert _ts_ms_at_idx(df, 1) == 1700000300000

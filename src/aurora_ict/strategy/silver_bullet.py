@@ -527,6 +527,23 @@ def _calc_rr(
     return reward / risk
 
 
+def _ts_ms_at_idx(df: pd.DataFrame, idx: int) -> int:
+    """봉 idx 의 ts(ms) 추출 — timestamp 컬럼 우선, 없으면 DatetimeIndex/int index.
+
+    #LIVE-2 fix: 새 source build 가 ``df["timestamp"]`` 컬럼만 보고 없으면 0 을 박던
+    버그 — 봇 실제 df 는 timestamp 컬럼이 없고 DatetimeIndex 라 ts_ms=0 → step 의
+    중복 진입 차단 (setup.ts_ms == _last_setup_ts_ms(0)) 에 걸려 새 source 진입 0건.
+    """
+    if "timestamp" in df.columns:
+        return int(df["timestamp"].iloc[idx])
+    if isinstance(df.index, pd.DatetimeIndex):
+        return int(df.index[idx].value // 10**6)
+    try:
+        return int(df.index[idx])
+    except (ValueError, TypeError):
+        return 0
+
+
 def _build_turtle_setup(
     ts: TurtleSoupSetup,
     df: pd.DataFrame,
@@ -553,7 +570,7 @@ def _build_turtle_setup(
         return None
 
     return SilverBulletSetup(
-        ts_ms=int(df["timestamp"].iloc[ts.sweep_idx]) if "timestamp" in df.columns else 0,
+        ts_ms=_ts_ms_at_idx(df, ts.sweep_idx),
         direction=direction,
         window="turtle",   # source 식별 — killzone window 아님
         entry=entry,
@@ -607,7 +624,7 @@ def _build_mitigation_setup(
         return None
 
     return SilverBulletSetup(
-        ts_ms=int(df["timestamp"].iloc[mb.retest_idx]) if "timestamp" in df.columns else 0,
+        ts_ms=_ts_ms_at_idx(df, mb.retest_idx),
         direction=direction,
         window="mitigation",
         entry=entry,
@@ -655,7 +672,7 @@ def _build_implied_fvg_setup(
         return None
 
     return SilverBulletSetup(
-        ts_ms=int(df["timestamp"].iloc[ifvg.idx]) if "timestamp" in df.columns else 0,
+        ts_ms=_ts_ms_at_idx(df, ifvg.idx),
         direction=direction,
         window="implied_fvg",
         entry=entry,
@@ -704,7 +721,7 @@ def _build_rejection_setup(
         return None
 
     return SilverBulletSetup(
-        ts_ms=int(df["timestamp"].iloc[rb.idx]) if "timestamp" in df.columns else 0,
+        ts_ms=_ts_ms_at_idx(df, rb.idx),
         direction=direction,
         window="rejection",
         entry=entry,
