@@ -279,6 +279,22 @@ class AuroraClientAdapter:
         except Exception as e:  # noqa: BLE001
             logger.warning("cancel_all_orders 실패: %s", e)
 
+    async def fetch_closed_positions(
+        self, since_ms: int | None = None, limit: int = 200,
+    ) -> list[Any]:
+        """거래소 청산 history (Bybit V5 closed-pnl) — today 실현손익 거래소 동기화용.
+
+        Aurora client.fetch_closed_positions 위임 (ClosedPosition list, pnl_usd 포함).
+        실패 시 빈 list (호출처가 기존 값 유지).
+        """
+        try:
+            return await self._client.fetch_closed_positions(
+                since_ms=since_ms, limit=limit,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("fetch_closed_positions 실패: %s", e)
+            return []
+
     async def set_leverage(
         self, symbol: str, leverage: int,
     ) -> dict[str, Any]:

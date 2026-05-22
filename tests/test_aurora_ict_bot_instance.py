@@ -66,6 +66,7 @@ def _mock_client(ohlcv_rows: list[list[Any]]) -> AsyncMock:
     client.fetch_position = AsyncMock(return_value=None)
     client.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0}})
     client.cancel_all_orders = AsyncMock(return_value=None)
+    client.fetch_closed_positions = AsyncMock(return_value=[])
     return client
 
 
@@ -460,3 +461,58 @@ async def test_pending_entry_waits_within_ttl() -> None:
     assert still_pending is True
     assert bot._pending_entry is not None
     client.cancel_all_orders.assert_not_awaited()
+
+
+# ============================================================
+# #BUG-7 fix: today realized PnL 거래소 closed-pnl 동기화
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_sync_today_realized_pnl_from_exchange() -> None:
+    """거래소 closed-pnl 합산으로 today realized PnL 동기화 (#BUG-7)."""
+    import time as _t
+    from types import SimpleNamespace
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    now_ms = int(_t.time() * 1000)
+    # 오늘 (NY 자정 이후) 청산 2건: -50, +20 → 합산 -30
+    client.fetch_closed_positions = AsyncMock(return_value=[
+        SimpleNamespace(pnl_usd=-50.0, closed_at_ts=now_ms),
+        SimpleNamespace(pnl_usd=20.0, closed_at_ts=now_ms),
+    ])
+    bot = BotIctInstance(client=client)
+    await bot._sync_today_realized_pnl()
+    assert bot._today_realized_pnl_usdt == -30.0
+
+
+@pytest.mark.asyncio
+async def test_sync_pnl_excludes_before_ny_midnight() -> None:
+    """NY 자정 이전 청산은 today 합산에서 제외."""
+    from types import SimpleNamespace
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.fetch_closed_positions = AsyncMock(return_value=[
+        SimpleNamespace(pnl_usd=-999.0, closed_at_ts=0),  # epoch → 자정 이전
+    ])
+    bot = BotIctInstance(client=client)
+    await bot._sync_today_realized_pnl()
+    assert bot._today_realized_pnl_usdt == 0.0
+
+
+@pytest.mark.asyncio
+async def test_daily_loss_limit_hit_via_exchange_sync() -> None:
+    """거래소 동기화 실현손실이 한도 초과 → _daily_limit_hit (#SAFETY-1 + #BUG-7)."""
+    import time as _t
+    from types import SimpleNamespace
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    now_ms = int(_t.time() * 1000)
+    client.fetch_closed_positions = AsyncMock(return_value=[
+        SimpleNamespace(pnl_usd=-500.0, closed_at_ts=now_ms),
+    ])
+    bot = BotIctInstance(client=client, daily_loss_limit_pct=4.0)
+    bot._today_start_equity = 10000.0  # 4% 한도 = 400 USDT
+    await bot._sync_today_realized_pnl()
+    assert bot._today_realized_pnl_usdt == -500.0
+    assert bot._daily_limit_hit is True  # 손실 500 > 한도 400

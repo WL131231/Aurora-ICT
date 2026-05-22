@@ -90,6 +90,10 @@ class ExchangeClientProtocol(Protocol):
 
     async def cancel_all_orders(self, symbol: str) -> None: ...
 
+    async def fetch_closed_positions(
+        self, since_ms: int | None = None, limit: int = 200,
+    ) -> list[Any]: ...
+
     async def modify_stop_loss(
         self, symbol: str, new_stop_loss: float,
     ) -> dict[str, Any]: ...
@@ -400,6 +404,12 @@ class BotIctInstance:
                     ts_ms=int(time.time() * 1000),
                     reason="marketable limit 체결 대기",
                 )
+
+        # #BUG-7 fix: today 실현손익을 거래소 closed-pnl 로 동기화 (NY 자정 reset 포함).
+        # daily loss limit / UI today_pnl 이 거래소와 일치하게 (내부 누적 대체).
+        equity_now = await self._fetch_equity()
+        self._maybe_reset_daily_pnl(equity_now)
+        await self._sync_today_realized_pnl()
 
         df = await self._fetch_ohlcv()
         htf_bias = await self._compute_htf_bias()
@@ -1054,6 +1064,42 @@ class BotIctInstance:
             "date_ny": self._today_date_str,
         }
 
+    async def _sync_today_realized_pnl(self) -> None:
+        """거래소 closed-pnl 로 오늘(NY 자정~) 실현손익 동기화 (#BUG-7 해소).
+
+        내부 누적 (SYNC_CLOSE 가 close 가격 모르고 PnL 0 으로 기록하던) 대신 거래소를
+        진실로 사용 → today_pnl 이 거래소와 일치 + #SAFETY-1 일일 손실 한도 정확.
+        매 step 호출 — NY 자정~now 는 보통 7일 미만 단일 chunk 라 비용 작음.
+        """
+        ny_midnight = (
+            datetime.now(UTC)
+            .astimezone(_NY_TZ)
+            .replace(hour=0, minute=0, second=0, microsecond=0)
+        )
+        since_ms = int(ny_midnight.timestamp() * 1000)
+        try:
+            closed = await self.client.fetch_closed_positions(
+                since_ms=since_ms, limit=200,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("today realized pnl 거래소 동기화 실패: %s — 기존값 유지", e)
+            return
+        total = 0.0
+        for cp in closed:
+            ts = int(getattr(cp, "closed_at_ts", 0) or 0)
+            if ts >= since_ms:
+                total += float(getattr(cp, "pnl_usd", 0.0) or 0.0)
+        self._today_realized_pnl_usdt = total
+        if self._is_daily_loss_limit_hit() and not self._daily_limit_hit:
+            self._daily_limit_hit = True
+            logger.warning(
+                "daily loss limit HIT (거래소 동기화) — limit=%.2f%% today=%.2fUSDT "
+                "(start_equity=%.2f)",
+                self.daily_loss_limit_pct,
+                self._today_realized_pnl_usdt,
+                self._today_start_equity,
+            )
+
     def _record_trade(
         self,
         event_type: TradeEventType,
@@ -1086,22 +1132,13 @@ class BotIctInstance:
             except Exception as e:  # noqa: BLE001
                 logger.warning("TradesStore 초기화 실패 — 매매 기록 skip: %s", e)
                 return
+        # PnL 은 TradeEvent 기록용 추정치 (참고). #SAFETY-1 일일 손실 한도 / today_pnl 은
+        # 거래소 closed-pnl 동기화 (_sync_today_realized_pnl) 가 진실 — 내부 누적 제거
+        # (#BUG-7: SYNC_CLOSE 가 close 가격 모르고 PnL 0 누적하던 문제 해소).
         pnl_usdt: float | None = None
         if entry_for_pnl is not None and qty > 0:
             sign = 1.0 if direction is Direction.LONG else -1.0
             pnl_usdt = sign * (price - entry_for_pnl) * qty
-        # #SAFETY-1: 청산 이벤트의 PnL 을 일일 누적에 합산. 한도 초과 시 flag.
-        if pnl_usdt is not None:
-            self._today_realized_pnl_usdt += pnl_usdt
-            if self._is_daily_loss_limit_hit() and not self._daily_limit_hit:
-                self._daily_limit_hit = True
-                logger.warning(
-                    "daily loss limit HIT — limit=%.2f%% today=%.2fUSDT "
-                    "(start_equity=%.2f) — 새 진입 차단 시작",
-                    self.daily_loss_limit_pct,
-                    self._today_realized_pnl_usdt,
-                    self._today_start_equity,
-                )
         try:
             self._trades_store.record(TradeEvent(
                 ts_ms=int(time.time() * 1000),
