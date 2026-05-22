@@ -98,6 +98,13 @@ class ExchangeClientProtocol(Protocol):
         self, symbol: str, new_stop_loss: float,
     ) -> dict[str, Any]: ...
 
+    async def set_position_tpsl(
+        self,
+        symbol: str,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+    ) -> dict[str, Any]: ...
+
     async def set_leverage(
         self, symbol: str, leverage: int,
     ) -> dict[str, Any]: ...
@@ -773,22 +780,21 @@ class BotIctInstance:
         )
 
         # #LIVE-3 fix: entry = setup.entry (계획가 — FVG mean 등) 에 limit. 가격이 거기
-        # retrace 하면 체결. SL/TP 가 setup 기준이라 RR 보존 (현재가 진입은 타점 지나면
-        # RR 망가짐 #LIVE-2 검증 발견). 10분(entry_limit_ttl_sec) 미체결이면 pending 취소.
-        # use_market_entry=True 면 레거시 즉시 시장가 (slippage 발생, 비권장).
+        # retrace 하면 체결. SL/TP 가 setup 기준이라 RR 보존. use_market_entry=True 면
+        # 레거시 즉시 시장가 (slippage, 비권장).
         entry_price = None if self.use_market_entry else setup.entry
 
-        # SL/TP 는 setup 기준 (FVG/swing 고정 레벨) 그대로 entry 주문에 동봉 → 체결 시
-        # 거래소가 포지션에 conditional 적용 (#LIVE-1). entry 도 setup 기준이라 체결되면
-        # 계획 RR 그대로.
+        # #LIVE-4 fix: SL/TP 는 entry 주문에 동봉하지 않는다. 계획가(limit) 가 현재가에서
+        # 벗어나면 Bybit 가 동봉 SL/TP 의 현재가 기준 방향 검증 (10001 "StopLoss should
+        # greater/lower base_price") 으로 주문 자체를 거부 → 진입 0. 대신 체결되어 포지션이
+        # 생긴 뒤 set_position_tpsl 로 conditional SL/TP 를 박는다 (체결 시점 가격=계획가라
+        # 방향 유효). 즉시 체결은 아래, 미체결(pending) 은 _check_pending_entry 가 처리.
         try:
             order_resp = await self.client.place_order(
                 symbol=self.symbol,
                 side=side,
                 qty=qty,
                 price=entry_price,
-                stop_loss=setup.stop_loss,
-                take_profit=setup.take_profit,
             )
         except Exception as e:  # noqa: BLE001 — 주문 실패도 봇은 계속 돌아야 함
             logger.exception("place_order 실패: %s", e)
@@ -806,8 +812,8 @@ class BotIctInstance:
                 fill_price = float(avg)
 
         if not filled and not self.use_market_entry:
-            # marketable limit 미체결 → pending 등록. step 의 _check_pending_entry 가
-            # 체결 승격 / TTL 취소 추적. active_position 은 아직 박지 않음 (포지션 X).
+            # 계획가 limit 미체결 → pending 등록. step 의 _check_pending_entry 가
+            # 체결 승격 (+ SL/TP 박기) / TTL 취소 추적. active_position 은 아직 X.
             self._pending_entry = _PendingEntry(
                 direction=setup.direction,
                 entry=fill_price,
@@ -820,14 +826,14 @@ class BotIctInstance:
                 ltf_weight=TF_WEIGHT.get(self.timeframe, 1),
             )
             logger.info(
-                "marketable limit 등록 (미체결 대기, TTL %ds) — %s %s limit=%.4f "
+                "지정가 entry 등록 (계획가 미체결 대기, TTL %ds) — %s %s limit=%.4f "
                 "sl=%.4f tp=%.4f qty=%.4f",
                 self.entry_limit_ttl_sec, self.symbol, side, fill_price,
                 setup.stop_loss, setup.take_profit, qty,
             )
             return
 
-        # 즉시 체결 (시장가 or marketable limit 즉시) → active_position 확정.
+        # 즉시 체결 (시장가 or 계획가==현재가) → active_position 확정 + SL/TP conditional 박기.
         self.active_position = _ActivePosition(
             direction=setup.direction,
             entry=fill_price,
@@ -838,6 +844,15 @@ class BotIctInstance:
             htf_flip_target=htf_flip_target,
             ltf_weight=TF_WEIGHT.get(self.timeframe, 1),
         )
+        # #LIVE-4: 체결 후 포지션에 SL/TP conditional 설정 (동봉 대신).
+        tpsl_resp = await self.client.set_position_tpsl(
+            self.symbol, stop_loss=setup.stop_loss, take_profit=setup.take_profit,
+        )
+        if not tpsl_resp:
+            logger.warning(
+                "SL/TP 적용 실패 (즉시체결) — 포지션 SL/TP 없을 수 있음: %s %s",
+                self.symbol, side,
+            )
         # #BUG-2 해소: ENTRY 이벤트 기록.
         self._record_trade(
             TradeEventType.ENTRY,
@@ -898,16 +913,25 @@ class BotIctInstance:
                 htf_flip_target=pe.htf_flip_target,
                 ltf_weight=pe.ltf_weight,
             )
+            # #LIVE-4: 체결된 포지션에 SL/TP conditional 설정 (entry 주문 동봉 대신).
+            tpsl_resp = await self.client.set_position_tpsl(
+                self.symbol, stop_loss=pe.stop_loss, take_profit=pe.take_profit,
+            )
+            if not tpsl_resp:
+                logger.warning(
+                    "SL/TP 적용 실패 (pending 체결) — 포지션 SL/TP 없을 수 있음: %s",
+                    self.symbol,
+                )
             self._record_trade(
                 TradeEventType.ENTRY,
                 direction=pe.direction,
                 price=entry_px,
                 qty=pe.qty,
                 setup_ts_ms=pe.setup_ts_ms,
-                reason=f"marketable limit filled entry={entry_px:.4f}",
+                reason=f"limit filled entry={entry_px:.4f}",
             )
             logger.info(
-                "marketable limit 체결 — active_position 승격 entry=%.4f sl=%.4f tp=%.4f",
+                "지정가 체결 — active_position 승격 entry=%.4f sl=%.4f tp=%.4f",
                 entry_px, pe.stop_loss, pe.take_profit,
             )
             self._pending_entry = None

@@ -67,6 +67,7 @@ def _mock_client(ohlcv_rows: list[list[Any]]) -> AsyncMock:
     client.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0}})
     client.cancel_all_orders = AsyncMock(return_value=None)
     client.fetch_closed_positions = AsyncMock(return_value=[])
+    client.set_position_tpsl = AsyncMock(return_value={"retCode": 0})
     return client
 
 
@@ -94,20 +95,23 @@ async def test_step_executes_long_setup() -> None:
     )
     sig = await bot.step()
     assert sig.action is SignalAction.ENTER_LONG
-    # #LIVE-1 fix: marketable limit entry 1회 + SL/TP 동봉 (별도 reduce_only TP 없음)
+    # #LIVE-3/4: 계획가 limit entry 1회, SL/TP 는 동봉 안 함 (체결 후 set_position_tpsl)
     assert client.place_order.await_count == 1
     entry_call = client.place_order.await_args_list[0].kwargs
     assert entry_call["symbol"] == "BTCUSDT"
     assert entry_call["side"] == "buy"
     assert entry_call["qty"] > 0
-    assert entry_call["price"] > 0                          # marketable limit (현재가)
-    assert entry_call["stop_loss"] < entry_call["price"]    # long SL = entry 아래
-    # TP 가 entry 주문에 동봉됨 (long → entry 위). 슬리피지로 안 밀림 (setup 기준 고정).
-    assert entry_call["take_profit"] > entry_call["price"]
+    assert entry_call["price"] > 0                          # setup.entry (계획가) limit
+    assert "stop_loss" not in entry_call                   # 동봉 X (#LIVE-4)
+    assert "take_profit" not in entry_call
     assert entry_call.get("reduce_only", False) is False
-    # 즉시 체결 → active position 살아있음
+    # 즉시 체결 → active position + SL/TP 는 set_position_tpsl 로
     assert bot.active_position is not None
     assert bot.active_position.direction is Direction.LONG
+    client.set_position_tpsl.assert_awaited_once()
+    tpsl_kw = client.set_position_tpsl.await_args_list[0].kwargs
+    assert tpsl_kw["stop_loss"] < bot.active_position.entry   # long SL 아래
+    assert tpsl_kw["take_profit"] > bot.active_position.entry  # long TP 위
 
 
 @pytest.mark.asyncio
@@ -382,7 +386,7 @@ def test_combine_with_daily_one_none() -> None:
 
 @pytest.mark.asyncio
 async def test_marketable_limit_pending_when_unfilled() -> None:
-    """marketable limit 미체결 → _pending_entry 등록, active_position 아직 None."""
+    """계획가 limit 미체결 → _pending_entry 등록, active_position 아직 None."""
     start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
     rows = _ohlcv_rows(start, _bars_long_setup())
     client = _mock_client(rows)
@@ -390,14 +394,16 @@ async def test_marketable_limit_pending_when_unfilled() -> None:
     client.place_order = AsyncMock(return_value={"orderId": "PENDING1"})
     bot = BotIctInstance(client=client, min_rr=1.0, fvg_min_size_pct=0.001)
     await bot.step()
-    # entry 1회 (SL/TP 동봉) 만 — 별도 reduce_only TP 없음
+    # entry 1회 — #LIVE-4: SL/TP 동봉 안 함 (체결 후 set_position_tpsl)
     assert client.place_order.await_count == 1
     entry_call = client.place_order.await_args_list[0].kwargs
-    assert entry_call["take_profit"] > entry_call["price"]  # TP 동봉 (long)
-    # 미체결 → pending 등록, active_position 아직 X
+    assert "take_profit" not in entry_call
+    assert "stop_loss" not in entry_call
+    # 미체결 → pending 등록, active_position 아직 X. SL/TP 도 아직 안 박음 (체결 후).
     assert bot.active_position is None
     assert bot._pending_entry is not None
     assert bot._pending_entry.direction is Direction.LONG
+    client.set_position_tpsl.assert_not_awaited()
 
 
 @pytest.mark.asyncio
