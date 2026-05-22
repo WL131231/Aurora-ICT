@@ -107,8 +107,12 @@ async def test_place_order_dataclass_to_dict() -> None:
 
 
 @pytest.mark.asyncio
-async def test_place_order_with_sl_calls_trading_stop() -> None:
-    """entry + SL 들어가면 set_trading_stop API 호출됨."""
+async def test_place_order_with_sl_tp_passed_to_client() -> None:
+    """#LIVE-1 fix: entry + SL/TP → 본체 place_order 에 동봉 전달 (set_trading_stop X).
+
+    Bybit create_order params 의 stopLoss/takeProfit 으로 entry 주문에 동봉되어
+    체결 시 포지션에 자동 적용. 별도 set_trading_stop (포지션 API) 호출은 안 함.
+    """
     inner = MagicMock()
     inner.place_order = AsyncMock(return_value={"orderId": "X"})
     ex = MagicMock()
@@ -119,43 +123,43 @@ async def test_place_order_with_sl_calls_trading_stop() -> None:
         symbol="BTC/USDT:USDT", side="buy", qty=0.01,
         stop_loss=79000, take_profit=82000,
     )
-    ex.private_post_v5_position_trading_stop.assert_awaited_once()
-    params = ex.private_post_v5_position_trading_stop.call_args.args[0]
-    assert params["symbol"] == "BTCUSDT"
-    assert params["stopLoss"] == "79000"
-    assert params["takeProfit"] == "82000"
-    assert params["category"] == "linear"
-    assert params["tpslMode"] == "Full"
-    assert params["positionIdx"] == 0
+    # 별도 set_trading_stop 호출 안 함 (entry 동봉으로 대체)
+    ex.private_post_v5_position_trading_stop.assert_not_awaited()
+    # 본체 place_order 에 SL/TP 동봉 전달
+    kw = inner.place_order.call_args.kwargs
+    assert kw["stop_loss"] == 79000
+    assert kw["take_profit"] == 82000
+    assert kw["reduce_only"] is False
 
 
 @pytest.mark.asyncio
-async def test_place_order_reduce_only_skips_trading_stop() -> None:
-    """reduce_only=True (partial TP) 면 SL/TP 인자 와도 trading_stop 호출 X."""
+async def test_place_order_reduce_only_drops_sl_tp() -> None:
+    """reduce_only=True (청산) 면 SL/TP 인자 와도 본체엔 None 전달 (동봉 X)."""
     inner = MagicMock()
     inner.place_order = AsyncMock(return_value={"orderId": "X"})
-    ex = MagicMock()
-    ex.private_post_v5_position_trading_stop = AsyncMock(return_value={"retCode": 0})
-    inner._ex = ex
+    inner._ex = MagicMock()
     adapter = AuroraClientAdapter(inner)
     await adapter.place_order(
         symbol="BTC/USDT:USDT", side="sell", qty=0.005, price=82000,
         reduce_only=True, stop_loss=79000,
     )
-    ex.private_post_v5_position_trading_stop.assert_not_awaited()
+    kw = inner.place_order.call_args.kwargs
+    assert kw["reduce_only"] is True
+    assert kw["stop_loss"] is None
+    assert kw["take_profit"] is None
 
 
 @pytest.mark.asyncio
-async def test_place_order_no_sl_no_trading_stop_call() -> None:
-    """SL/TP 없으면 trading_stop 호출 X."""
+async def test_place_order_no_sl_passes_none() -> None:
+    """SL/TP 인자 없으면 본체에 None 전달."""
     inner = MagicMock()
     inner.place_order = AsyncMock(return_value={"orderId": "X"})
-    ex = MagicMock()
-    ex.private_post_v5_position_trading_stop = AsyncMock(return_value={"retCode": 0})
-    inner._ex = ex
+    inner._ex = MagicMock()
     adapter = AuroraClientAdapter(inner)
     await adapter.place_order(symbol="BTC/USDT:USDT", side="buy", qty=0.01)
-    ex.private_post_v5_position_trading_stop.assert_not_awaited()
+    kw = inner.place_order.call_args.kwargs
+    assert kw["stop_loss"] is None
+    assert kw["take_profit"] is None
 
 
 @pytest.mark.asyncio
@@ -198,20 +202,15 @@ async def test_set_leverage_no_ex_returns_empty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_place_order_trading_stop_failure_swallowed() -> None:
-    """set_trading_stop 실패해도 place_order 자체는 정상 반환."""
+async def test_place_order_returns_dict_on_success() -> None:
+    """entry 주문 성공 시 dict (orderId 등) 정상 반환."""
     inner = MagicMock()
     inner.place_order = AsyncMock(return_value={"orderId": "X"})
-    ex = MagicMock()
-    ex.private_post_v5_position_trading_stop = AsyncMock(
-        side_effect=RuntimeError("API down"),
-    )
-    inner._ex = ex
+    inner._ex = MagicMock()
     adapter = AuroraClientAdapter(inner)
     result = await adapter.place_order(
         symbol="BTC/USDT:USDT", side="buy", qty=0.01, stop_loss=79000,
     )
-    # 주문 결과는 정상 반환됨 (SL 실패는 warning 만)
     assert result.get("orderId") == "X"
 
 

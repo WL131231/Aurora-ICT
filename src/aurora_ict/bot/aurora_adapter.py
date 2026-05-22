@@ -117,17 +117,19 @@ class AuroraClientAdapter:
         stop_loss: float | None = None,
         take_profit: float | None = None,
     ) -> dict[str, Any]:
-        """Aurora place_order 결과를 dict로 변환 + SL/TP passthrough.
+        """Aurora place_order 결과를 dict로 변환 + SL/TP 동봉.
 
         Aurora ``place_order`` 시그니처:
-        ``(symbol, side, qty, price=None, reduce_only=False, ...)`` → Order dataclass.
+        ``(symbol, side, qty, price=None, reduce_only=False, stop_loss, take_profit)``.
 
-        v0.4.46 — SL/TP passthrough 추가:
-        - entry 주문 (reduce_only=False) + SL/TP 인자 있으면, 주문 직후 raw ccxt 의
-          ``set_trading_stop`` (Bybit V5 private API) 호출해서 거래소 측 conditional
-          SL/TP 설정. position 등록 후에 호출되어야 하므로 시장가 (price=None) 일 때
-          가장 안정.
-        - reduce_only=True (partial TP) 는 일반 limit 주문 — SL/TP 인자는 무시.
+        v0.4.73 — SL/TP 동봉 방식 전환 (#LIVE-1 fix):
+        - entry 주문에 ``stop_loss`` / ``take_profit`` 를 그대로 본체 place_order 로
+          넘김 → Bybit V5 ``create_order`` params 의 ``stopLoss`` / ``takeProfit`` 동봉.
+          체결 시 거래소가 포지션에 conditional SL/TP 자동 적용.
+        - 이전 ``set_trading_stop`` 별도 호출 (포지션 API) 은 지정가 미체결 주문에
+          안 박히고, TP 가 별도 reduce_only limit 으로만 박혀 포지션 카드에 안 보이던
+          문제 (#LIVE-1) 를 해소. 동봉은 지정가 미체결 주문에도 예약된다.
+        - reduce_only=True (청산 주문) 는 SL/TP 인자 무시.
         """
         order = await self._client.place_order(
             symbol=symbol,
@@ -135,6 +137,8 @@ class AuroraClientAdapter:
             qty=qty,
             price=price,
             reduce_only=reduce_only,
+            stop_loss=None if reduce_only else stop_loss,
+            take_profit=None if reduce_only else take_profit,
         )
         order_dict: dict[str, Any]
         if hasattr(order, "__dict__"):
@@ -146,7 +150,6 @@ class AuroraClientAdapter:
 
         # Entry 주문 (reduce_only False) — 실제 fill 가격 / qty 를 거래소 응답에서 추출.
         # 시장가(price=None) 진입 시 setup 가격과 실제 체결가가 다름 (slippage / spread).
-        # SL/TP/trail 계산이 실제 fill 가격 기준이어야 정확.
         if not reduce_only:
             avg_fill, filled_qty = await self._extract_fill(order_dict, symbol)
             if avg_fill is not None:
@@ -154,13 +157,6 @@ class AuroraClientAdapter:
             if filled_qty is not None:
                 order_dict["filled_qty"] = filled_qty
 
-        # SL/TP passthrough — entry 주문이고 (reduce_only False) SL/TP 있을 때.
-        if not reduce_only and (stop_loss is not None or take_profit is not None):
-            await self._apply_trading_stop(
-                symbol=symbol,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-            )
         return order_dict
 
     async def _extract_fill(
@@ -200,45 +196,6 @@ class AuroraClientAdapter:
             if isinstance(c, (int, float)) and c > 0:
                 filled = float(c)
         return avg, filled
-
-    async def _apply_trading_stop(
-        self,
-        symbol: str,
-        stop_loss: float | None,
-        take_profit: float | None,
-    ) -> None:
-        """Bybit V5 set_trading_stop 호출 — 활성 포지션의 SL/TP 설정."""
-        ex = getattr(self._client, "_ex", None)
-        if ex is None:
-            logger.warning("set_trading_stop: _ex 없음 — SL/TP 적용 skip")
-            return
-        await self._ensure_time_sync()
-        raw_symbol = symbol.replace("/", "").split(":")[0]
-        params: dict[str, Any] = {
-            "category": "linear",
-            "symbol": raw_symbol,
-            "tpslMode": "Full",
-            "positionIdx": 0,
-        }
-        if stop_loss is not None:
-            params["stopLoss"] = str(stop_loss)
-        if take_profit is not None:
-            params["takeProfit"] = str(take_profit)
-        try:
-            await ex.private_post_v5_position_trading_stop(params)
-        except Exception as e:  # noqa: BLE001
-            msg = str(e)
-            # Bybit retCode 34040 "not modified" — 동일 SL/TP 이미 박혀있음. 정상 동작.
-            if "34040" in msg or "not modified" in msg:
-                logger.debug(
-                    "set_trading_stop skip (%s sl=%s tp=%s 이미 적용)",
-                    raw_symbol, stop_loss, take_profit,
-                )
-                return
-            logger.warning(
-                "set_trading_stop 실패 (%s sl=%s tp=%s): %s",
-                raw_symbol, stop_loss, take_profit, e,
-            )
 
     async def fetch_position(self, symbol: str) -> dict[str, Any] | None:
         """포지션 조회. Aurora client → fallback: ccxt _ex 직접 호출.
@@ -299,6 +256,28 @@ class AuroraClientAdapter:
         except Exception as e:  # noqa: BLE001
             logger.warning("fetch_balance 실패: %s", e)
             return {}
+
+    async def fetch_ticker(self, symbol: str) -> float | None:
+        """현재 시장가 (last price) — marketable limit entry 가격 계산용.
+
+        Aurora client.fetch_ticker 위임. 실패 시 None (호출처가 fallback).
+        """
+        try:
+            return await self._client.fetch_ticker(symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("fetch_ticker 실패: %s", e)
+            return None
+
+    async def cancel_all_orders(self, symbol: str) -> None:
+        """해당 페어 미체결 주문 전체 취소 — pending limit entry TTL 만료 시 사용.
+
+        Aurora client.cancel_all 위임. 미체결 entry limit 만 대상 (체결된 포지션의
+        conditional SL/TP 는 주문이 아니라 포지션 속성이라 영향 없음).
+        """
+        try:
+            await self._client.cancel_all(symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("cancel_all_orders 실패: %s", e)
 
     async def set_leverage(
         self, symbol: str, leverage: int,

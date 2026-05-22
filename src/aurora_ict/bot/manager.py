@@ -105,6 +105,7 @@ class BotManager:
             enable_trail=self.settings.enable_trail,
             trail_buffer_ratio=self.settings.trail_buffer_ratio,
             use_market_entry=self.settings.use_market_entry,
+            entry_limit_ttl_sec=self.settings.entry_limit_ttl_sec,
             min_sl_distance_pct=self.settings.min_sl_distance_pct,
             max_sl_distance_pct=self.settings.max_sl_distance_pct,
             heartbeat_interval_sec=self.settings.heartbeat_interval_sec,

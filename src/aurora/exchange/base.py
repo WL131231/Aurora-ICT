@@ -128,8 +128,10 @@ class ExchangeClient(Protocol):
         qty: float,
         price: float | None = None,
         reduce_only: bool = False,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
     ) -> Order:
-        """주문 전송."""
+        """주문 전송 — ``stop_loss`` / ``take_profit`` 동봉 시 체결 포지션에 적용."""
         ...
 
     async def set_leverage(self, symbol: str, leverage: int) -> None:

@@ -48,12 +48,24 @@ def _ohlcv_rows(start_ny: datetime, bars: list[tuple[float, float, float, float]
 
 
 def _mock_client(ohlcv_rows: list[list[Any]]) -> AsyncMock:
-    """Mock ExchangeClient 박힌 거."""
+    """Mock ExchangeClient 박힌 거.
+
+    #LIVE-1 fix: marketable limit entry 가 fetch_ticker (현재가) 호출 + place_order
+    응답의 filled_qty/avg_fill_price 로 즉시 체결 판정. 기본 mock 은 즉시 체결 시뮬.
+    """
+    last_close = float(ohlcv_rows[-1][4]) if ohlcv_rows else 100.0
     client = AsyncMock()
     client.fetch_ohlcv = AsyncMock(return_value=ohlcv_rows)
-    client.place_order = AsyncMock(return_value={"orderId": "TEST123"})
+    client.fetch_ticker = AsyncMock(return_value=last_close)
+    # 즉시 체결 시뮬 (filled_qty/avg_fill_price 포함) → active_position 즉시 확정.
+    client.place_order = AsyncMock(return_value={
+        "orderId": "TEST123",
+        "filled_qty": 1.0,
+        "avg_fill_price": last_close,
+    })
     client.fetch_position = AsyncMock(return_value=None)
     client.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0}})
+    client.cancel_all_orders = AsyncMock(return_value=None)
     return client
 
 
@@ -81,22 +93,18 @@ async def test_step_executes_long_setup() -> None:
     )
     sig = await bot.step()
     assert sig.action is SignalAction.ENTER_LONG
-    # 정통 ICT 단일 TP (변형 5 정통화): entry + reduce_only TP = 2 호출
-    assert client.place_order.await_count == 2
+    # #LIVE-1 fix: marketable limit entry 1회 + SL/TP 동봉 (별도 reduce_only TP 없음)
+    assert client.place_order.await_count == 1
     entry_call = client.place_order.await_args_list[0].kwargs
     assert entry_call["symbol"] == "BTCUSDT"
     assert entry_call["side"] == "buy"
     assert entry_call["qty"] > 0
-    assert entry_call["price"] > 0
-    assert entry_call["stop_loss"] < entry_call["price"]
-    # entry 주문은 take_profit None (단일 TP 는 별도 reduce_only 로 등록)
-    assert entry_call["take_profit"] is None
-    # 두 번째 호출 = 단일 reduce_only TP (sell)
-    tp_call = client.place_order.await_args_list[1].kwargs
-    assert tp_call["side"] == "sell"
-    assert tp_call["reduce_only"] is True
-    assert tp_call["price"] > entry_call["price"]
-    # active position 살아있음
+    assert entry_call["price"] > 0                          # marketable limit (현재가)
+    assert entry_call["stop_loss"] < entry_call["price"]    # long SL = entry 아래
+    # TP 가 entry 주문에 동봉됨 (long → entry 위). 슬리피지로 안 밀림 (setup 기준 고정).
+    assert entry_call["take_profit"] > entry_call["price"]
+    assert entry_call.get("reduce_only", False) is False
+    # 즉시 체결 → active position 살아있음
     assert bot.active_position is not None
     assert bot.active_position.direction is Direction.LONG
 
@@ -167,8 +175,8 @@ async def test_step_duplicate_setup_filtered() -> None:
     bot.active_position = None
     # 두 번째 step — 같은 OHLCV
     await bot.step()
-    # 같은 setup_ts_ms 라 신규 진입 X — 첫 step 의 2호출 (entry + 단일 TP) 만 남음
-    assert client.place_order.await_count == 2
+    # 같은 setup_ts_ms 라 신규 진입 X — 첫 step 의 entry 1호출 (SL/TP 동봉) 만 남음
+    assert client.place_order.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -364,3 +372,91 @@ def test_combine_with_daily_one_none() -> None:
         TrendDirection.NONE, TrendDirection.UP,
     )
     assert result is TrendDirection.UP
+
+
+# ============================================================
+# #LIVE-1 fix: marketable limit entry + SL/TP 동봉 + pending 관리
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_marketable_limit_pending_when_unfilled() -> None:
+    """marketable limit 미체결 → _pending_entry 등록, active_position 아직 None."""
+    start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
+    rows = _ohlcv_rows(start, _bars_long_setup())
+    client = _mock_client(rows)
+    # 미체결 시뮬 — filled_qty / avg_fill_price 없음.
+    client.place_order = AsyncMock(return_value={"orderId": "PENDING1"})
+    bot = BotIctInstance(client=client, min_rr=1.0, fvg_min_size_pct=0.001)
+    await bot.step()
+    # entry 1회 (SL/TP 동봉) 만 — 별도 reduce_only TP 없음
+    assert client.place_order.await_count == 1
+    entry_call = client.place_order.await_args_list[0].kwargs
+    assert entry_call["take_profit"] > entry_call["price"]  # TP 동봉 (long)
+    # 미체결 → pending 등록, active_position 아직 X
+    assert bot.active_position is None
+    assert bot._pending_entry is not None
+    assert bot._pending_entry.direction is Direction.LONG
+
+
+@pytest.mark.asyncio
+async def test_pending_entry_promoted_on_fill() -> None:
+    """pending 상태에서 거래소 체결 감지 → active_position 승격."""
+    import time as _t
+
+    from aurora_ict.bot.bot_ict_instance import _PendingEntry
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.fetch_position = AsyncMock(
+        return_value={"contracts": 0.01, "entryPrice": 100.5},
+    )
+    bot = BotIctInstance(client=client)
+    bot._pending_entry = _PendingEntry(
+        direction=Direction.LONG, entry=100.0, stop_loss=95.0, take_profit=110.0,
+        qty=0.01, setup_ts_ms=123, placed_ts_ms=int(_t.time() * 1000),
+    )
+    still_pending = await bot._check_pending_entry()
+    assert still_pending is False
+    assert bot._pending_entry is None
+    assert bot.active_position is not None
+    assert bot.active_position.entry == 100.5          # 거래소 체결가 우선
+    assert bot.active_position.take_profit == 110.0    # SL/TP 보존
+
+
+@pytest.mark.asyncio
+async def test_pending_entry_cancelled_on_ttl() -> None:
+    """pending TTL 만료 (미체결) → cancel_all_orders 호출, pending 해제."""
+    from aurora_ict.bot.bot_ict_instance import _PendingEntry
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.fetch_position = AsyncMock(return_value={"contracts": 0})
+    bot = BotIctInstance(client=client, entry_limit_ttl_sec=600)
+    bot._pending_entry = _PendingEntry(
+        direction=Direction.LONG, entry=100.0, stop_loss=95.0, take_profit=110.0,
+        qty=0.01, setup_ts_ms=123, placed_ts_ms=0,  # epoch → TTL 만료
+    )
+    still_pending = await bot._check_pending_entry()
+    assert still_pending is False
+    assert bot._pending_entry is None
+    assert bot.active_position is None
+    client.cancel_all_orders.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pending_entry_waits_within_ttl() -> None:
+    """pending TTL 내 미체결 → 계속 대기 (취소 X, 신규 진입 skip 신호)."""
+    import time as _t
+
+    from aurora_ict.bot.bot_ict_instance import _PendingEntry
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.fetch_position = AsyncMock(return_value={"contracts": 0})
+    bot = BotIctInstance(client=client, entry_limit_ttl_sec=600)
+    bot._pending_entry = _PendingEntry(
+        direction=Direction.LONG, entry=100.0, stop_loss=95.0, take_profit=110.0,
+        qty=0.01, setup_ts_ms=123, placed_ts_ms=int(_t.time() * 1000),  # 방금
+    )
+    still_pending = await bot._check_pending_entry()
+    assert still_pending is True
+    assert bot._pending_entry is not None
+    client.cancel_all_orders.assert_not_awaited()

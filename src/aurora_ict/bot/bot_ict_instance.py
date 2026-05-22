@@ -86,6 +86,10 @@ class ExchangeClientProtocol(Protocol):
 
     async def fetch_balance(self) -> dict[str, Any]: ...
 
+    async def fetch_ticker(self, symbol: str) -> float | None: ...
+
+    async def cancel_all_orders(self, symbol: str) -> None: ...
+
     async def modify_stop_loss(
         self, symbol: str, new_stop_loss: float,
     ) -> dict[str, Any]: ...
@@ -116,6 +120,26 @@ class _ActivePosition:
     # 변경 3: HTF FVG override — 봉 close 가 이 zone 안 들어오면 flip.
     htf_flip_target: HtfFvgEntry | None = None
     # LTF setup 가중치 (5m=1 등). flip 판정 시 가중치 비교에 사용.
+    ltf_weight: int = 1
+
+
+@dataclass(slots=True)
+class _PendingEntry:
+    """marketable limit entry 미체결 대기 상태 (#LIVE-1 fix).
+
+    시장가 슬리피지 회피용 — 현재가 바로 앞 (캔들 앞) 에 limit 을 박고 체결 대기.
+    SL/TP 는 entry 주문에 동봉되어 체결 시 거래소가 포지션에 conditional 적용.
+    ``ttl_ms`` 안에 체결 안 되면 취소 (그 타점 포기, 다음 신호 대기).
+    """
+
+    direction: Direction
+    entry: float            # limit 가격 (체결 시 active_position.entry)
+    stop_loss: float
+    take_profit: float
+    qty: float
+    setup_ts_ms: int
+    placed_ts_ms: int       # 주문 전송 시각 (TTL 만료 판정 기준)
+    htf_flip_target: HtfFvgEntry | None = None
     ltf_weight: int = 1
 
 
@@ -169,9 +193,15 @@ class BotIctInstance:
     # Trail SL buffer ratio (swing 가격 × ratio 만큼 buffer).
     trail_buffer_ratio: float = 0.001
 
-    # use_market_entry: True 면 setup 검출 시 limit (FVG mean retest) 대신 즉시 시장가 진입.
-    # 진입률 100%, ICT 정통 retrace 철학에서 살짝 벗어남.
+    # use_market_entry (#LIVE-1 fix 후 의미 변경):
+    # - False (기본/권장): marketable limit entry — 현재가 바로 앞 (캔들 앞) 에 지정가 +
+    #   SL/TP 동봉. 슬리피지 0 (체결가 보장). entry_limit_ttl_sec 안에 미체결이면 취소.
+    # - True (레거시, 비권장): 즉시 시장가 진입 — slippage 발생 (TP 가 fill 만큼 밀려
+    #   목표 liquidity 못 먹던 #LIVE-1 원인).
     use_market_entry: bool = False
+    # marketable limit 미체결 TTL — 이 시간 지나면 pending 취소 (그 타점 포기).
+    # 사용자 결정 2026-05-22: 10분 (5m 2봉). 시장가처럼 거의 즉시 체결되되 슬리피지 0.
+    entry_limit_ttl_sec: int = 600
     # min_sl_distance_pct: SL 거리 / entry 가 이 비율 미만이면 setup skip (noise-trap 회피).
     min_sl_distance_pct: float = 0.0
     # max_sl_distance_pct: SL 거리 / entry 가 이 비율 초과면 setup skip (비정상 큰 SL 차단).
@@ -203,6 +233,8 @@ class BotIctInstance:
 
     state: BotState = field(default=BotState.STOPPED)
     active_position: _ActivePosition | None = field(default=None)
+    # #LIVE-1 fix: marketable limit entry 미체결 대기 상태 (체결되면 active_position 으로 승격).
+    _pending_entry: _PendingEntry | None = field(default=None)
     _task: asyncio.Task[None] | None = field(default=None)
     _last_setup_ts_ms: int = field(default=0)  # 동일 setup 중복 진입 방지
     _last_heartbeat_ms: int = field(default=0)
@@ -355,6 +387,19 @@ class BotIctInstance:
         """
         if self.multi_tf:
             return await self._step_multi_tf()
+
+        # #LIVE-1: marketable limit 미체결 추적 — 체결되면 active_position 승격,
+        # TTL 만료면 취소. 대기 중이면 신규 진입 안 함 (중복 주문 방지).
+        if self._pending_entry is not None:
+            still_pending = await self._check_pending_entry()
+            if still_pending:
+                return ICTSignal(
+                    action=SignalAction.NO_ACTION,
+                    setup=None,
+                    symbol=self.symbol,
+                    ts_ms=int(time.time() * 1000),
+                    reason="marketable limit 체결 대기",
+                )
 
         df = await self._fetch_ohlcv()
         htf_bias = await self._compute_htf_bias()
@@ -671,13 +716,15 @@ class BotIctInstance:
         setup: SilverBulletSetup,
         htf_flip_target: HtfFvgEntry | None = None,
     ) -> None:
-        """setup 한 건을 실제 주문으로 실행 (ICT 정통 단일 TP).
+        """setup 한 건을 실제 주문으로 실행 (#LIVE-1 fix: marketable limit + SL/TP 동봉).
 
-        - entry limit order 등록 (SL 동봉, 시장가 진입은 fill 후 SL 별도)
-        - take_profit = next BSL/SSL 단일 reduce_only limit 1건
+        - entry = 현재가 바로 앞 marketable limit (슬리피지 0). SL/TP 를 entry 주문에
+          동봉 → 체결 시 거래소가 포지션에 conditional 적용 (단일 TP, ICT 정통).
+        - 즉시 체결되면 active_position 확정. 미체결이면 ``_pending_entry`` 등록 →
+          step 의 ``_check_pending_entry`` 가 체결 승격 / TTL(10분) 만료 취소 추적.
+        - use_market_entry=True 면 레거시 즉시 시장가 (slippage 발생, 비권장).
         """
         side = "buy" if setup.direction is Direction.LONG else "sell"
-        exit_side = "sell" if setup.direction is Direction.LONG else "buy"
 
         # #SAFETY-1: 일일 손실 한도 도달 시 새 진입 차단 (active position 은 유지).
         # equity fetch 가 _execute_setup 본체에서도 필요해 한 번 미리 가져와 baseline.
@@ -715,64 +762,71 @@ class BotIctInstance:
             setup.take_profit, qty, setup.risk_reward,
         )
 
-        # 실제 fill 가격 / SL / TP — 시장가 진입 시 fill 가격이 setup 과 다를 수 있어
-        # 응답에서 추출 후 SL/TP 모두 fill 기준으로 재계산.
-        effective_entry = setup.entry
-        effective_sl = setup.stop_loss
-        effective_tp = setup.take_profit
+        # #LIVE-1 fix: marketable limit entry — 현재가 바로 앞 (캔들 앞) 에 지정가 +
+        # SL/TP 동봉. 슬리피지 0 (체결가 보장). use_market_entry=True 면 레거시 시장가.
+        ticker_price = await self.client.fetch_ticker(self.symbol)
+        if self.use_market_entry:
+            entry_price = None                  # 레거시 즉시 시장가 (slippage 발생)
+        elif ticker_price is not None and ticker_price > 0:
+            entry_price = ticker_price          # marketable limit (현재가 앞)
+        else:
+            entry_price = setup.entry           # ticker 실패 → FVG mean limit fallback
+
+        # SL/TP 는 setup 기준 (FVG/swing 고정 레벨) 그대로 entry 주문에 동봉 → 체결 시
+        # 거래소가 포지션에 conditional 적용. fill 슬리피지로 TP 가 밀려 목표 liquidity
+        # 못 먹던 #LIVE-1 해소 (TP 가 더 이상 fill 기준으로 재계산되지 않음).
         try:
-            # 시장가 진입 시: SL 은 entry 주문에 동봉하지 않고 fill 확인 후 별도 박음.
-            # 그래야 SL 이 실제 fill 가격 기준의 risk distance 로 정확하게 박힘.
-            entry_price = None if self.use_market_entry else setup.entry
-            inline_sl = None if self.use_market_entry else setup.stop_loss
             order_resp = await self.client.place_order(
                 symbol=self.symbol,
                 side=side,
                 qty=qty,
                 price=entry_price,
-                stop_loss=inline_sl,
-                take_profit=None,
-            )
-            # Fill 가격 추출 — adapter 가 avg_fill_price / filled_qty 박아 반환.
-            avg_fill = None
-            if isinstance(order_resp, dict):
-                v = order_resp.get("avg_fill_price")
-                if isinstance(v, (int, float)) and v > 0:
-                    avg_fill = float(v)
-            if self.use_market_entry and avg_fill is not None and avg_fill > 0:
-                # setup 가격 → fill 가격 shift. SL/TP 동일 distance 유지.
-                sl_dist = setup.entry - setup.stop_loss
-                tp_dist = setup.take_profit - setup.entry
-                effective_entry = avg_fill
-                effective_sl = avg_fill - sl_dist
-                effective_tp = avg_fill + tp_dist
-                logger.info(
-                    "fill 가격 반영 — setup=%.4f fill=%.4f sl=%.4f→%.4f tp=%.4f→%.4f",
-                    setup.entry, avg_fill, setup.stop_loss, effective_sl,
-                    setup.take_profit, effective_tp,
-                )
-                # SL 을 fill 기준으로 박음 (시장가 진입 시).
-                try:
-                    await self.client.modify_stop_loss(self.symbol, effective_sl)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("fill 기반 SL 적용 실패: %s", e)
-            # 정통 ICT: 단일 TP 한 건 (next BSL/SSL).
-            await self.client.place_order(
-                symbol=self.symbol,
-                side=exit_side,
-                qty=qty,
-                price=effective_tp,
-                reduce_only=True,
+                stop_loss=setup.stop_loss,
+                take_profit=setup.take_profit,
             )
         except Exception as e:  # noqa: BLE001 — 주문 실패도 봇은 계속 돌아야 함
             logger.exception("place_order 실패: %s", e)
             return
 
+        # 체결 여부 — filled_qty / avg_fill_price 로 즉시 체결 판정.
+        filled = False
+        fill_price = entry_price if entry_price is not None else setup.entry
+        if isinstance(order_resp, dict):
+            fq = order_resp.get("filled_qty")
+            if isinstance(fq, (int, float)) and fq > 0:
+                filled = True
+            avg = order_resp.get("avg_fill_price")
+            if isinstance(avg, (int, float)) and avg > 0:
+                fill_price = float(avg)
+
+        if not filled and not self.use_market_entry:
+            # marketable limit 미체결 → pending 등록. step 의 _check_pending_entry 가
+            # 체결 승격 / TTL 취소 추적. active_position 은 아직 박지 않음 (포지션 X).
+            self._pending_entry = _PendingEntry(
+                direction=setup.direction,
+                entry=fill_price,
+                stop_loss=setup.stop_loss,
+                take_profit=setup.take_profit,
+                qty=qty,
+                setup_ts_ms=setup.ts_ms,
+                placed_ts_ms=int(time.time() * 1000),
+                htf_flip_target=htf_flip_target,
+                ltf_weight=TF_WEIGHT.get(self.timeframe, 1),
+            )
+            logger.info(
+                "marketable limit 등록 (미체결 대기, TTL %ds) — %s %s limit=%.4f "
+                "sl=%.4f tp=%.4f qty=%.4f",
+                self.entry_limit_ttl_sec, self.symbol, side, fill_price,
+                setup.stop_loss, setup.take_profit, qty,
+            )
+            return
+
+        # 즉시 체결 (시장가 or marketable limit 즉시) → active_position 확정.
         self.active_position = _ActivePosition(
             direction=setup.direction,
-            entry=effective_entry,
-            stop_loss=effective_sl,
-            take_profit=effective_tp,
+            entry=fill_price,
+            stop_loss=setup.stop_loss,
+            take_profit=setup.take_profit,
             qty=qty,
             setup_ts_ms=setup.ts_ms,
             htf_flip_target=htf_flip_target,
@@ -782,7 +836,7 @@ class BotIctInstance:
         self._record_trade(
             TradeEventType.ENTRY,
             direction=setup.direction,
-            price=effective_entry,
+            price=fill_price,
             qty=qty,
             setup_ts_ms=setup.ts_ms,
             reason=(
@@ -796,6 +850,76 @@ class BotIctInstance:
                 htf_flip_target.tf, htf_flip_target.low, htf_flip_target.high,
                 htf_flip_target.weight,
             )
+
+    async def _check_pending_entry(self) -> bool:
+        """marketable limit 미체결 추적 (#LIVE-1 fix).
+
+        - 체결됨 (거래소 포지션 contracts > 0) → active_position 승격 + ENTRY 기록.
+        - 미체결 + TTL(entry_limit_ttl_sec) 경과 → 주문 취소, pending 해제 (타점 포기).
+        - 미체결 + TTL 내 → 계속 대기.
+
+        Returns:
+            True = 아직 미체결 대기 중 (step 이 신규 진입 skip).
+            False = pending 해소 (체결 승격 or 취소) — step 진행 가능.
+        """
+        pe = self._pending_entry
+        if pe is None:
+            return False
+        try:
+            pos = await self.client.fetch_position(self.symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("pending 체결 확인 fetch_position 실패: %s — 대기 유지", e)
+            return True
+        contracts = float(pos.get("contracts", 0) or 0) if pos else 0.0
+        if contracts > 0:
+            # 체결됨 → active_position 승격. entry 는 거래소 체결가 우선.
+            entry_px = pe.entry
+            if pos:
+                ep = (
+                    pos.get("entryPrice")
+                    or pos.get("entry_price")
+                    or pos.get("averagePrice")
+                )
+                if isinstance(ep, (int, float)) and float(ep) > 0:
+                    entry_px = float(ep)
+            self.active_position = _ActivePosition(
+                direction=pe.direction,
+                entry=entry_px,
+                stop_loss=pe.stop_loss,
+                take_profit=pe.take_profit,
+                qty=pe.qty,
+                setup_ts_ms=pe.setup_ts_ms,
+                htf_flip_target=pe.htf_flip_target,
+                ltf_weight=pe.ltf_weight,
+            )
+            self._record_trade(
+                TradeEventType.ENTRY,
+                direction=pe.direction,
+                price=entry_px,
+                qty=pe.qty,
+                setup_ts_ms=pe.setup_ts_ms,
+                reason=f"marketable limit filled entry={entry_px:.4f}",
+            )
+            logger.info(
+                "marketable limit 체결 — active_position 승격 entry=%.4f sl=%.4f tp=%.4f",
+                entry_px, pe.stop_loss, pe.take_profit,
+            )
+            self._pending_entry = None
+            return False
+        # 미체결 — TTL 만료 체크.
+        now_ms = int(time.time() * 1000)
+        if now_ms - pe.placed_ts_ms >= self.entry_limit_ttl_sec * 1000:
+            try:
+                await self.client.cancel_all_orders(self.symbol)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("pending limit 취소 실패: %s", e)
+            logger.info(
+                "marketable limit TTL 만료 (%ds 미체결) — 취소, 타점 포기 (setup_ts=%d)",
+                self.entry_limit_ttl_sec, pe.setup_ts_ms,
+            )
+            self._pending_entry = None
+            return False
+        return True
 
     async def _tick_trail(self, df: pd.DataFrame) -> None:
         """진입 중 새 swing 형성 시 SL 을 그 자리로 이동 (structure-based trail).

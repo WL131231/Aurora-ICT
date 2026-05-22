@@ -108,9 +108,15 @@ class IctSettings(BaseSettings):
     # enable_trail: 진입 후 새 swing 형성 시 SL 이동 (ICT 정통 structure-based trail).
     enable_trail: bool = Field(default=False)
     trail_buffer_ratio: float = Field(default=0.001, ge=0.0, le=0.05)
-    # use_market_entry: True 면 setup 검출 시 limit (FVG mean retest) 대신 즉시 시장가 진입.
-    # 진입률 100% 보장 (limit 미체결 문제 해소), ICT 정통 retrace 진입 철학에서 살짝 벗어남.
+    # use_market_entry (#LIVE-1 fix 후 의미 변경):
+    # - False (기본/권장): marketable limit entry — 현재가 바로 앞 (캔들 앞) 에 지정가 +
+    #   SL/TP 동봉. 슬리피지 0. entry_limit_ttl_sec 안에 미체결이면 취소 (타점 포기).
+    # - True (레거시, 비권장): 즉시 시장가 — slippage 로 TP 가 fill 만큼 밀려 목표
+    #   liquidity 못 먹던 #LIVE-1 원인.
     use_market_entry: bool = Field(default=False)
+    # marketable limit 미체결 TTL (초). 이 시간 지나면 pending 취소. 사용자 결정
+    # 2026-05-22: 600 (10분, 5m 2봉). 시장가처럼 거의 즉시 체결되되 슬리피지 0.
+    entry_limit_ttl_sec: int = Field(default=600, ge=30, le=3600)
     # min_sl_distance_pct: SL 거리가 entry 의 이 비율 미만이면 setup skip.
     # 지난 12거래 분석 결과 SL 너무 짧은 setup 손실 비중 커서 0.0005 → 0.0007 상향.
     min_sl_distance_pct: float = Field(default=0.0007, ge=0.0, le=0.05)
