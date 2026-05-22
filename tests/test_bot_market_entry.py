@@ -57,14 +57,18 @@ def _dummy_setup() -> SilverBulletSetup:
 
 
 @pytest.mark.asyncio
-async def test_limit_entry_default_uses_marketable_limit() -> None:
-    """use_market_entry=False (default) → marketable limit (현재가) + SL/TP 동봉 (#LIVE-1)."""
+async def test_limit_entry_default_uses_setup_entry() -> None:
+    """use_market_entry=False (default) → setup.entry (계획가) limit + SL/TP 동봉 (#LIVE-3).
+
+    현재가 진입은 setup 타점 지나면 RR 망가짐 → 계획가(setup.entry) limit 으로
+    가격이 retrace 시 체결, RR 보존.
+    """
     client = _mock_client()
     bot = BotIctInstance(client=client, use_market_entry=False)
     await bot._execute_setup(_dummy_setup())
     first_call = client.place_order.await_args_list[0]
-    # marketable limit = 현재가 (fetch_ticker), setup.entry(100.0) 아님
-    assert first_call.kwargs["price"] == 100.5
+    # limit = setup.entry (계획가 100.0), 현재가(ticker 100.5) 아님
+    assert first_call.kwargs["price"] == 100.0
     # SL/TP 가 entry 주문에 동봉 (setup 기준 고정 레벨)
     assert first_call.kwargs["stop_loss"] == 95.0
     assert first_call.kwargs["take_profit"] == 115.0

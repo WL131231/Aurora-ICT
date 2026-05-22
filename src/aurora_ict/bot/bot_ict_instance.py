@@ -772,19 +772,15 @@ class BotIctInstance:
             setup.take_profit, qty, setup.risk_reward,
         )
 
-        # #LIVE-1 fix: marketable limit entry — 현재가 바로 앞 (캔들 앞) 에 지정가 +
-        # SL/TP 동봉. 슬리피지 0 (체결가 보장). use_market_entry=True 면 레거시 시장가.
-        ticker_price = await self.client.fetch_ticker(self.symbol)
-        if self.use_market_entry:
-            entry_price = None                  # 레거시 즉시 시장가 (slippage 발생)
-        elif ticker_price is not None and ticker_price > 0:
-            entry_price = ticker_price          # marketable limit (현재가 앞)
-        else:
-            entry_price = setup.entry           # ticker 실패 → FVG mean limit fallback
+        # #LIVE-3 fix: entry = setup.entry (계획가 — FVG mean 등) 에 limit. 가격이 거기
+        # retrace 하면 체결. SL/TP 가 setup 기준이라 RR 보존 (현재가 진입은 타점 지나면
+        # RR 망가짐 #LIVE-2 검증 발견). 10분(entry_limit_ttl_sec) 미체결이면 pending 취소.
+        # use_market_entry=True 면 레거시 즉시 시장가 (slippage 발생, 비권장).
+        entry_price = None if self.use_market_entry else setup.entry
 
         # SL/TP 는 setup 기준 (FVG/swing 고정 레벨) 그대로 entry 주문에 동봉 → 체결 시
-        # 거래소가 포지션에 conditional 적용. fill 슬리피지로 TP 가 밀려 목표 liquidity
-        # 못 먹던 #LIVE-1 해소 (TP 가 더 이상 fill 기준으로 재계산되지 않음).
+        # 거래소가 포지션에 conditional 적용 (#LIVE-1). entry 도 setup 기준이라 체결되면
+        # 계획 RR 그대로.
         try:
             order_resp = await self.client.place_order(
                 symbol=self.symbol,
