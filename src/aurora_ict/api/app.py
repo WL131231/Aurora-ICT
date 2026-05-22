@@ -418,8 +418,30 @@ def create_app(manager: BotManager) -> FastAPI:
             return {"active": False}
 
         ap = bot.active_position
+        # #BUG-7 / 사용자 요청: 거래소 포지션 값 그대로 우선 (unrealized_pnl / entry).
+        # 거래소 fetch 실패 시 봇 메모리 (ap) + 봇 계산 fallback.
+        ex_unrealized: float | None = None
+        ex_entry = ap.entry
+        try:
+            ex_pos = await bot.client.fetch_position(bot.symbol)
+            if ex_pos:
+                up = ex_pos.get("unrealized_pnl")
+                if up is None:
+                    up = ex_pos.get("unrealizedPnl")  # ccxt 표준 키
+                if isinstance(up, (int, float)):
+                    ex_unrealized = float(up)
+                ep = (
+                    ex_pos.get("entry_price")
+                    or ex_pos.get("entryPrice")
+                    or ex_pos.get("avgPrice")
+                )
+                if isinstance(ep, (int, float)) and float(ep) > 0:
+                    ex_entry = float(ep)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("거래소 포지션 PnL fetch 실패 — 봇 계산 fallback: %s", e)
+
         # mark price = 마지막 봉 close (fetch 실패 시 entry 로 fallback)
-        mark_price = ap.entry
+        mark_price = ex_entry
         try:
             rows = await bot.client.fetch_ohlcv(bot.symbol, bot.timeframe, 2)
             if rows:
@@ -427,21 +449,23 @@ def create_app(manager: BotManager) -> FastAPI:
         except Exception as e:  # noqa: BLE001
             logger.debug("mark_price fetch 실패 — entry 사용: %s", e)
 
-        # Unrealized PnL = (mark - entry) * qty (long) / (entry - mark) * qty (short)
-        if ap.direction is Direction.LONG:
-            unrealized = (mark_price - ap.entry) * ap.qty
+        # Unrealized PnL — 거래소 값 우선, 없으면 (mark-entry)*qty 봇 계산.
+        if ex_unrealized is not None:
+            unrealized = ex_unrealized
+        elif ap.direction is Direction.LONG:
+            unrealized = (mark_price - ex_entry) * ap.qty
         else:
-            unrealized = (ap.entry - mark_price) * ap.qty
+            unrealized = (ex_entry - mark_price) * ap.qty
 
-        # Notional / Margin / Liquidation (대략)
+        # Notional / Margin / Liquidation (거래소 entry 기준 대략)
         lev = manager.settings.leverage
-        notional = ap.entry * ap.qty
+        notional = ex_entry * ap.qty
         margin = notional / lev
         # liquidation = entry × (1 ∓ 1/lev × 0.95) — 0.95 = maintenance margin buffer
         if ap.direction is Direction.LONG:
-            liq_price = ap.entry * (1.0 - (1.0 / lev) * 0.95)
+            liq_price = ex_entry * (1.0 - (1.0 / lev) * 0.95)
         else:
-            liq_price = ap.entry * (1.0 + (1.0 / lev) * 0.95)
+            liq_price = ex_entry * (1.0 + (1.0 / lev) * 0.95)
 
         # Unrealized PnL % (ROI on margin)
         roi_pct = (unrealized / margin * 100.0) if margin > 0 else 0.0
@@ -450,7 +474,7 @@ def create_app(manager: BotManager) -> FastAPI:
             "active": True,
             "symbol": bot.symbol,
             "direction": ap.direction.value,
-            "entry": ap.entry,
+            "entry": ex_entry,
             "stop_loss": ap.stop_loss,
             "take_profit": ap.take_profit,
             "qty": ap.qty,

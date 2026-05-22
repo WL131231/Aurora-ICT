@@ -38,6 +38,7 @@ def _mock_client() -> AsyncMock:
     client.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0}})
     client.modify_stop_loss = AsyncMock(return_value={"retCode": 0})
     client.cancel_all_orders = AsyncMock(return_value=None)
+    client.fetch_closed_positions = AsyncMock(return_value=[])
     return client
 
 
