@@ -194,8 +194,10 @@ def test_signal_require_retrace_allows_retraced() -> None:
     df = pd.DataFrame(rows)
     times = [start + timedelta(minutes=i) for i in range(len(rows))]
     df.index = pd.DatetimeIndex(times)
+    # min_rr 낮게 — #LIVE-7 ATR 기반 SL(최소 1.5×ATR)로 합성 데이터의 SL 폭이
+    # 넓어져 RR 가 낮아짐. 이 테스트는 retrace 허용 검증이 목적이라 RR 문턱 완화.
     sig = generate_ict_signal(
-        df, "BTCUSDT", min_rr=1.0, fvg_min_size_pct=0.001,
+        df, "BTCUSDT", min_rr=0.1, fvg_min_size_pct=0.001,
         require_retrace=True,
     )
     # retrace 됐으니 진입 허용

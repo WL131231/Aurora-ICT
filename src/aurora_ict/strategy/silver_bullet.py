@@ -29,6 +29,7 @@ from aurora_ict.indicators.mitigation_block import MitigationBlock, detect_mitig
 from aurora_ict.indicators.order_block import (
     OrderBlock,
     OrderBlockType,
+    _atr,
     detect_order_blocks,
 )
 from aurora_ict.indicators.rejection_block import (
@@ -308,6 +309,7 @@ def detect_silver_bullet_setups(
         return []
 
     swings = detect_swing_points(df, left=swing_left, right=swing_right)
+    atr_val = _atr_last(df)  # #LIVE-7: SL 최소 폭 (1.5×ATR)
     if bias is None:
         bias = _bias_from_structure(df, swings)
 
@@ -367,6 +369,7 @@ def detect_silver_bullet_setups(
             stop_loss = fvg.low
         else:
             stop_loss = fvg.high
+        stop_loss = _widen_sl_to_atr(entry, stop_loss, direction, atr_val)  # #LIVE-7
 
         target_swing = _next_liquidity_target(swings, direction, entry)
         if target_swing is None:
@@ -527,6 +530,47 @@ def _calc_rr(
     return reward / risk
 
 
+# #LIVE-7 (2026-05-23 사용자 결정): SL 폭 최소 = ATR_SL_MULT × ATR.
+# 구조적 SL (FVG 가장자리 / wick) 이 5m 봉 변동의 절반(~0.05%) 밖에 안 돼 진입 직후
+# 노이즈에 SL 털리던 문제 → ATR 기반 최소 폭 보장 (방향 맞아도 못 버티던 것 해소).
+_ATR_SL_MULT = 1.5
+_ATR_SL_PERIOD = 14
+
+
+def _atr_last(df: pd.DataFrame, period: int = _ATR_SL_PERIOD) -> float:
+    """df 마지막 봉의 ATR (Wilder) — SL 최소 폭 계산용. 실패 시 0.0."""
+    if df is None or len(df) == 0:
+        return 0.0
+    series = _atr(
+        df["high"].to_numpy(),
+        df["low"].to_numpy(),
+        df["close"].to_numpy(),
+        period,
+    )
+    if len(series) == 0:
+        return 0.0
+    val = float(series.iloc[-1])
+    return 0.0 if pd.isna(val) else val
+
+
+def _widen_sl_to_atr(
+    entry: float,
+    sl: float,
+    direction: Direction,
+    atr_val: float,
+) -> float:
+    """SL 폭이 ``_ATR_SL_MULT × ATR`` 미만이면 ATR 기준으로 넓힘 (#LIVE-7).
+
+    구조적 SL 이 더 넓으면 그대로 (ICT 구조 의미 존중). atr_val<=0 이면 원본 유지.
+    """
+    if atr_val <= 0:
+        return sl
+    min_dist = _ATR_SL_MULT * atr_val
+    if abs(entry - sl) >= min_dist:
+        return sl
+    return entry - min_dist if direction is Direction.LONG else entry + min_dist
+
+
 def _ts_ms_at_idx(df: pd.DataFrame, idx: int) -> int:
     """봉 idx 의 ts(ms) 추출 — timestamp 컬럼 우선, 없으면 DatetimeIndex/int index.
 
@@ -550,6 +594,7 @@ def _build_turtle_setup(
     swings: list[SwingPoint],
     *,
     min_rr: float,
+    atr_val: float = 0.0,
 ) -> SilverBulletSetup | None:
     """Turtle Soup → SilverBulletSetup. None 반환 시 setup 무효 (RR/swing 부족)."""
     direction = (Direction.SHORT if ts.direction is TurtleSoupDirection.SHORT
@@ -562,6 +607,7 @@ def _build_turtle_setup(
         sl = ts.wick_extreme * (1 + _SL_BUFFER_RATIO)
     else:
         sl = ts.wick_extreme * (1 - _SL_BUFFER_RATIO)
+    sl = _widen_sl_to_atr(entry, sl, direction, atr_val)  # #LIVE-7
 
     # TP = opposite_target (N-bar 반대편). swing 보다 그게 더 명확 (Turtle 정통).
     tp = ts.opposite_target
@@ -596,6 +642,7 @@ def _build_mitigation_setup(
     swings: list[SwingPoint],
     *,
     min_rr: float,
+    atr_val: float = 0.0,
 ) -> SilverBulletSetup | None:
     """Mitigation Block (retest 완료된) → SilverBulletSetup."""
     if mb.retest_idx is None:
@@ -611,6 +658,7 @@ def _build_mitigation_setup(
         sl = mb.low * (1 - _SL_BUFFER_RATIO)
     else:
         sl = mb.high * (1 + _SL_BUFFER_RATIO)
+    sl = _widen_sl_to_atr(entry, sl, direction, atr_val)  # #LIVE-7
 
     target_swing = _find_target_swing(
         swings, direction=direction, after_idx=mb.retest_idx,
@@ -650,6 +698,7 @@ def _build_implied_fvg_setup(
     swings: list[SwingPoint],
     *,
     min_rr: float,
+    atr_val: float = 0.0,
 ) -> SilverBulletSetup | None:
     """Implied FVG → SilverBulletSetup. zone = body_high ~ body_low."""
     direction = (Direction.LONG if ifvg.type is ImpliedFVGType.BULLISH
@@ -660,6 +709,7 @@ def _build_implied_fvg_setup(
         sl = ifvg.body_low * (1 - _SL_BUFFER_RATIO)
     else:
         sl = ifvg.body_high * (1 + _SL_BUFFER_RATIO)
+    sl = _widen_sl_to_atr(entry, sl, direction, atr_val)  # #LIVE-7
 
     target_swing = _find_target_swing(
         swings, direction=direction, after_idx=ifvg.idx, current_price=entry,
@@ -698,6 +748,7 @@ def _build_rejection_setup(
     swings: list[SwingPoint],
     *,
     min_rr: float,
+    atr_val: float = 0.0,
 ) -> SilverBulletSetup | None:
     """Rejection Block → SilverBulletSetup. zone = wick_high ~ wick_low."""
     direction = (Direction.LONG if rb.type is RejectionBlockType.BULLISH
@@ -709,6 +760,7 @@ def _build_rejection_setup(
         sl = rb.wick_low * (1 - _SL_BUFFER_RATIO)
     else:
         sl = rb.wick_high * (1 + _SL_BUFFER_RATIO)
+    sl = _widen_sl_to_atr(entry, sl, direction, atr_val)  # #LIVE-7
 
     target_swing = _find_target_swing(
         swings, direction=direction, after_idx=rb.idx, current_price=entry,
@@ -765,12 +817,13 @@ def build_extra_source_setups(
         return []
 
     swings = detect_swing_points(df)
+    atr_val = _atr_last(df)  # #LIVE-7: SL 최소 폭 (1.5×ATR) 계산용
     setups: list[SilverBulletSetup] = []
 
     # 1) Turtle Soup
     ts_setups = detect_turtle_soup_setups(df, lookback=20)
     for ts in ts_setups[-3:]:   # 최근 3개만 (오래된 거 stale)
-        built = _build_turtle_setup(ts, df, swings, min_rr=min_rr)
+        built = _build_turtle_setup(ts, df, swings, min_rr=min_rr, atr_val=atr_val)
         if built and _matches_bias(built.direction, bias):
             setups.append(built)
 
@@ -779,21 +832,23 @@ def build_extra_source_setups(
     obs = detect_order_blocks(df, swings=swings)
     mbs = detect_mitigation_blocks(obs, df)
     for mb in mbs[-3:]:
-        built = _build_mitigation_setup(mb, df, swings, min_rr=min_rr)
+        built = _build_mitigation_setup(mb, df, swings, min_rr=min_rr, atr_val=atr_val)
         if built and _matches_bias(built.direction, bias):
             setups.append(built)
 
     # 3) Implied FVG
     ifvgs = detect_implied_fvgs(df)
     for ifvg in ifvgs[-3:]:
-        built = _build_implied_fvg_setup(ifvg, df, swings, min_rr=min_rr)
+        built = _build_implied_fvg_setup(
+            ifvg, df, swings, min_rr=min_rr, atr_val=atr_val,
+        )
         if built and _matches_bias(built.direction, bias):
             setups.append(built)
 
     # 4) Rejection Block
     rbs = detect_rejection_blocks(df)
     for rb in rbs[-3:]:
-        built = _build_rejection_setup(rb, df, swings, min_rr=min_rr)
+        built = _build_rejection_setup(rb, df, swings, min_rr=min_rr, atr_val=atr_val)
         if built and _matches_bias(built.direction, bias):
             setups.append(built)
 
