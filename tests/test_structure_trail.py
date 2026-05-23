@@ -219,6 +219,56 @@ def test_short_trail_no_regression() -> None:
 
 
 # ============================================================
+# 현재가 보호선 — trail SL 이 현재가를 넘으면 금지 (v0.4.77 조기청산 버그 회귀)
+# ============================================================
+
+
+def test_short_trail_above_current_price_returns_none() -> None:
+    """SHORT: swing high 가 entry 아래라 trail 통과 조건은 맞지만, 그 사이 가격이
+    swing 위로 되돌아와 new_sl 이 현재가 이하면 trail 금지.
+
+    Why: 이 가드 없으면 SL 을 현재가 아래로 옮기려다 거래소가 거부(10001)하고
+    내부 SL 만 잘못 갱신돼 숏을 진입가 부근에서 조기청산함 (v0.4.77 demo 손실 원인).
+    """
+    df = _df([
+        (100, 101, 99, 100),
+        (100, 100, 90, 91),
+        (91, 91, 86, 87),
+        (87, 93, 86, 92),        # swing high @ 93 (entry 100 아래)
+        (92, 92, 85, 86),
+        (86, 90, 85, 89),
+        (89, 94, 88, 93),        # 가격 되돌림 상승
+        (93, 96, 92, 95),        # 현재가(종가) 95 > new_sl(≈93.09)
+    ])
+    result = compute_structure_trail(
+        df, Direction.SHORT, entry=100.0, current_stop_loss=105.0,
+        buffer_ratio=0.001,
+    )
+    # anchor 93 → new_sl 93.093 인데 현재가 95 이하 → 거래소 거부 영역 → None
+    assert result is None
+
+
+def test_long_trail_below_current_price_returns_none() -> None:
+    """LONG: swing low 가 entry 위라 통과 조건은 맞지만, 가격이 swing 아래로
+    되돌아와 new_sl 이 현재가 이상이면 trail 금지 (SHORT 대칭)."""
+    df = _df([
+        (100, 101, 99, 100),
+        (100, 112, 109, 111),
+        (111, 113, 107, 110),    # swing low @ 107 (entry 100 위)
+        (110, 116, 110, 115),
+        (115, 116, 105, 106),    # 가격 되돌림 하락
+        (106, 107, 104, 105),
+        (105, 106, 103, 103),    # 현재가(종가) 103 < new_sl(≈106.89)
+    ])
+    result = compute_structure_trail(
+        df, Direction.LONG, entry=100.0, current_stop_loss=95.0,
+        buffer_ratio=0.001,
+    )
+    # anchor 107 → new_sl 106.893 인데 현재가 103 이상 → None
+    assert result is None
+
+
+# ============================================================
 # TrailUpdate dataclass
 # ============================================================
 

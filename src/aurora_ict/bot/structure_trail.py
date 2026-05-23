@@ -68,6 +68,11 @@ def compute_structure_trail(
     if len(df) < 5:
         return None
 
+    # 현재가 (마지막 종가). 트레일 SL 이 이 값을 넘어가면(SHORT: 현재가 이하 /
+    # LONG: 현재가 이상) 거래소가 거부(10001)하고 내부 SL 만 잘못 갱신돼 조기청산을
+    # 유발하므로, 아래 보호선 검사에 사용.
+    current_price = float(df["close"].iloc[-1])
+
     swings = detect_swing_points(df, left=swing_left, right=swing_right)
     if not swings:
         return None
@@ -100,6 +105,10 @@ def compute_structure_trail(
         # 역행 금지 — 새 SL 이 현재 SL 보다 낮으면 갱신 X.
         if new_sl <= current_stop_loss:
             return None
+        # 현재가 보호선 — LONG SL 은 현재가 아래여야 유효. 가격이 swing 위로 못
+        # 버티고 new_sl 이 현재가 이상이면 trail 금지 (거래소 거부 + 조기청산 방지).
+        if new_sl >= current_price:
+            return None
     else:
         if anchor.price >= entry:
             return None
@@ -109,6 +118,10 @@ def compute_structure_trail(
         if new_sl >= entry:
             return None
         if new_sl >= current_stop_loss:
+            return None
+        # 현재가 보호선 — SHORT SL 은 현재가 위여야 유효. 가격이 swing 위로 되돌아와
+        # new_sl 이 현재가 이하면 trail 금지 (거래소 거부 + 조기청산 방지).
+        if new_sl <= current_price:
             return None
 
     return TrailUpdate(
