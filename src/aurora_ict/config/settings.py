@@ -91,6 +91,11 @@ class IctSettings(BaseSettings):
     # SL = FVG 가장자리 단순 + 단일 TP 조합에서 RR 2.0 만족 setup 빈도 급감 관찰
     # (2026-05-21 새벽 데모 0건). 정통보다 빈도 우선 (장수 결정).
     min_rr: float = Field(default=1.5, ge=1.0)
+    # min_confluence: B+ 등급 게이트 (#1/#8, 2026-05-25 장수 결정). HTF boost 까지 반영된
+    # 최종 confluence_score (OB+1/sweep+1/macro+1~2/HTF FVG +1~3, 합 0~7) 가 이 값 미만이면
+    # 진입 skip → 빈도↓·품질↑ (하루 ~4~5개 목표). 등급 C0~1/B2~3/B+4~5/A6+.
+    # 기본 4 = "B+ 이상". 너무 적으면 3, 많으면 5 로 데모 보고 튜닝.
+    min_confluence: int = Field(default=4, ge=0, le=10)
     # FVG 최소 % size — 지난 12거래 분석 결과 작은 FVG 노이즈 비중 커서 0.0004 → 0.0006 상향.
     fvg_min_size_pct: float = Field(default=0.0006, ge=0)
     step_interval_sec: int = Field(default=60, ge=10)
