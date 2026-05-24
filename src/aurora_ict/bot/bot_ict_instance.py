@@ -27,7 +27,10 @@ import pandas as pd
 
 from aurora_ict.bot.structure_trail import compute_structure_trail
 from aurora_ict.indicators.daily_bias import compute_daily_bias
+from aurora_ict.indicators.dol import compute_dol
+from aurora_ict.indicators.liquidity import detect_liquidity_sweeps
 from aurora_ict.indicators.structure import TrendDirection
+from aurora_ict.indicators.swing_points import detect_swing_points
 from aurora_ict.interfaces.trades_store import (
     TradeEvent,
     TradeEventType,
@@ -121,6 +124,10 @@ class BotState(StrEnum):
 # 보호 SL fallback 폭 — 복구 등으로 SL 거리를 모를 때 entry 대비 이 비율로 임시 SL.
 # 0.5% (20x 면 ~10% 위험) — 무SL 방치보단 안전. 추후 ATR 기반으로 정교화 가능.
 _FALLBACK_SL_PCT = 0.005
+
+# DOL 역방향 진입 감점 (#3 보완). 지배적 draw 와 반대인 setup 의 confluence_score 를
+# 이만큼 깎아 B+ 게이트(min_confluence)에서 걸러지게 함. 2 = 보통 setup 은 컷, A급만 통과.
+_DOL_COUNTER_PENALTY = 2
 
 
 @dataclass(slots=True)
@@ -476,6 +483,8 @@ class BotIctInstance:
         # qty 산정 (_calc_qty) 에서 confluence_score 가 사용되므로 boost 가 _execute_setup
         # 이전에 적용되어야 효과 발생. _evaluate_htf_override 직후 호출.
         await self._apply_htf_supporting_boost(signal.setup, df)
+        # #3 보완: Draw on Liquidity 역방향 진입은 confluence 감점 (게이트 전에 적용).
+        self._apply_dol_bias(signal.setup, df)
         # B+ 등급 게이트 (#1/#8) — HTF boost 까지 반영된 최종 score 가 기준 미만이면 skip.
         # 빈도↓·품질↑ (하루 ~4~5개 목표). min_confluence=0 이면 비활성(기존 동작).
         if signal.setup.confluence_score < self.min_confluence:
@@ -1098,6 +1107,43 @@ class BotIctInstance:
         except Exception as e:  # noqa: BLE001
             logger.error("비상청산 실패: %s — 수동 확인 필요", e)
         self.active_position = None
+
+    def _apply_dol_bias(self, setup: SilverBulletSetup, df: pd.DataFrame) -> None:
+        """Draw on Liquidity 편향 필터 (#3 보완) — 역방향 진입은 confluence 감점.
+
+        정통 ICT: 가격은 가장 가까운 미청산 유동성(DOL)으로 끌린다. 그 draw 와 반대인
+        setup 은 추세를 거스를 위험 → confluence_score 를 깎아 B+ 게이트(min_confluence)
+        에서 걸러지게 한다 (오르는 장에 계속 숏 치던 문제 완화). 지배적 draw = 위/아래
+        DOL 중 현재가에 더 가까운 쪽(magnet). in-place 감점.
+        """
+        if df is None or len(df) < 5:
+            return
+        swings = detect_swing_points(df)
+        if not swings:
+            return
+        detect_liquidity_sweeps(df, swings)  # swept 마킹 — 이미 먹힌 유동성 제외
+        dols = compute_dol(df, swings)
+        if not dols:
+            return
+        bull = next((d for d in dols if d.type == "bullish"), None)
+        bear = next((d for d in dols if d.type == "bearish"), None)
+        if bull is not None and bear is not None:
+            draw = Direction.LONG if bull.distance < bear.distance else Direction.SHORT
+        elif bull is not None:
+            draw = Direction.LONG
+        elif bear is not None:
+            draw = Direction.SHORT
+        else:
+            return
+        if setup.direction is not draw:
+            setup.confluence_score -= _DOL_COUNTER_PENALTY
+            setup.confluences.append(
+                f"dol_counter_{draw.value}_-{_DOL_COUNTER_PENALTY}",
+            )
+            logger.info(
+                "DOL 역방향 감점 — setup=%s draw=%s score→%d",
+                setup.direction.value, draw.value, setup.confluence_score,
+            )
 
     async def _fetch_equity(self) -> float:
         """가용 자산 (USDT equity) 조회.
