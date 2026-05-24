@@ -184,6 +184,9 @@ class BotIctInstance:
     position_pct_max: float = 90.0
     position_pct_step: float = 15.0
     min_rr: float = 2.0
+    # B+ 등급 게이트 (#1/#8): HTF boost 까지 반영된 최종 confluence_score 가 이 값 미만이면
+    # 진입 skip. 0=비활성(기존 동작). 등급 C0~1/B2~3/B+4~5/A6+ → 4 면 B+ 이상만.
+    min_confluence: int = 0
     step_interval_sec: int = 60
     ohlcv_limit: int = 200
     fvg_min_size_pct: float = 0.0005
@@ -473,6 +476,16 @@ class BotIctInstance:
         # qty 산정 (_calc_qty) 에서 confluence_score 가 사용되므로 boost 가 _execute_setup
         # 이전에 적용되어야 효과 발생. _evaluate_htf_override 직후 호출.
         await self._apply_htf_supporting_boost(signal.setup, df)
+        # B+ 등급 게이트 (#1/#8) — HTF boost 까지 반영된 최종 score 가 기준 미만이면 skip.
+        # 빈도↓·품질↑ (하루 ~4~5개 목표). min_confluence=0 이면 비활성(기존 동작).
+        if signal.setup.confluence_score < self.min_confluence:
+            logger.info(
+                "등급 미달 skip — score=%d < min_confluence=%d (%s %s)",
+                signal.setup.confluence_score, self.min_confluence,
+                signal.setup.direction.value, signal.setup.window,
+            )
+            self._last_setup_ts_ms = signal.setup.ts_ms
+            return signal
         if self.htf_override_mode == "A" and htf_target is not None:
             logger.info(
                 "HTF override(A) 진입 차단 — setup=%s 반대 HTF FVG=%s",

@@ -115,6 +115,25 @@ async def test_step_executes_long_setup() -> None:
 
 
 @pytest.mark.asyncio
+async def test_step_grade_gate_skips_low_confluence() -> None:
+    """B+ 등급 게이트 (#1/#8) — 최종 confluence_score 미달이면 신호는 잡혀도 진입 skip."""
+    start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
+    rows = _ohlcv_rows(start, _bars_long_setup())
+    client = _mock_client(rows)
+    bot = BotIctInstance(
+        client=client,
+        symbol="BTCUSDT",
+        min_rr=1.0,
+        fvg_min_size_pct=0.001,
+        min_confluence=99,  # 어떤 setup 도 미달 → 무조건 skip
+    )
+    sig = await bot.step()
+    assert sig.action is SignalAction.ENTER_LONG   # 신호 자체는 검출됨
+    assert client.place_order.await_count == 0     # 진입은 안 함
+    assert bot.active_position is None
+
+
+@pytest.mark.asyncio
 async def test_step_skip_when_position_exists() -> None:
     """active position 박힘 → place_order 박힘 X (박힘 박힘 fetch_position 박힘)."""
     start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
