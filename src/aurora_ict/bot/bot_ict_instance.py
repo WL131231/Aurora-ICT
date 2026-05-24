@@ -118,6 +118,11 @@ class BotState(StrEnum):
     PAUSED = "paused"
 
 
+# 보호 SL fallback 폭 — 복구 등으로 SL 거리를 모를 때 entry 대비 이 비율로 임시 SL.
+# 0.5% (20x 면 ~10% 위험) — 무SL 방치보단 안전. 추후 ATR 기반으로 정교화 가능.
+_FALLBACK_SL_PCT = 0.005
+
+
 @dataclass(slots=True)
 class _ActivePosition:
     """현재 진입 중인 position state."""
@@ -350,6 +355,10 @@ class BotIctInstance:
             qty=contracts,
             reason="bot startup — exchange position fetch",
         )
+        # P1-2: 거래소 측 SL 이 없는(=0) 채 복구되면 무SL 포지션 → 보호 SL 적용 (안 되면 청산).
+        if sl <= 0:
+            logger.warning("recover: SL 없는 포지션 — 보호 SL 적용 시도 %s", self.symbol)
+            await self._ensure_protective_sl(tp if tp > 0 else None, 0.0)
 
     async def stop(self) -> None:
         """봇 정지 (background task cancel)."""
@@ -844,16 +853,7 @@ class BotIctInstance:
             htf_flip_target=htf_flip_target,
             ltf_weight=TF_WEIGHT.get(self.timeframe, 1),
         )
-        # #LIVE-4: 체결 후 포지션에 SL/TP conditional 설정 (동봉 대신).
-        tpsl_resp = await self.client.set_position_tpsl(
-            self.symbol, stop_loss=setup.stop_loss, take_profit=setup.take_profit,
-        )
-        if not tpsl_resp:
-            logger.warning(
-                "SL/TP 적용 실패 (즉시체결) — 포지션 SL/TP 없을 수 있음: %s %s",
-                self.symbol, side,
-            )
-        # #BUG-2 해소: ENTRY 이벤트 기록.
+        # #BUG-2 해소: ENTRY 이벤트 기록 (체결됨 — 먼저 기록).
         self._record_trade(
             TradeEventType.ENTRY,
             direction=setup.direction,
@@ -865,7 +865,12 @@ class BotIctInstance:
                 f"window={setup.window} rr={setup.risk_reward:.2f}"
             ),
         )
-        if htf_flip_target is not None:
+        # #LIVE-4 + P1(#LIVE-6): 체결 후 유효한 보호 SL 보장. 계획가~체결 괴리로
+        # SL 이 현재가 너머면 현재가 기준 재계산, 그래도 실패 시 무SL 방치 금지 위해 청산.
+        sl_applied = await self._ensure_protective_sl(
+            setup.take_profit, abs(setup.entry - setup.stop_loss),
+        )
+        if sl_applied and htf_flip_target is not None:
             logger.info(
                 "HTF flip target armed — %s zone=[%.4f,%.4f] weight=%d",
                 htf_flip_target.tf, htf_flip_target.low, htf_flip_target.high,
@@ -913,15 +918,7 @@ class BotIctInstance:
                 htf_flip_target=pe.htf_flip_target,
                 ltf_weight=pe.ltf_weight,
             )
-            # #LIVE-4: 체결된 포지션에 SL/TP conditional 설정 (entry 주문 동봉 대신).
-            tpsl_resp = await self.client.set_position_tpsl(
-                self.symbol, stop_loss=pe.stop_loss, take_profit=pe.take_profit,
-            )
-            if not tpsl_resp:
-                logger.warning(
-                    "SL/TP 적용 실패 (pending 체결) — 포지션 SL/TP 없을 수 있음: %s",
-                    self.symbol,
-                )
+            # #BUG-2: ENTRY 기록 (체결됨 — 먼저 기록).
             self._record_trade(
                 TradeEventType.ENTRY,
                 direction=pe.direction,
@@ -930,10 +927,14 @@ class BotIctInstance:
                 setup_ts_ms=pe.setup_ts_ms,
                 reason=f"limit filled entry={entry_px:.4f}",
             )
-            logger.info(
-                "지정가 체결 — active_position 승격 entry=%.4f sl=%.4f tp=%.4f",
-                entry_px, pe.stop_loss, pe.take_profit,
-            )
+            # #LIVE-4 + P1: 체결 후 유효한 보호 SL 보장 (안 되면 청산).
+            if await self._ensure_protective_sl(
+                pe.take_profit, abs(pe.entry - pe.stop_loss),
+            ):
+                logger.info(
+                    "지정가 체결 — active_position 승격 entry=%.4f sl=%.4f tp=%.4f",
+                    entry_px, self.active_position.stop_loss, pe.take_profit,
+                )
             self._pending_entry = None
             return False
         # 미체결 — TTL 만료 체크.
@@ -982,6 +983,108 @@ class BotIctInstance:
             pos.stop_loss, update.new_stop_loss, update.anchor_swing_price,
         )
         pos.stop_loss = update.new_stop_loss
+
+    @staticmethod
+    def _is_protective_sl(direction: Direction, sl: float, ref_price: float) -> bool:
+        """SL 이 ref_price 의 보호 측인지 — SHORT 은 위, LONG 은 아래.
+
+        bybit 는 SHORT SL ≤ 현재가 / LONG SL ≥ 현재가 면 거부(10001).
+        """
+        if sl <= 0:
+            return False
+        if direction is Direction.SHORT:
+            return sl > ref_price
+        return sl < ref_price
+
+    @staticmethod
+    def _protective_sl(direction: Direction, ref_price: float, distance: float) -> float:
+        """ref_price 의 보호 측으로 distance 만큼 떨어진 SL (SHORT 위 / LONG 아래)."""
+        if direction is Direction.SHORT:
+            return ref_price + distance
+        return ref_price - distance
+
+    async def _ensure_protective_sl(
+        self, take_profit: float | None, sl_distance: float,
+    ) -> bool:
+        """active_position 에 거래소가 수락하는 유효 SL 보장. 실패 시 포지션 청산.
+
+        P1/#LIVE-6: 계획가~체결 사이 가격 급변으로 계획 SL 이 현재가 너머로 가면
+        거래소가 거부(10001) → 무SL 포지션. 현재가 기준 보호 측으로 SL 재계산 후
+        set_position_tpsl, 1회 재시도, 그래도 실패하면 무SL 방치 금지를 위해 청산.
+
+        Args:
+            take_profit: 함께 걸 TP (None 가능).
+            sl_distance: 진입가 대비 SL 거리(절대값). 0 이하면 _FALLBACK_SL_PCT 적용.
+
+        Returns:
+            True = 유효 SL 적용 (active_position 유지). False = 적용 실패로 청산함.
+        """
+        pos = self.active_position
+        if pos is None:
+            return False
+        try:
+            ref = await self.client.fetch_ticker(self.symbol)
+        except Exception:  # noqa: BLE001
+            ref = None
+        if not ref or ref <= 0:
+            ref = pos.entry
+        if sl_distance <= 0:
+            sl_distance = ref * _FALLBACK_SL_PCT
+        # 계획 SL 이 이미 보호 측이면 존중, 아니면 현재가 기준 재계산.
+        desired_sl = (
+            pos.stop_loss
+            if self._is_protective_sl(pos.direction, pos.stop_loss, ref)
+            else self._protective_sl(pos.direction, ref, sl_distance)
+        )
+        if await self.client.set_position_tpsl(
+            self.symbol, stop_loss=desired_sl, take_profit=take_profit,
+        ):
+            pos.stop_loss = desired_sl
+            return True
+        # 재시도 — 현재가 재조회 후 보호 측 재계산.
+        try:
+            ref2 = await self.client.fetch_ticker(self.symbol)
+        except Exception:  # noqa: BLE001
+            ref2 = None
+        ref2 = ref2 if (ref2 and ref2 > 0) else ref
+        retry_sl = self._protective_sl(pos.direction, ref2, sl_distance)
+        if await self.client.set_position_tpsl(
+            self.symbol, stop_loss=retry_sl, take_profit=take_profit,
+        ):
+            pos.stop_loss = retry_sl
+            return True
+        logger.error(
+            "SL 적용 2회 실패 — 무SL 방치 금지: 포지션 청산 %s %s",
+            self.symbol, pos.direction.value,
+        )
+        await self._emergency_close()
+        return False
+
+    async def _emergency_close(self) -> None:
+        """위험(무SL 등) 상황에서 active_position 을 시장가 reduce_only 로 청산."""
+        pos = self.active_position
+        if pos is None:
+            return
+        close_side = "buy" if pos.direction is Direction.SHORT else "sell"
+        try:
+            await self.client.place_order(
+                self.symbol, side=close_side, qty=pos.qty,
+                price=None, reduce_only=True,
+            )
+            self._record_trade(
+                TradeEventType.MANUAL_CLOSE,
+                direction=pos.direction,
+                price=pos.entry,
+                qty=pos.qty,
+                reason="SL 적용 실패 비상청산 (무SL 방지)",
+            )
+            logger.info(
+                "비상청산 완료 — %s %s qty=%.4f",
+                self.symbol, pos.direction.value, pos.qty,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error("비상청산 실패: %s — 수동 확인 필요", e)
+        self.active_position = None
 
     async def _fetch_equity(self) -> float:
         """가용 자산 (USDT equity) 조회.
