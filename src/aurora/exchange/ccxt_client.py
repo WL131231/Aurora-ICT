@@ -51,6 +51,13 @@ _RETRY_TRANSIENT = retry(
 )
 
 
+# 시각 차이 재동기 주기 (초). 시작 시 1회 보정만 하면 Windows 시계가 장시간
+# 가동 중 server 대비 드리프트(관측: ~11h 에 +1.3s)해 bybit 의 +1000ms 허용을
+# 넘김 → 모든 서명 요청 InvalidNonce(10002) 실패 → 재시작 전까지 매매 불가.
+# 따라서 주기적으로 load_time_difference 재호출해 드리프트 누적을 차단.
+_TIME_SYNC_INTERVAL_SEC = 180
+
+
 class CcxtClient:
     """ccxt 기반 거래소 어댑터 — Bybit Demo Trading 우선.
 
@@ -124,16 +131,31 @@ class CcxtClient:
 
         # 시각 차이 보정은 첫 호출 시 lazy 적용 (constructor 는 sync)
         self._initialized = False
+        self._last_time_sync = 0.0  # monotonic 초 — 마지막 load_time_difference 시각
 
     async def _ensure_init(self) -> None:
-        """첫 호출 시 시각 차이 보정 (DESIGN.md §3.1).
+        """첫 호출 + 주기적 시각 차이 재보정 (DESIGN.md §3.1).
 
         lazy init 이유: constructor 가 sync 라 ``await load_time_difference()``
-        호출 불가. 첫 메서드 호출 시 1회 보정.
+        호출 불가. 첫 메서드 호출 시 보정.
+
+        재동기 이유: 시작 1회 보정만 하면 Windows 시계가 장시간 가동 중 server
+        대비 드리프트(관측 ~11h +1.3s)해 bybit +1000ms 초과 → 모든 서명 요청
+        InvalidNonce(10002) → 재시작 전까지 매매 불가. ``_TIME_SYNC_INTERVAL_SEC``
+        마다 재보정해 드리프트 누적을 차단한다.
         """
-        if not self._initialized:
+        now = time.monotonic()
+        if self._initialized and (now - self._last_time_sync) < _TIME_SYNC_INTERVAL_SEC:
+            return
+        try:
             await self._ex.load_time_difference()
-            self._initialized = True
+        except ccxt.BaseError as exc:
+            # Why: 재동기 실패(일시 네트워크 등)는 비치명 — 기존 오프셋 유지하고
+            # 다음 호출에서 재시도. 첫 init 실패면 _initialized 미설정이라 곧 재시도.
+            logger.warning("load_time_difference 재동기 실패 (기존 오프셋 유지): %s", exc)
+            return
+        self._last_time_sync = now
+        self._initialized = True
 
     async def close(self) -> None:
         """ccxt async 인스턴스 정리 — httpx 세션 close.

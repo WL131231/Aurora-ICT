@@ -350,6 +350,50 @@ async def test_ensure_init_called_once():
 
 
 @pytest.mark.asyncio
+async def test_ensure_init_resyncs_after_interval():
+    """시각차 보정은 _TIME_SYNC_INTERVAL_SEC 경과 시 재호출 (드리프트 누적 차단).
+
+    Why: 시작 1회 보정만 하면 Windows 시계 드리프트로 bybit +1000ms 초과 →
+    InvalidNonce 폭주. 주기적 재동기로 누적 차단하는 회귀 보호.
+    """
+    from aurora.exchange.ccxt_client import _TIME_SYNC_INTERVAL_SEC
+    with patch("aurora.exchange.ccxt_client.settings") as mock_settings, \
+         patch("aurora.exchange.ccxt_client.time") as mock_time:
+        mock_settings.run_mode = "demo"
+        # monotonic: 1회차 첫 보정 / 2회차 interval 미만 skip / 3회차 interval 초과 재보정
+        mock_time.monotonic = MagicMock(side_effect=[
+            1000.0,
+            1000.0 + _TIME_SYNC_INTERVAL_SEC - 1,
+            1000.0 + _TIME_SYNC_INTERVAL_SEC + 1,
+        ])
+        client = _make_client()
+        await client.get_equity()
+        await client.get_equity()
+        await client.get_equity()
+        assert client._mock_ex.load_time_difference.call_count == 2  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_ensure_init_resync_failure_non_fatal():
+    """재동기 실패(ccxt 에러)는 비치명 — 기존 오프셋 유지하고 호출 진행.
+
+    Why: 일시 네트워크로 시각 보정이 실패해도 매매 step 자체가 깨지면 안 됨.
+    """
+    import ccxt
+    with patch("aurora.exchange.ccxt_client.settings") as mock_settings:
+        mock_settings.run_mode = "demo"
+        client = _make_client()
+        client._mock_ex.load_time_difference = AsyncMock(  # type: ignore[attr-defined]
+            side_effect=ccxt.NetworkError("time sync down"),
+        )
+        client._mock_ex.fetch_balance = AsyncMock(return_value={  # type: ignore[attr-defined]
+            "USDT": {"total": 100.0, "free": 100.0, "used": 0.0},
+        })
+        balance = await client.get_equity()  # raise 안 하고 정상 반환
+        assert balance.total_usd == 100.0
+
+
+@pytest.mark.asyncio
 async def test_close_calls_ccxt_close():
     """close() → ccxt async 인스턴스 close (httpx 세션 정리)."""
     client = _make_client()
