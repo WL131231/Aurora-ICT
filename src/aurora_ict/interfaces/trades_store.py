@@ -111,9 +111,9 @@ CREATE INDEX IF NOT EXISTS idx_trades_setup ON trades(setup_ts_ms);
 
 def _format_journal_line(event: TradeEvent) -> str:
     """trade_journal.log 1줄 — 사람이 읽기 좋은 형식 (헤더 + 컨텍스트 들여쓰기 2줄)."""
-    from datetime import datetime, timezone
+    from datetime import UTC, datetime
 
-    ts = datetime.fromtimestamp(event.ts_ms / 1000.0, tz=timezone.utc).astimezone()
+    ts = datetime.fromtimestamp(event.ts_ms / 1000.0, tz=UTC).astimezone()
     iso = ts.isoformat(timespec="milliseconds")
     head = (
         f"{iso} [{event.event_type.value.upper()}] {event.direction} "
