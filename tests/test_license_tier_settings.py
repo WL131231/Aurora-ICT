@@ -30,12 +30,12 @@ def _clean_env(monkeypatch):
 
 
 def test_license_type_default_is_referral(monkeypatch):
-    """env 미설정 시 license_type='referral' (기본 24h 매매)."""
+    """env 미설정 시 license_type='referral'. 2026-05-26 부터 disable_time_filter 기본 False (Killzone)."""
     _clean_env(monkeypatch)
     s = IctSettings(_env_file=None)
     assert s.license_type == "referral"
-    # referral 은 disable_time_filter 기본값 (True) 유지
-    assert s.disable_time_filter is True
+    # referral 은 disable_time_filter 기본값 따름 — 2026-05-26 부터 False (Killzone+미장)
+    assert s.disable_time_filter is False
 
 
 def test_license_type_sub_30d_forces_time_filter(monkeypatch):
@@ -87,7 +87,16 @@ def test_invalid_license_type_falls_back_to_referral(monkeypatch):
     monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "sub_99d")
     s = IctSettings(_env_file=None)
     assert s.license_type == "referral"
-    # referral 이라 사용자 설정 (또는 default) 따름
+    # referral 이라 사용자 설정 (또는 default) 따름 — 2026-05-26 부터 default False
+    assert s.disable_time_filter is False
+
+
+def test_referral_can_opt_into_24h_via_env(monkeypatch):
+    """referral 사용자는 env 로 24h 매매(disable_time_filter=true) 복귀 가능."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "referral")
+    monkeypatch.setenv("AURORA_ICT_DISABLE_TIME_FILTER", "true")
+    s = IctSettings(_env_file=None)
     assert s.disable_time_filter is True
 
 
