@@ -72,6 +72,9 @@ class TradeEvent:
     pnl_usdt: float | None = None
     setup_ts_ms: int | None = None
     reason: str = ""
+    # 진입 사유·confluence 세부·소스·윈도우 등 풍부한 컨텍스트(JSON 문자열).
+    # ENTRY 이벤트에 채워 분석/저널에 활용. 청산 이벤트는 보통 None.
+    context_json: str | None = None
 
     def to_json_line(self) -> str:
         """JSONL 1줄 직렬화 — trailing newline 포함."""
@@ -98,11 +101,51 @@ CREATE TABLE IF NOT EXISTS trades (
     qty REAL NOT NULL,
     pnl_usdt REAL,
     setup_ts_ms INTEGER,
-    reason TEXT NOT NULL DEFAULT ''
+    reason TEXT NOT NULL DEFAULT '',
+    context_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts_ms);
 CREATE INDEX IF NOT EXISTS idx_trades_setup ON trades(setup_ts_ms);
 """
+
+
+def _format_journal_line(event: TradeEvent) -> str:
+    """trade_journal.log 1줄 — 사람이 읽기 좋은 형식 (헤더 + 컨텍스트 들여쓰기 2줄)."""
+    from datetime import UTC, datetime
+
+    ts = datetime.fromtimestamp(event.ts_ms / 1000.0, tz=UTC).astimezone()
+    iso = ts.isoformat(timespec="milliseconds")
+    head = (
+        f"{iso} [{event.event_type.value.upper()}] {event.direction} "
+        f"{event.symbol} @{event.price:.4f}"
+    )
+    if event.pnl_usdt is not None:
+        head += f" pnl={event.pnl_usdt:+.2f}"
+    if event.setup_ts_ms:
+        head += f" setup_ts={event.setup_ts_ms}"
+    if event.reason:
+        head += f" reason={event.reason}"
+    out = head + "\n"
+    if event.context_json:
+        try:
+            ctx = json.loads(event.context_json)
+        except json.JSONDecodeError:
+            return out
+        parts = []
+        for key, fmt in (
+            ("sl", "SL={:.4f}"), ("tp", "TP={:.4f}"), ("qty", "qty={:.4f}"),
+            ("rr", "RR={:.2f}"), ("score", "score={}"), ("window", "window={}"),
+            ("source", "source={}"), ("leverage", "lev={}x"),
+        ):
+            v = ctx.get(key)
+            if v is not None:
+                parts.append(fmt.format(v))
+        if parts:
+            out += "  " + " ".join(parts) + "\n"
+        confs = ctx.get("confluences")
+        if confs:
+            out += "  confluences: " + ", ".join(confs) + "\n"
+    return out
 
 
 class TradesStore:
@@ -127,6 +170,9 @@ class TradesStore:
         data_dir.mkdir(parents=True, exist_ok=True)
         self.jsonl_path = data_dir / "trades.jsonl"
         self.db_path = data_dir / "trades.db"
+        # 사람이 읽기 좋은 거래 저널 (진입 사유·confluence 세부 등). JSONL/SQLite 와
+        # 동일 데이터를 텍스트로 정리해 나중에 빠르게 훑어볼 수 있게 함.
+        self.journal_path = data_dir / "trade_journal.log"
         self._lock = Lock()
         # SQLite 스키마 초기화 — 같은 connection 재사용 (봇 lifecycle 동안).
         # check_same_thread=False 로 record() 가 외부 스레드 (WS watcher) 에서 호출되도 OK.
@@ -134,6 +180,11 @@ class TradesStore:
             str(self.db_path), check_same_thread=False,
         )
         self._conn.executescript(_SQLITE_SCHEMA)
+        # 마이그레이션 — 기존 DB 에 context_json 컬럼 없으면 추가 (중복 시 무시).
+        try:
+            self._conn.execute("ALTER TABLE trades ADD COLUMN context_json TEXT")
+        except sqlite3.OperationalError:
+            pass  # 이미 컬럼 있음
         self._conn.commit()
 
     def record(self, event: TradeEvent) -> None:
@@ -146,21 +197,27 @@ class TradesStore:
             event: 기록할 TradeEvent.
         """
         with self._lock:
-            # 1) JSONL append (atomic line write)
+            # 1) JSONL append (atomic line write) — source of truth.
             try:
                 with self.jsonl_path.open("a", encoding="utf-8") as f:
                     f.write(event.to_json_line())
             except OSError as e:
                 logger.exception("trades.jsonl append 실패: %s", e)
-                return  # JSONL 실패하면 SQLite 도 건너뜀 — 정합 회피
-            # 2) SQLite insert (JSONL 성공 후)
+                return  # JSONL 실패하면 SQLite/journal 도 건너뜀 — 정합 회피
+            # 2) 사람이 읽기 좋은 trade_journal.log 도 append (실패해도 비치명).
+            try:
+                with self.journal_path.open("a", encoding="utf-8") as jf:
+                    jf.write(_format_journal_line(event))
+            except OSError as e:
+                logger.warning("trade_journal.log append 실패: %s", e)
+            # 3) SQLite insert (JSONL 성공 후).
             try:
                 self._conn.execute(
                     """
                     INSERT INTO trades
                     (ts_ms, event_type, symbol, direction, price, qty,
-                     pnl_usdt, setup_ts_ms, reason)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     pnl_usdt, setup_ts_ms, reason, context_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event.ts_ms,
@@ -172,6 +229,7 @@ class TradesStore:
                         event.pnl_usdt,
                         event.setup_ts_ms,
                         event.reason,
+                        event.context_json,
                     ),
                 )
                 self._conn.commit()
@@ -215,8 +273,8 @@ class TradesStore:
                 """
                 INSERT INTO trades
                 (ts_ms, event_type, symbol, direction, price, qty,
-                 pnl_usdt, setup_ts_ms, reason)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 pnl_usdt, setup_ts_ms, reason, context_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -229,6 +287,7 @@ class TradesStore:
                         e.pnl_usdt,
                         e.setup_ts_ms,
                         e.reason,
+                        e.context_json,
                     )
                     for e in events
                 ],
