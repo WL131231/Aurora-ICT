@@ -15,6 +15,7 @@ Aurora 측 ``CCXTClient`` (Bybit)를 어댑터로 감싸 사용 (duck typing).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -164,6 +165,9 @@ class _PendingEntry:
     placed_ts_ms: int       # 주문 전송 시각 (TTL 만료 판정 기준)
     htf_flip_target: HtfFvgEntry | None = None
     ltf_weight: int = 1
+    # 등록 시점에 미리 빌드한 ENTRY 컨텍스트 JSON (confluences/source/window 등).
+    # 체결 시 _record_trade(context_json=...) 로 넘겨 거래 저널에 풍부히 기록.
+    context_json: str | None = None
 
 
 @dataclass(slots=True)
@@ -855,6 +859,10 @@ class BotIctInstance:
                 placed_ts_ms=int(time.time() * 1000),
                 htf_flip_target=htf_flip_target,
                 ltf_weight=TF_WEIGHT.get(self.timeframe, 1),
+                # 등록 시점에 컨텍스트 미리 빌드 — 체결되면 ENTRY 기록에 그대로 사용.
+                context_json=self._build_entry_context_json(
+                    setup, fill_price, qty, htf_flip_target,
+                ),
             )
             logger.info(
                 "지정가 entry 등록 (계획가 미체결 대기, TTL %ds) — %s %s limit=%.4f "
@@ -885,6 +893,9 @@ class BotIctInstance:
             reason=(
                 f"confluence={setup.confluence_score} "
                 f"window={setup.window} rr={setup.risk_reward:.2f}"
+            ),
+            context_json=self._build_entry_context_json(
+                setup, fill_price, qty, htf_flip_target,
             ),
         )
         # #LIVE-4 + P1(#LIVE-6): 체결 후 유효한 보호 SL 보장. 계획가~체결 괴리로
@@ -948,6 +959,7 @@ class BotIctInstance:
                 qty=pe.qty,
                 setup_ts_ms=pe.setup_ts_ms,
                 reason=f"limit filled entry={entry_px:.4f}",
+                context_json=pe.context_json,
             )
             # #LIVE-4 + P1: 체결 후 유효한 보호 SL 보장 (안 되면 청산).
             if await self._ensure_protective_sl(
@@ -1282,6 +1294,48 @@ class BotIctInstance:
                 self._today_start_equity,
             )
 
+    def _build_entry_context_json(
+        self,
+        setup: SilverBulletSetup,
+        fill_price: float,
+        qty: float,
+        htf_flip_target: HtfFvgEntry | None = None,
+    ) -> str:
+        """ENTRY 이벤트용 풍부한 컨텍스트 JSON — 진입 사유/근거 (#PR-C 거래 저널).
+
+        진입가/SL/TP/qty/레버리지/RR/score/confluences(어떤 지표 작동)/source/window/
+        HTF flip 정보를 한 묶음으로 JSON 직렬화. trades.jsonl 의 ``context_json`` 필드
+        + trade_journal.log 로 사람이 나중에 분석 가능.
+        """
+        source = getattr(setup, "source", None)
+        if hasattr(source, "value"):
+            source_val: str | None = source.value
+        elif source is not None:
+            source_val = str(source)
+        else:
+            source_val = None
+        ctx: dict[str, Any] = {
+            "entry": float(fill_price),
+            "sl": float(setup.stop_loss),
+            "tp": float(setup.take_profit),
+            "qty": float(qty),
+            "leverage": int(self.leverage),
+            "rr": float(setup.risk_reward),
+            "score": int(setup.confluence_score),
+            "confluences": list(setup.confluences),
+            "window": setup.window,
+            "source": source_val,
+            "htf_flip_target_armed": htf_flip_target is not None,
+        }
+        if htf_flip_target is not None:
+            ctx["htf_flip_target"] = {
+                "tf": htf_flip_target.tf,
+                "weight": int(htf_flip_target.weight),
+                "low": float(htf_flip_target.low),
+                "high": float(htf_flip_target.high),
+            }
+        return json.dumps(ctx, ensure_ascii=False)
+
     def _record_trade(
         self,
         event_type: TradeEventType,
@@ -1292,6 +1346,8 @@ class BotIctInstance:
         entry_for_pnl: float | None = None,
         setup_ts_ms: int | None = None,
         reason: str = "",
+        pnl_override: float | None = None,
+        context_json: str | None = None,
     ) -> None:
         """매매 이벤트 1건을 trades_store 에 기록 (#BUG-2 해소).
 
@@ -1304,6 +1360,8 @@ class BotIctInstance:
             entry_for_pnl: 청산 이벤트일 때 entry 가격 (PnL 계산용). 진입 이벤트는 None.
             setup_ts_ms: ENTRY/청산 매칭용 setup ts. RECOVERED 등은 None.
             reason: 디버그/분석 사유.
+            pnl_override: 거래소 closed-pnl 등 *정확한* 실현 PnL. 제공되면 entry/price
+                기반 추정 대신 이 값을 기록(수수료/펀딩 반영된 진실). 청산 이벤트용.
 
         TradesStore lazy init — 첫 호출 시 ``data_dir()`` 디렉토리 보장.
         실패해도 봇 전체는 멈추지 않게 try/warning 처리.
@@ -1314,11 +1372,10 @@ class BotIctInstance:
             except Exception as e:  # noqa: BLE001
                 logger.warning("TradesStore 초기화 실패 — 매매 기록 skip: %s", e)
                 return
-        # PnL 은 TradeEvent 기록용 추정치 (참고). #SAFETY-1 일일 손실 한도 / today_pnl 은
-        # 거래소 closed-pnl 동기화 (_sync_today_realized_pnl) 가 진실 — 내부 누적 제거
-        # (#BUG-7: SYNC_CLOSE 가 close 가격 모르고 PnL 0 누적하던 문제 해소).
-        pnl_usdt: float | None = None
-        if entry_for_pnl is not None and qty > 0:
+        # PnL 은 거래소 실현치 우선(pnl_override), 없으면 entry/price 기반 추정.
+        # #PR-C: closed-pnl 동기화로 fees/funding 반영된 실제 PnL 기록 가능.
+        pnl_usdt: float | None = pnl_override
+        if pnl_usdt is None and entry_for_pnl is not None and qty > 0:
             sign = 1.0 if direction is Direction.LONG else -1.0
             pnl_usdt = sign * (price - entry_for_pnl) * qty
         try:
@@ -1332,38 +1389,98 @@ class BotIctInstance:
                 pnl_usdt=pnl_usdt,
                 setup_ts_ms=setup_ts_ms,
                 reason=reason,
+                context_json=context_json,
             ))
         except Exception as e:  # noqa: BLE001
             logger.warning("trades record 실패: %s", e)
 
-    async def _sync_position_state(self) -> None:
-        """거래소 fetch_position()으로 현재 position 상태 동기화.
+    async def _fetch_recent_close(self, last_known: _ActivePosition):
+        """state-reset 시점 거래소 closed-pnl 에서 매칭되는 close 회수 (#PR-C / #4).
 
-        SL/TP가 트리거되어 거래소 쪽에서 닫혔으면 ``active_position`` 리셋.
+        Args:
+            last_known: state-reset 직전의 active_position (방향·setup ts 매칭 기준).
+
+        Returns:
+            매칭 ClosedPosition (가장 최근, 같은 symbol+direction). 실패/미매칭이면 None.
+        """
+        since_ms = (
+            last_known.setup_ts_ms
+            if last_known.setup_ts_ms > 0
+            else int(time.time() * 1000) - 3_600_000
+        )
+        try:
+            closed = await self.client.fetch_closed_positions(
+                since_ms=since_ms, limit=10,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("closed-pnl 조회 실패: %s", e)
+            return None
+        if not closed:
+            return None
+        want_dir = "long" if last_known.direction is Direction.LONG else "short"
+        for cp in closed:
+            cp_sym = getattr(cp, "symbol", None)
+            cp_dir = getattr(cp, "direction", None)
+            if cp_sym != self.symbol or cp_dir != want_dir:
+                continue
+            return cp  # 가장 최근(신→구 정렬) 매칭
+        return None
+
+    async def _sync_position_state(self) -> None:
+        """거래소 fetch_position 으로 상태 동기화 + 실제 close 정보 회수 (#PR-C/#3+#4).
+
+        활성 포지션이 거래소측에서 닫혔으면 active_position 리셋. closed-pnl 조회로
+        실제 exit_price/PnL 회수하고 가능하면 SL_HIT vs TP_HIT 구분해 정확한
+        TradeEvent 로 기록.
         """
         try:
             pos = await self.client.fetch_position(self.symbol)
         except Exception as e:  # noqa: BLE001
             logger.warning("fetch_position 실패: %s", e)
             return
-
-        if pos is None or float(pos.get("contracts", 0) or 0) == 0:
-            # 거래소 측 position 없음 → SL/TP hit으로 청산된 것으로 간주
-            logger.info("position 종료 감지 (SL/TP hit 추정) — state reset")
-            # #BUG-2: SYNC_CLOSE 기록 — close 가격은 정확히 모름 (SL or TP 중).
-            # entry 가격으로 PnL 0 표기, reason 으로 추정 명시.
-            last_known = self.active_position
-            if last_known is not None:
-                self._record_trade(
-                    TradeEventType.SYNC_CLOSE,
-                    direction=last_known.direction,
-                    price=last_known.entry,  # 정확한 close 가격 모름 — entry placeholder
-                    qty=last_known.qty,
-                    entry_for_pnl=last_known.entry,
-                    setup_ts_ms=last_known.setup_ts_ms,
-                    reason="exchange-side closed (SL/TP 추정)",
-                )
-            self.active_position = None
+        if pos is not None and float(pos.get("contracts", 0) or 0) != 0:
+            return
+        last_known = self.active_position
+        if last_known is None:
+            return
+        # 거래소 closed-pnl 조회 — 실제 exit_price/PnL.
+        cp = await self._fetch_recent_close(last_known)
+        if cp is not None:
+            close_px = float(getattr(cp, "exit_price", 0.0) or 0.0)
+            pnl_usd = float(getattr(cp, "pnl_usd", 0.0) or 0.0)
+        else:
+            close_px = last_known.entry  # placeholder (조회 실패)
+            pnl_usd = 0.0
+        # SL/TP 구분 — close 가격이 SL/TP 중 허용 오차 내로 가까우면 해당 이벤트로 분류.
+        sl, tp = last_known.stop_loss, last_known.take_profit
+        evt_type = TradeEventType.SYNC_CLOSE
+        close_reason = "exchange-side close (SL/TP 미구분)"
+        if cp is not None and sl > 0 and tp > 0 and close_px > 0:
+            # 허용 오차 = max(entry 0.2%, SL 거리 절반) — 슬리피지 + bybit conditional 발동 가격 차이.
+            tol = max(last_known.entry * 0.002, abs(sl - last_known.entry) * 0.5)
+            d_sl = abs(close_px - sl)
+            d_tp = abs(close_px - tp)
+            if d_sl <= tol and d_sl <= d_tp:
+                evt_type = TradeEventType.SL_HIT
+                close_reason = "SL_HIT"
+            elif d_tp <= tol and d_tp <= d_sl:
+                evt_type = TradeEventType.TP_HIT
+                close_reason = "TP_HIT"
+        logger.info(
+            "position 종료 — entry=%.4f close=%.4f pnl=%.4f USDT (%s)",
+            last_known.entry, close_px, pnl_usd, close_reason,
+        )
+        self._record_trade(
+            evt_type,
+            direction=last_known.direction,
+            price=close_px,
+            qty=last_known.qty,
+            entry_for_pnl=last_known.entry,
+            setup_ts_ms=last_known.setup_ts_ms,
+            reason=close_reason,
+            pnl_override=pnl_usd if cp is not None else None,
+        )
+        self.active_position = None
 
     # ----- 변경 2: 추세 평가 캐시 ---------------------------------------
     async def _refresh_trend_cache(self) -> None:

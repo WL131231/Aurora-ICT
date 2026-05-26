@@ -185,6 +185,101 @@ async def test_step_resets_position_on_close() -> None:
     assert bot.active_position is None
 
 
+# ============================================================
+# #PR-C: close 사유 + 거래소 closed-pnl 동기화
+# ============================================================
+
+
+class _StubStore:
+    """trades_store mock — record 호출만 캡처 (mock 0 정책: 외부 라이브러리 X)."""
+
+    def __init__(self) -> None:
+        self.events: list = []
+
+    def record(self, ev) -> None:
+        self.events.append(ev)
+
+
+@pytest.mark.asyncio
+async def test_sync_close_records_sl_hit_with_exchange_pnl() -> None:
+    """closed-pnl 조회 결과 close 가격이 SL 근처면 SL_HIT + 거래소 PnL 기록 (#PR-C/#3+#4)."""
+    from types import SimpleNamespace
+
+    from aurora_ict.bot.bot_ict_instance import _ActivePosition
+    from aurora_ict.interfaces.trades_store import TradeEventType
+
+    client = _mock_client(_ohlcv_rows(datetime(2026, 5, 12, 10, 0, tzinfo=NY), _bars_long_setup()))
+    client.fetch_position = AsyncMock(return_value={"contracts": 0})
+    cp = SimpleNamespace(
+        symbol="BTCUSDT", direction="long",
+        exit_price=95.1, pnl_usd=-50.0, closed_at_ts=1234567890,
+    )
+    client.fetch_closed_positions = AsyncMock(return_value=[cp])
+    bot = BotIctInstance(client=client, symbol="BTCUSDT")
+    bot._trades_store = _StubStore()
+    bot.active_position = _ActivePosition(
+        direction=Direction.LONG, entry=100.0, stop_loss=95.0, take_profit=110.0,
+        qty=1.0, setup_ts_ms=12345,
+    )
+    await bot._sync_position_state()
+    assert bot.active_position is None
+    assert len(bot._trades_store.events) == 1
+    ev = bot._trades_store.events[0]
+    assert ev.event_type is TradeEventType.SL_HIT
+    assert ev.price == 95.1
+    assert ev.pnl_usdt == -50.0   # 거래소 실현치
+
+
+@pytest.mark.asyncio
+async def test_sync_close_records_tp_hit() -> None:
+    """close 가격이 TP 근처면 TP_HIT + 거래소 PnL 기록."""
+    from types import SimpleNamespace
+
+    from aurora_ict.bot.bot_ict_instance import _ActivePosition
+    from aurora_ict.interfaces.trades_store import TradeEventType
+
+    client = _mock_client(_ohlcv_rows(datetime(2026, 5, 12, 10, 0, tzinfo=NY), _bars_long_setup()))
+    client.fetch_position = AsyncMock(return_value={"contracts": 0})
+    cp = SimpleNamespace(
+        symbol="BTCUSDT", direction="long",
+        exit_price=109.9, pnl_usd=98.5, closed_at_ts=1,
+    )
+    client.fetch_closed_positions = AsyncMock(return_value=[cp])
+    bot = BotIctInstance(client=client, symbol="BTCUSDT")
+    bot._trades_store = _StubStore()
+    bot.active_position = _ActivePosition(
+        direction=Direction.LONG, entry=100.0, stop_loss=95.0, take_profit=110.0,
+        qty=1.0, setup_ts_ms=12345,
+    )
+    await bot._sync_position_state()
+    ev = bot._trades_store.events[0]
+    assert ev.event_type is TradeEventType.TP_HIT
+    assert ev.pnl_usdt == 98.5
+
+
+@pytest.mark.asyncio
+async def test_sync_close_fallback_when_closed_pnl_empty() -> None:
+    """closed-pnl 조회가 비면 SYNC_CLOSE fallback (entry placeholder, pnl 추정)."""
+    from aurora_ict.bot.bot_ict_instance import _ActivePosition
+    from aurora_ict.interfaces.trades_store import TradeEventType
+
+    client = _mock_client(_ohlcv_rows(datetime(2026, 5, 12, 10, 0, tzinfo=NY), _bars_long_setup()))
+    client.fetch_position = AsyncMock(return_value={"contracts": 0})
+    client.fetch_closed_positions = AsyncMock(return_value=[])
+    bot = BotIctInstance(client=client, symbol="BTCUSDT")
+    bot._trades_store = _StubStore()
+    bot.active_position = _ActivePosition(
+        direction=Direction.LONG, entry=100.0, stop_loss=95.0, take_profit=110.0,
+        qty=1.0, setup_ts_ms=12345,
+    )
+    await bot._sync_position_state()
+    ev = bot._trades_store.events[0]
+    assert ev.event_type is TradeEventType.SYNC_CLOSE
+    assert ev.price == 100.0   # entry placeholder
+    # pnl_override None 이라 계산식: (100-100)*1 = 0
+    assert ev.pnl_usdt == 0.0
+
+
 @pytest.mark.asyncio
 async def test_step_duplicate_setup_filtered() -> None:
     """같은 setup ts_ms 박힘 박힘 두 번째 박힘 박힘 박힘 X (중복 진입 박힘)."""

@@ -170,3 +170,85 @@ def test_event_type_enum_serialization(tmp_path: Path) -> None:
     types_loaded = {e.event_type for e in events}
     assert types_loaded == set(TradeEventType)
     store.close()
+
+
+# ============================================================
+# #PR-C: 거래 저널 (context_json + trade_journal.log)
+# ============================================================
+
+
+def test_context_json_jsonl_roundtrip() -> None:
+    """context_json 필드가 JSONL roundtrip 통과."""
+    ev = TradeEvent(
+        ts_ms=1700000000000,
+        event_type=TradeEventType.ENTRY,
+        symbol="BTC/USDT:USDT",
+        direction="short",
+        price=76773.85,
+        qty=1.18,
+        setup_ts_ms=12345,
+        reason="confluence=5 window=NY_AM rr=1.55",
+        context_json='{"sl":76922.48,"tp":76542.9,"score":5,"confluences":["sweep","macro=NY_AM"]}',
+    )
+    restored = TradeEvent.from_json_line(ev.to_json_line())
+    assert restored.context_json == ev.context_json
+
+
+def test_trade_journal_log_written_with_context(tmp_path: Path) -> None:
+    """ENTRY 기록 시 trade_journal.log 에 사람 읽기 좋은 형식 + confluences 줄 append."""
+    store = TradesStore(tmp_path)
+    ev = TradeEvent(
+        ts_ms=1700000000000,
+        event_type=TradeEventType.ENTRY,
+        symbol="BTC/USDT:USDT",
+        direction="short",
+        price=76773.85,
+        qty=1.18,
+        setup_ts_ms=12345,
+        reason="confluence=5 window=NY_AM rr=1.55",
+        context_json=(
+            '{"entry":76773.85,"sl":76922.48,"tp":76542.9,"qty":1.18,'
+            '"rr":1.55,"score":5,"window":"NY_AM","source":"silver_bullet",'
+            '"confluences":["sweep","macro=NY_AM_OB","htf_support_weight=164_boost+3"]}'
+        ),
+    )
+    store.record(ev)
+    journal_path = tmp_path / "trade_journal.log"
+    assert journal_path.exists()
+    content = journal_path.read_text(encoding="utf-8")
+    # 헤더 라인
+    assert "[ENTRY]" in content
+    assert "BTC/USDT:USDT" in content
+    assert "short" in content
+    # 컨텍스트 줄 — 주요 키 + confluences 들어 있어야 함
+    assert "SL=76922.4800" in content
+    assert "TP=76542.9000" in content
+    assert "score=5" in content
+    assert "window=NY_AM" in content
+    assert "sweep" in content
+    assert "htf_support_weight=164_boost+3" in content
+    store.close()
+
+
+def test_sqlite_context_json_column_persisted(tmp_path: Path) -> None:
+    """context_json 이 SQLite trades 테이블에 박혀 SELECT 로 회수 가능."""
+    store = TradesStore(tmp_path)
+    ev = TradeEvent(
+        ts_ms=1700000000000,
+        event_type=TradeEventType.ENTRY,
+        symbol="BTC/USDT:USDT",
+        direction="long",
+        price=50000.0,
+        qty=0.01,
+        context_json='{"score":5,"confluences":["ob","sweep"]}',
+    )
+    store.record(ev)
+    conn = sqlite3.connect(tmp_path / "trades.db")
+    row = conn.execute(
+        "SELECT context_json FROM trades WHERE event_type='entry'",
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert '"score":5' in row[0]
+    assert '"confluences":["ob","sweep"]' in row[0]
+    store.close()
