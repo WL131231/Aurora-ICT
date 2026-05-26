@@ -93,9 +93,10 @@ class IctSettings(BaseSettings):
     min_rr: float = Field(default=1.5, ge=1.0)
     # min_confluence: B+ 등급 게이트 (#1/#8, 2026-05-25 장수 결정). HTF boost 까지 반영된
     # 최종 confluence_score (OB+1/sweep+1/macro+1~2/HTF FVG +1~3, 합 0~7) 가 이 값 미만이면
-    # 진입 skip → 빈도↓·품질↑ (하루 ~4~5개 목표). 등급 C0~1/B2~3/B+4~5/A6+.
-    # 기본 4 = "B+ 이상". 너무 적으면 3, 많으면 5 로 데모 보고 튜닝.
-    min_confluence: int = Field(default=4, ge=0, le=10)
+    # 진입 skip → 빈도↓·품질↑. 등급 C0~1/B2~3/B+4~5/A6+.
+    # 4(B+) → 35h 가동 중 체결 3건(~2/일)으로 너무 빡빡 → 2026-05-26 **3(B 이상)** 으로 완화.
+    # 데모 보고 빈도 4~5/일 맞도록 3~5 사이 튜닝 (env: AURORA_ICT_MIN_CONFLUENCE).
+    min_confluence: int = Field(default=3, ge=0, le=10)
     # FVG 최소 % size — 지난 12거래 분석 결과 작은 FVG 노이즈 비중 커서 0.0004 → 0.0006 상향.
     fvg_min_size_pct: float = Field(default=0.0006, ge=0)
     step_interval_sec: int = Field(default=60, ge=10)
@@ -104,8 +105,11 @@ class IctSettings(BaseSettings):
     # 30봉 = 5m TF 에서 2.5시간 / 1h TF 에서 30시간. limit retest 시간 넉넉히 확보.
     setup_stale_bars: int = Field(default=30, ge=1, le=100)
     # disable_time_filter: True 면 Silver Bullet / Killzone 시간 윈도우 무시 (24h 매매).
-    # ICT 정통은 TIME-first 라 살짝 벗어나지만 FVG/bias/sweep/min_rr 다른 필터로 깐깐.
-    disable_time_filter: bool = Field(default=True)
+    # 2026-05-26 장수 결정: **False (Killzone + 미장 시간만)** — 24h 매매가 죽은 시간대
+    # (Asian 후반 등) 손실 비중 커 ICT TIME-first 로 복귀. Killzone = Asian/London/NY AM/
+    # Close/PM (NY AM~Close~PM 가 미장 09:30-16:00 ET 커버). env override 가능
+    # (AURORA_ICT_DISABLE_TIME_FILTER=true 로 24h 복귀).
+    disable_time_filter: bool = Field(default=False)
     # multi_tf: True 면 HTF (Trade TF 위 전체) setup 추적 + LTF retrace/structure
     # shift/FVG confirm 시 진입 (ICT 정통). False 면 단일 TF 매매.
     multi_tf: bool = Field(default=False)
