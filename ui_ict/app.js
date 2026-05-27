@@ -919,6 +919,53 @@ async function refreshEquityAndSession() {
 setInterval(refreshEquityAndSession, 5000);
 refreshEquityAndSession();
 
+// ============================================================
+// 봇 판단 시각화 (좌하단 패널) — 2026-05-27 추가
+// 약어 + 한글 해석 병기 — 모르는 사람도 이해 가능
+// ============================================================
+async function refreshJudgment() {
+  try {
+    const j = await api("/ict/judgment", "GET");
+    // 방향
+    const longPct = Number(j.direction?.long_pct ?? 50);
+    const shortPct = Number(j.direction?.short_pct ?? 50);
+    $("jp-dir-label").textContent = j.direction?.label || "—";
+    $("jp-dir-long").style.width = `${longPct}%`;
+    $("jp-dir-short").style.width = `${shortPct}%`;
+    $("jp-dir-pct").innerHTML =
+      `<span style="color:#34d399">롱 ${longPct.toFixed(1)}%</span>` +
+      `<span style="color:#fb7185">숏 ${shortPct.toFixed(1)}%</span>`;
+    // Reasons
+    const rs = Array.isArray(j.reasons) ? j.reasons : [];
+    $("jp-reasons").innerHTML = rs.length === 0
+      ? '<div class="jp-reason-interp">분석 자료 누적 중…</div>'
+      : rs.map((r) => `
+        <div class="jp-reason">
+          <div class="jp-reason-top">
+            <span class="jp-reason-dot ${r.color || 'yellow'}"></span>
+            <span class="jp-reason-term">${escapeHtml(r.term || '')}</span>
+            <span class="jp-reason-range">${escapeHtml(r.range || '')}</span>
+          </div>
+          <div class="jp-reason-interp">해석: ${escapeHtml(r.interpretation || '')}</div>
+        </div>
+      `).join("");
+    // Entry Condition
+    const ec = j.entry_condition || {};
+    $("jp-entry").innerHTML =
+      `<div>${escapeHtml(ec.title || '—')}</div>` +
+      (ec.detail ? `<div class="jp-entry-detail">${escapeHtml(ec.detail)}</div>` : "");
+  } catch (e) {
+    // 조용히 무시
+  }
+}
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+setInterval(refreshJudgment, 5000);
+refreshJudgment();
+
 // 사이드바 토글 (햄버거)
 const _btnSidebarToggle = $("btn-sidebar-toggle");
 if (_btnSidebarToggle) {

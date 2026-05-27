@@ -359,6 +359,69 @@
   /* 사이드바 접힘 — body 클래스로 토글 */
   body.sidebar-collapsed .sidebar { display: none; }
 
+  /* 좌하단 판단 패널 — 봇이 시장 어떻게 보는지 시각화 */
+  .judgment-panel {
+    position: absolute; left: 12px; bottom: 12px;
+    width: 320px;
+    background: rgba(20,20,25,0.92);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 10px 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    z-index: 5;
+    max-height: 50vh;
+    overflow-y: auto;
+  }
+  .jp-header {
+    font-size: 10px; letter-spacing: 0.15em;
+    color: var(--text-3);
+    margin-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 6px;
+  }
+  .jp-dir-label { color: var(--text-1); font-weight: 600; font-size: 12px; margin-bottom: 4px; }
+  .jp-dir-bar {
+    display: flex; height: 8px; border-radius: 2px; overflow: hidden;
+    background: #1a1a1a; border: 1px solid var(--line);
+  }
+  .jp-dir-long  { background: #34d399; transition: width 0.4s; }
+  .jp-dir-short { background: #fb7185; transition: width 0.4s; }
+  .jp-dir-pct {
+    margin-top: 3px; font-size: 10px; color: var(--text-3);
+    display: flex; justify-content: space-between;
+  }
+  .jp-section-title {
+    font-size: 10px; letter-spacing: 0.12em;
+    color: var(--text-3);
+    margin: 10px 0 5px;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 3px;
+  }
+  .jp-reason {
+    margin-bottom: 7px;
+    line-height: 1.45;
+  }
+  .jp-reason-top {
+    display: flex; gap: 5px; align-items: baseline;
+    color: var(--text-1);
+  }
+  .jp-reason-dot {
+    display: inline-block; width: 6px; height: 6px;
+    border-radius: 50%; flex-shrink: 0;
+    transform: translateY(2px);
+  }
+  .jp-reason-dot.green  { background: #34d399; }
+  .jp-reason-dot.red    { background: #fb7185; }
+  .jp-reason-dot.yellow { background: #fbbf24; }
+  .jp-reason-term  { color: var(--text-1); font-weight: 500; }
+  .jp-reason-range { color: var(--text-2); font-size: 10.5px; }
+  .jp-reason-interp { color: var(--text-3); font-size: 10px; margin-left: 11px; margin-top: 1px; }
+  .jp-entry {
+    color: var(--text-1); line-height: 1.4;
+  }
+  .jp-entry-detail { color: var(--text-3); font-size: 10px; margin-top: 3px; }
+
   /* 우측 P&L 패널 — 최근 7일 청산 거래 (Bybit P&L 화면 모사) */
   .pnl-panel {
     width: 340px;
@@ -644,6 +707,22 @@
       <button id="btn-sidebar-toggle" class="sidebar-toggle" title="사이드바 접기/펴기">
         <span></span><span></span><span></span>
       </button>
+      <!-- 좌하단 판단 패널 (2026-05-27) — 봇이 시장을 어떻게 보는지 시각화 -->
+      <div id="judgment-panel" class="judgment-panel">
+        <div class="jp-header">봇의 현재 판단</div>
+        <div class="jp-direction">
+          <div class="jp-dir-label" id="jp-dir-label">—</div>
+          <div class="jp-dir-bar">
+            <div class="jp-dir-long" id="jp-dir-long" style="width:50%"></div>
+            <div class="jp-dir-short" id="jp-dir-short" style="width:50%"></div>
+          </div>
+          <div class="jp-dir-pct" id="jp-dir-pct">롱 — · 숏 —</div>
+        </div>
+        <div class="jp-section-title">Reason</div>
+        <div class="jp-reasons" id="jp-reasons"></div>
+        <div class="jp-section-title">Entry Condition</div>
+        <div class="jp-entry" id="jp-entry">—</div>
+      </div>
     </div>
 
     <!-- 하단 포지션 패널 — Symbol / Size / Entry / Mark / Liq / Margin / PnL + Close By -->
