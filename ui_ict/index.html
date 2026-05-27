@@ -307,6 +307,58 @@
   .pos-pnl-pos    { color: #34d399; }
   .pos-pnl-neg    { color: #fb7185; }
 
+  /* Equity 카드 — 사이드바 실시간 잔고 표시 */
+  .equity-card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 10px 12px;
+    margin-top: 6px;
+  }
+  .equity-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 18px;
+    color: var(--text-1);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  .equity-sub { font-size: 10px; color: var(--text-3); margin-top: 3px; }
+
+  /* 좌상단 세션 상태 배지 */
+  .session-badge {
+    position: absolute; top: 12px; left: 16px;
+    padding: 5px 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    border-radius: 4px;
+    border: 1px solid var(--line);
+    background: rgba(20,20,25,0.85);
+    z-index: 5;
+  }
+  .session-killzone { color: #fbbf24; border-color: #fbbf24; }
+  .session-us_open  { color: #34d399; border-color: #34d399; }
+  .session-none     { color: var(--text-3); }
+
+  /* 우상단 햄버거 토글 — 사이드바 접기/펴기 */
+  .sidebar-toggle {
+    position: absolute; top: 10px; right: 12px;
+    width: 32px; height: 28px;
+    background: rgba(20,20,25,0.85);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex; flex-direction: column; justify-content: center;
+    gap: 4px; padding: 0 7px;
+    z-index: 5;
+  }
+  .sidebar-toggle span {
+    display: block; height: 2px; background: var(--text-2); border-radius: 1px;
+  }
+  .sidebar-toggle:hover { border-color: var(--text-2); }
+  /* 사이드바 접힘 — body 클래스로 토글 */
+  body.sidebar-collapsed .sidebar { display: none; }
+
   /* 우측 P&L 패널 — 최근 7일 청산 거래 (Bybit P&L 화면 모사) */
   .pnl-panel {
     width: 340px;
@@ -348,11 +400,12 @@
     color: var(--text-3) !important;
     padding: 24px 12px !important;
   }
-  .pnl-side-long  { color: #34d399; font-weight: 500; }
-  .pnl-side-short { color: #fb7185; font-weight: 500; }
-  .pnl-pos        { color: #34d399; }
-  .pnl-neg        { color: #fb7185; }
-  .pnl-time       { color: var(--text-3); font-size: 10px; }
+  /* td 선택자가 클래스보다 specificity 높아서 색이 덮였던 거 — td. 로 specificity 매칭 */
+  .pnl-table td .pnl-side-long  { color: #34d399; font-weight: 500; }
+  .pnl-table td .pnl-side-short { color: #fb7185; font-weight: 500; }
+  .pnl-table td.pnl-pos { color: #34d399; }
+  .pnl-table td.pnl-neg { color: #fb7185; }
+  .pnl-table td.pnl-time { color: var(--text-3); font-size: 10px; }
   .pos-actions {
     display: flex;
     gap: 6px;
@@ -529,12 +582,11 @@
       <button id="btn-cred-reenter" class="cred-reenter">다시 입력</button>
     </div>
 
-    <h2>Connection</h2>
-    <button id="btn-test-conn">TEST CONNECTION</button>
-    <div class="row" style="margin-top:6px"><span class="k">Status</span><span id="conn-status" class="v">—</span></div>
-
-    <h2>Bot Enable</h2>
-    <button id="btn-toggle-enabled">ENABLE</button>
+    <h2>Equity</h2>
+    <div class="equity-card">
+      <div class="equity-value" id="equity-value">—</div>
+      <div class="equity-sub" id="equity-sub">봇 시작 후 실시간 표시</div>
+    </div>
 
     <h2>Daily Loss Limit</h2>
     <div class="row" style="margin-top:4px">
@@ -584,7 +636,15 @@
       </div>
       <span class="chart-symbol" id="chart-symbol-label">—</span>
     </div>
-    <div class="chart-wrap"><div id="chart"></div></div>
+    <div class="chart-wrap">
+      <div id="chart"></div>
+      <!-- 좌상단 세션 상태 (Killzone/미장/None) — /ict/equity.session_status 폴링 -->
+      <div id="session-badge" class="session-badge session-none">None</div>
+      <!-- 우상단 햄버거 — 사이드바 토글 -->
+      <button id="btn-sidebar-toggle" class="sidebar-toggle" title="사이드바 접기/펴기">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
 
     <!-- 하단 포지션 패널 — Symbol / Size / Entry / Mark / Liq / Margin / PnL + Close By -->
     <div class="positions-panel">
