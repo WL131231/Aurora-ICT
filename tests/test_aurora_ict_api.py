@@ -143,10 +143,17 @@ def test_markers_requires_bot_running(client: TestClient) -> None:
 
 
 def test_position_inactive_when_bot_stopped(client: TestClient) -> None:
-    """봇 미가동 → active=False."""
+    """봇 미가동 → active=False (pending 도 None)."""
     resp = client.get("/ict/position")
     assert resp.status_code == 200
-    assert resp.json() == {"active": False}
+    assert resp.json() == {"active": False, "pending": None}
+
+
+def test_closed_pnl_empty_when_bot_stopped(client: TestClient) -> None:
+    """봇 미가동 → trades 빈 리스트 (UI 안전 fallback)."""
+    resp = client.get("/ict/closed_pnl")
+    assert resp.status_code == 200
+    assert resp.json() == {"trades": []}
 
 
 def test_position_inactive_when_no_active_position(client: TestClient) -> None:

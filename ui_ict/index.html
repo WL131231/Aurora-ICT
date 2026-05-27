@@ -306,6 +306,53 @@
   .pos-side-short { color: #fb7185; font-weight: 500; }
   .pos-pnl-pos    { color: #34d399; }
   .pos-pnl-neg    { color: #fb7185; }
+
+  /* 우측 P&L 패널 — 최근 7일 청산 거래 (Bybit P&L 화면 모사) */
+  .pnl-panel {
+    width: 340px;
+    background: var(--bg-2);
+    border-left: 1px solid var(--line);
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .pnl-panel .positions-header { padding: 10px 14px; }
+  .pnl-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10.5px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .pnl-table thead {
+    position: sticky; top: 0;
+    background: var(--bg-2);
+    z-index: 1;
+  }
+  .pnl-table th {
+    text-align: left;
+    padding: 6px 10px;
+    font-weight: 400;
+    letter-spacing: 0.08em;
+    color: var(--text-3);
+    border-bottom: 1px solid var(--line);
+  }
+  .pnl-table th.num, .pnl-table td.num { text-align: right; }
+  .pnl-table td {
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--line);
+    color: var(--text-1);
+  }
+  .pnl-empty {
+    text-align: center !important;
+    color: var(--text-3) !important;
+    padding: 24px 12px !important;
+  }
+  .pnl-side-long  { color: #34d399; font-weight: 500; }
+  .pnl-side-short { color: #fb7185; font-weight: 500; }
+  .pnl-pos        { color: #34d399; }
+  .pnl-neg        { color: #fb7185; }
+  .pnl-time       { color: var(--text-3); font-size: 10px; }
   .pos-actions {
     display: flex;
     gap: 6px;
@@ -581,6 +628,30 @@
       <span class="leg-setup-short">Short Setup</span>
     </div>
   </main>
+
+  <!-- 우측 P&L 패널 — 최근 7일 청산 거래 (거래소 closed-pnl) -->
+  <aside class="pnl-panel">
+    <div class="positions-header">
+      <span class="positions-title">P&amp;L · LAST 7D</span>
+      <span class="positions-count" id="pnl-count">0</span>
+    </div>
+    <div class="positions-scroll">
+      <table class="pnl-table">
+        <thead>
+          <tr>
+            <th>Market</th>
+            <th class="num">Entry</th>
+            <th class="num">Qty</th>
+            <th class="num">P&amp;L</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody id="pnl-tbody">
+          <tr><td colspan="5" class="pnl-empty">청산 거래 없음 — 첫 종료 시 표시됩니다</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </aside>
 </div>
 
 <div id="toast" class="toast"></div>
