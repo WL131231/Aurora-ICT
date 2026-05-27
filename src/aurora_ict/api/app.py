@@ -851,8 +851,9 @@ def create_app(manager: BotManager) -> FastAPI:
     ) -> dict[str, Any]:
         """OHLCV 봉 그대로 반환 (UI lightweight-charts candle 입력용).
 
-        2026-05-27 파트너 요청 — 차트에 봉 더 많이 보이게. default 200 → 1500.
-        Bybit V5 한도 1000 초과는 ccxt_client.fetch_ohlcv 가 자동 페이지네이션.
+        2026-05-27: 봇 prefetch cache 사용 — TF 토글 즉시 응답.
+        cache hit 시 즉시 반환 + background incremental refresh.
+        symbol override 시는 cache 우회 (멀티 심볼 미지원 — 기본 봇 심볼만).
         """
         bot = manager.bot
         if bot is None:
@@ -862,7 +863,10 @@ def create_app(manager: BotManager) -> FastAPI:
         use_symbol = symbol or bot.symbol
         use_tf = timeframe or bot.timeframe
         try:
-            rows = await bot.client.fetch_ohlcv(use_symbol, use_tf, limit)
+            if use_symbol == bot.symbol:
+                rows = await bot.get_ohlcv_cached(use_tf, limit)
+            else:
+                rows = await bot.client.fetch_ohlcv(use_symbol, use_tf, limit)
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"fetch_ohlcv: {e}") from e
         candles = [
