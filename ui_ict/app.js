@@ -440,9 +440,13 @@ function renderStatus(s) {
   $("btn-demo").classList.toggle("active", s.run_mode === "demo");
   $("btn-live").classList.toggle("active", s.run_mode === "live");
 
-  // 봇 가동 상태 → START / STOP 시각 효과 (running 시 START 녹색 glow)
+  // 봇 가동 상태 → START / STOP 시각 효과
+  // 2026-05-27 파트너 피드백 — "stop 누르면 빨간 활성화 안돼"
+  // 이전 조건은 (stopped && enabled) 였는데 STOP 클릭 시 enabled=false 도 같이
+  // 되어서 active 안 박혔음. state 만 보고 둘 중 하나 켜지게 단순화.
+  // 처음 진입 (running 한 번도 안 됨, stopped) 에도 STOP active — 일관성 위해.
   $("btn-start").classList.toggle("active", s.state === "running");
-  $("btn-stop").classList.toggle("active", s.state === "stopped" && s.enabled);
+  $("btn-stop").classList.toggle("active", s.state === "stopped");
 
   // API Credentials 폼 ↔ 등록완료 상태 전환
   const credForm = $("cred-form-block");
@@ -680,10 +684,16 @@ $("btn-live").onclick = async () => {
   catch (e) { toast(e.message, true); }
 };
 $("btn-start").onclick = async () => {
+  // 2026-05-27: 즉시 시각 응답 — fetchAndRender 까지 기다리지 않고 클릭 직후 active.
+  $("btn-start").classList.add("active");
+  $("btn-stop").classList.remove("active");
   try { await api("/ict/start", "POST"); toast("봇 시작됨"); await fetchAndRender(); }
   catch (e) { toast(e.message, true); }
 };
 $("btn-stop").onclick = async () => {
+  // 2026-05-27: STOP 클릭 즉시 빨간 glow 표시. /ict/stop 가 pending 미체결 자동 취소.
+  $("btn-stop").classList.add("active");
+  $("btn-start").classList.remove("active");
   try { await api("/ict/stop", "POST"); toast("봇 중지됨"); await fetchAndRender(); }
   catch (e) { toast(e.message, true); }
 };

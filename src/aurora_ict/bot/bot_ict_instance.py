@@ -388,7 +388,25 @@ class BotIctInstance:
             await self._ensure_protective_sl(tp if tp > 0 else None, 0.0)
 
     async def stop(self) -> None:
-        """봇 정지 (background task cancel)."""
+        """봇 정지 (background task cancel).
+
+        2026-05-27 파트너 요청 — pending entry (지정가 미체결) 있으면 즉시 취소.
+        STOP 후에도 거래소 측 미체결 limit 이 남으면 봇이 다시 켜질 때 의도치
+        않게 체결될 수 있음. cancel_all_orders 는 trading order 만 — position
+        attached SL/TP conditional 은 영향 X (Bybit V5 category 분리).
+        """
+        # 1) pending limit entry 취소 (active_position 의 SL/TP 는 무관)
+        if self._pending_entry is not None:
+            pe = self._pending_entry
+            try:
+                await self.client.cancel_all_orders(self.symbol)
+                logger.info(
+                    "STOP: 지정가 미체결 (entry=%.4f qty=%.6f) 취소",
+                    pe.entry, pe.qty,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("STOP pending 취소 실패: %s", e)
+            self._pending_entry = None
         self.state = BotState.STOPPED
         # 변경 7: flip watcher 정지.
         if self._flip_watcher is not None:
