@@ -156,6 +156,28 @@ def test_closed_pnl_empty_when_bot_stopped(client: TestClient) -> None:
     assert resp.json() == {"trades": []}
 
 
+def test_judgment_default_when_bot_stopped(client: TestClient) -> None:
+    """봇 미가동 → 방향 50/50, 봇 미가동 안내."""
+    resp = client.get("/ict/judgment")
+    assert resp.status_code == 200
+    j = resp.json()
+    assert j["direction"]["long_pct"] == 50
+    assert j["direction"]["short_pct"] == 50
+    assert "미가동" in j["direction"]["label"]
+    assert j["reasons"] == []
+    assert "title" in j["entry_condition"]
+
+
+def test_equity_returns_session_status(client: TestClient) -> None:
+    """/ict/equity 응답에 session_status 포함 (좌상단 배지용)."""
+    resp = client.get("/ict/equity")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "session_status" in body
+    assert body["session_status"]["kind"] in ("killzone", "us_open", "none")
+    assert "label" in body["session_status"]
+
+
 def test_position_inactive_when_no_active_position(client: TestClient) -> None:
     """봇 가동 중이지만 active_position 없음 → active=False."""
     client.post("/ict/start")

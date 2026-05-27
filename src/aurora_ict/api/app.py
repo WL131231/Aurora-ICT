@@ -531,6 +531,106 @@ def create_app(manager: BotManager) -> FastAPI:
             "pending": pending,
         }
 
+    @app.get("/ict/judgment")
+    async def get_judgment() -> dict[str, Any]:
+        """봇 현재 판단 — 좌하단 패널 (2026-05-27 추가).
+
+        Returns:
+            - ``direction``: 롱/숏 확률 (HTF FVG bull/bear 가중치 비율)
+            - ``reasons``: [{color, term, range, interpretation}, ...] 활성 지표 목록
+            - ``entry_condition``: 진입 조건 + 현재 막힌 사유
+        """
+        bot = manager.bot
+        if bot is None:
+            return {
+                "direction": {"long_pct": 50, "short_pct": 50, "label": "봇 미가동"},
+                "reasons": [],
+                "entry_condition": {"title": "봇 미가동", "detail": "START 눌러 가동"},
+            }
+        # HTF FVG 가중치 합산 → 방향 확률
+        htf_map = bot._htf_fvg_map_cache or []
+        bull_w = sum(int(e.weight) for e in htf_map if e.type.value == "bullish")
+        bear_w = sum(int(e.weight) for e in htf_map if e.type.value == "bearish")
+        tot = bull_w + bear_w
+        if tot > 0:
+            long_pct = round(bull_w / tot * 100, 1)
+            short_pct = round(100 - long_pct, 1)
+        else:
+            long_pct = short_pct = 50.0
+        if long_pct >= 60:
+            dir_label = "롱(상승) 우세"
+        elif short_pct >= 60:
+            dir_label = "숏(하락) 우세"
+        else:
+            dir_label = "방향 불확실 (혼조)"
+        # 현재가
+        cur_price = 0.0
+        try:
+            rows = await bot.client.fetch_ohlcv(bot.symbol, bot.timeframe, 2)
+            if rows:
+                cur_price = float(rows[-1][4])
+        except Exception:  # noqa: BLE001
+            pass
+        # Reasons — 가까운 unswept HTF FVG 위/아래 2개씩
+        reasons: list[dict[str, Any]] = []
+        if cur_price > 0 and htf_map:
+            bulls = [e for e in htf_map if e.type.value == "bullish" and e.high < cur_price]
+            bears = [e for e in htf_map if e.type.value == "bearish" and e.low > cur_price]
+            bulls.sort(key=lambda e: cur_price - e.high)  # 가까운 순
+            bears.sort(key=lambda e: e.low - cur_price)
+            for e in bulls[:2]:
+                reasons.append({
+                    "color": "green",
+                    "term": f"FVG {e.tf}",
+                    "range": f"{e.high:,.0f} ~ {e.low:,.0f}",
+                    "interpretation": "롱 지지 가능성 (가격이 끌릴 빈 공간)",
+                })
+            for e in bears[:2]:
+                reasons.append({
+                    "color": "red",
+                    "term": f"FVG {e.tf}",
+                    "range": f"{e.high:,.0f} ~ {e.low:,.0f}",
+                    "interpretation": "위쪽 저항 (가격 도달 시 막힐 위험)",
+                })
+        # 세션 상태 한 줄
+        session = _compute_session_status()
+        if session["kind"] == "killzone":
+            reasons.append({
+                "color": "green", "term": "Killzone", "range": session["label"].replace("Kill zone : ", ""),
+                "interpretation": "활발한 매매 시간대 (진입 윈도우)",
+            })
+        elif session["kind"] == "us_open":
+            reasons.append({
+                "color": "green", "term": "US Session", "range": "09:30-16:00 ET",
+                "interpretation": "미장 개장 — 변동성 ↑",
+            })
+        else:
+            reasons.append({
+                "color": "yellow", "term": "Session", "range": "Off-hours",
+                "interpretation": "킬존 밖 — 진입 자제 권장 (referral 은 24h 허용)",
+            })
+        # Entry condition
+        min_cf = manager.settings.min_confluence
+        min_rr = manager.settings.min_rr
+        if bot.active_position is not None:
+            ec_title = "진입 중 — 신규 진입 차단 (페어당 1포지션)"
+            ec_detail = f"방향 {bot.active_position.direction.value}, SL/TP 진행"
+        elif bot._pending_entry is not None:
+            pe = bot._pending_entry
+            ec_title = f"지정가 미체결 대기 ({pe.entry:,.2f})"
+            ec_detail = "10분 안 체결 안 되면 자동 취소"
+        else:
+            ec_title = f"등급 {min_cf} 이상 & RR {min_rr} 이상 setup 대기"
+            ec_detail = "현재 활성 setup 없음 (혹은 게이트 미달로 skip)"
+        return {
+            "direction": {
+                "long_pct": long_pct, "short_pct": short_pct,
+                "label": dir_label, "bull_weight": bull_w, "bear_weight": bear_w,
+            },
+            "reasons": reasons,
+            "entry_condition": {"title": ec_title, "detail": ec_detail},
+        }
+
     @app.get("/ict/equity")
     async def get_equity() -> dict[str, Any]:
         """현재 잔고(USDT) + 현재 세션 상태(킬존/미장/None) — 좌측·좌상단 표시용.
