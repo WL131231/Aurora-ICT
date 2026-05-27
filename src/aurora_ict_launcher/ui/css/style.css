@@ -124,12 +124,18 @@ body {
 .brand-row-large {
     gap: 22px;
     margin-top: 12px;
+    flex-wrap: nowrap;             /* 좁은 hero 폭에서도 한 줄 유지 */
+    white-space: nowrap;
 }
 .brand-row-large .brand-text {
-    font-size: 60px;
-    letter-spacing: 0.18em;
+    /* 2026-05-27: 파트너 피드백 — "AURORA · / ICT" 두 줄로 깨짐 → 한 줄 강제.
+       hero grid 1.2fr 좁은 폭에서도 visual 침범 없이 한 줄에 들어가도록
+       font-size 60→52px, letter-spacing 0.18→0.14em 살짝 축소. 임팩트는 유지. */
+    font-size: 52px;
+    letter-spacing: 0.14em;
     line-height: 1;
     text-shadow: 0 4px 30px rgba(0, 0, 0, 0.4);
+    white-space: nowrap;
 }
 
 .meta-info {
