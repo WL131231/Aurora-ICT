@@ -438,11 +438,18 @@ class CcxtClient:
         max_chunks = 30  # 안전 가드 — 30 × 7 = 210일치 (180D 토글 충분 + 여유)
 
         all_records: list[ClosedPosition] = []
-        chunk_start = int(since_ms)
+        # 2026-05-27 버그 fix (파트너 보고: "pnl 숫자가 좀 안맞는거 같은데?"):
+        # 기존 — chunk_start = since_ms 부터 옛날→최근 방향 순회. limit early-exit
+        # 으로 첫(옛날) chunk 가 채워지면 break → 최근 거래가 누락됨.
+        # 30D 조회 시 5/8~5/11 만 표시되고 오늘 (5/27) 거래 안 보이는 증상.
+        # 수정 — 최근(now) → 옛날(since_ms) 방향으로 뒤집어 순회.
+        # limit early-exit 가 "최근 N개 보장" 의미와 정합.
+        since_int = int(since_ms)
+        chunk_end = now_ms
         chunk_count = 0
 
-        while chunk_start < now_ms and chunk_count < max_chunks:
-            chunk_end = min(chunk_start + seven_days_ms, now_ms)
+        while chunk_end > since_int and chunk_count < max_chunks:
+            chunk_start = max(chunk_end - seven_days_ms, since_int)
             cursor: str | None = None
             page_count = 0
             max_pages_per_chunk = 10  # 안전 가드 — 한 chunk 에 2000 record 이면 충분
@@ -478,7 +485,7 @@ class CcxtClient:
                 if len(all_records) >= limit:
                     break
 
-            chunk_start = chunk_end
+            chunk_end = chunk_start
             chunk_count += 1
             if len(all_records) >= limit:
                 break
