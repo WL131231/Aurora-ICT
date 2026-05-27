@@ -34,6 +34,9 @@ from aurora.exchange.base import Balance, ClosedPosition, Order, Position
 
 logger = logging.getLogger(__name__)
 
+# Bybit V5 /v5/market/kline limit max — fetch_ohlcv 페이지네이션 분할 단위.
+_OHLCV_MAX_PER_CALL = 1000
+
 
 # tenacity retry — DESIGN.md §3.3 / E-12. PR-2 #31 _fetch_page 와 동일 정책.
 # 일시 네트워크/거래소 장애만 재시도. AuthError 등은 즉시 raise (재시도 무의미).
@@ -203,8 +206,7 @@ class CcxtClient:
         """
         await self._ensure_init()
         ccxt_tf = normalize_to_ccxt(timeframe)
-        _MAX_PER_CALL = 1000  # Bybit V5 /v5/market/kline limit max
-        if limit <= _MAX_PER_CALL:
+        if limit <= _OHLCV_MAX_PER_CALL:
             # fast path — 단일 호출 (기존 동작 그대로)
             page = await self._fetch_ohlcv_page(symbol, ccxt_tf, since_ms=None, limit=limit)
             return self._page_to_df(page)
@@ -231,7 +233,7 @@ class CcxtClient:
         for _ in range(max_pages):
             if remaining <= 0:
                 break
-            page_limit = min(remaining, _MAX_PER_CALL)
+            page_limit = min(remaining, _OHLCV_MAX_PER_CALL)
             if cursor_ts is None:
                 page = await self._fetch_ohlcv_page(symbol, ccxt_tf, since_ms=None, limit=page_limit)
             else:
