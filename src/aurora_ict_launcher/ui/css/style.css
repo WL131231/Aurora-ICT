@@ -36,24 +36,23 @@
 }
 
 :root {
-    /* Aurora-ICT 모노톤 (본체 UI 와 동일 팔레트) */
-    --bg: #0a0a0c;
-    --bg-card: #141316;
-    --bg-purple: #201F1F;  /* legacy 변수명 유지 (CSS 의존성 안전) */
-    --text-base: #DBDBDE;
+    /* 2026-05-27: 봇 본체 UI (ui_ict/index.html) 팔레트와 정확히 일치.
+       파트너 요청 — 손 그림 배경 제거 + 본체와 동일 단색 톤 통일. */
+    --bg:       #141316;   /* 본체 --bg */
+    --bg-card:  #1C1C1C;   /* 본체 --bg-2 */
+    --bg-purple:#201F1F;   /* legacy 변수명 유지 — 본체 --surface */
+    --text-base:#DBDBDE;
 
-    --text-1: rgba(219, 219, 222, 0.95);
-    --text-2: rgba(219, 219, 222, 0.70);
-    --text-3: rgba(219, 219, 222, 0.45);
+    --text-1: #ECECEE;     /* 본체 --text-1 */
+    --text-2: #B0B0B6;     /* 본체 --text-2 */
+    --text-3: #888892;     /* 본체 --text-3 */
     --text-4: rgba(219, 219, 222, 0.25);
-    --border: rgba(219, 219, 222, 0.10);
+    --border: rgba(219, 219, 222, 0.14);  /* 본체 --line */
 
     /* 로고 / accent — 모노톤 */
     --logo-purple: #DBDBDE;
     --logo-indigo: #8b8b90;
     --logo-cyan: #5a5a60;
-
-    --paint-texture: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='320'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.13 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -66,44 +65,26 @@ body {
     background: var(--bg);
 }
 
-/* ===== 배경 — Aurora-ICT 페이지 분위기 (검정 + 미세 vignette) ===== */
-.bg-gradient {
-    position: fixed;
-    inset: 0;
-    z-index: 0;
-    background:
-        radial-gradient(ellipse at center, rgba(28,28,28,0.4) 0%, transparent 70%),
-        var(--bg);
+/* 2026-05-27: 파트너 피드백 — 스크롤바도 모노톤으로 통일.
+   본체 (ui_ict/index.html) 와 동일 패턴. log-area 등 한정 영역 스크롤 대상. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--bg-card); }
+::-webkit-scrollbar-thumb {
+    background: rgba(219, 219, 222, 0.14);
+    border-radius: 5px;
+    border: 2px solid var(--bg-card);
 }
+::-webkit-scrollbar-thumb:hover { background: rgba(219, 219, 222, 0.28); }
+::-webkit-scrollbar-corner { background: var(--bg-card); }
+* { scrollbar-width: thin; scrollbar-color: rgba(219, 219, 222, 0.14) #1C1C1C; }
 
-.bg-texture {
-    position: fixed;
-    inset: 0;
-    z-index: 1;
-    pointer-events: none;
-    background-image: var(--paint-texture);
-    background-blend-mode: overlay;
-    opacity: 0.7;
-}
-
-/* v0.4.70 — ICT 정통 로고 (Inner Circle Trader 마크) 배경.
-   기존 손 painterly 이미지 (launcher-bg-hands.png) 에서 교체. */
-.bg-hands {
-    position: fixed;
-    inset: 0;
-    z-index: 2;
-    pointer-events: none;
-    background-image: url("../img/ict-logo-bg.png");
-    background-size: contain;
-    background-position: center center;
-    background-repeat: no-repeat;
-    opacity: 0.85;
-}
+/* 2026-05-27: 파트너 요청 — 배경 손 그림 / 텍스처 / 그라디언트 모두 제거.
+   body 단색 (#141316) 만 사용. .bg-gradient / .bg-texture / .bg-hands DOM 제거됨. */
 
 /* ===== 시네마틱 레이아웃 (좌 hero / 우 visual) ===== */
 .cinematic {
     position: relative;
-    z-index: 3;                /* bg-gradient(0) / bg-texture(1) / bg-hands(2) 위 */
+    z-index: 1;                /* 2026-05-27: 배경 div 제거됨 — z-index 단순화 */
     display: grid;
     grid-template-columns: 1.2fr 1fr;
     height: 100vh;
@@ -136,6 +117,19 @@ body {
     letter-spacing: 0.32em;
     font-weight: 500;
     color: var(--text-1);
+}
+
+/* 2026-05-27: 메인 화면 좌측 hero 의 큰 워드마크.
+   로고 80px + 텍스트 60px — 본체 로고 톤 유지하면서 메인 비주얼 역할. */
+.brand-row-large {
+    gap: 22px;
+    margin-top: 12px;
+}
+.brand-row-large .brand-text {
+    font-size: 60px;
+    letter-spacing: 0.18em;
+    line-height: 1;
+    text-shadow: 0 4px 30px rgba(0, 0, 0, 0.4);
 }
 
 .meta-info {
@@ -214,9 +208,10 @@ body {
     box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.5);
 }
 .btn-start:hover:not(:disabled) {
-    background: #d8d9e8;
+    background: #f0f0f2;
     transform: translateY(-2px);
-    box-shadow: 0 12px 32px -8px rgba(168, 85, 247, 0.4);
+    /* 2026-05-27: 보라 잔재 → 본체 accent 모노톤 글로우 */
+    box-shadow: 0 12px 32px -8px rgba(219, 219, 222, 0.30);
 }
 .btn-start:disabled {
     opacity: 0.5;
@@ -290,7 +285,8 @@ body {
 .diamond-hero {
     width: 100%;
     height: 100%;
-    filter: drop-shadow(0 0 40px rgba(168, 85, 247, 0.4));
+    /* 2026-05-27: 보라 잔재 → 모노톤 글로우 (본체 accent 톤 정합) */
+    filter: drop-shadow(0 0 40px rgba(219, 219, 222, 0.20));
 }
 
 @keyframes float {
@@ -310,11 +306,12 @@ body {
 
 .progress-bar {
     height: 8px;
-    background: linear-gradient(90deg, #a855f7, #60a5fa, #22d3ee);
+    /* 2026-05-27: 보라/파/시안 그라디언트 → 본체 accent 모노톤 그라디언트 */
+    background: linear-gradient(90deg, #DBDBDE, #8b8b90, #DBDBDE);
     border-radius: 6px;
     width: 0%;
     transition: width 0.35s ease-out;
-    box-shadow: 0 0 8px rgba(168, 85, 247, 0.4);
+    box-shadow: 0 0 8px rgba(219, 219, 222, 0.30);
 }
 
 .progress-text {

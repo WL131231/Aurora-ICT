@@ -7,10 +7,8 @@
     <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
-    <!-- 검은 배경 + ICT painterly 손 (사용자 페이지 동일 분위기) -->
-    <div class="bg-gradient"></div>
-    <div class="bg-texture"></div>
-    <div class="bg-hands"></div>
+    <!-- 2026-05-27: 파트너 요청 — 배경 손 그림 / 텍스처 / 그라디언트 모두 제거.
+         봇 본체 UI (#141316) 와 동일한 단색 배경 + 다이아몬드만 살림. -->
 
     <!-- v0.4.66 (G-2b): 라이선스 게이트 화면 — license.json 없거나 verify fail 시 보임 -->
     <section id="license-gate" class="license-gate" style="display:none">
@@ -61,9 +59,11 @@
         <!-- 좌측 — 브랜드 / 로그 / (하단) status·progress -->
         <section class="hero">
             <div class="hero-top">
-                <div class="brand-row">
+                <!-- 2026-05-27: 파트너 요청 — AURORA · ICT 워드마크 크게.
+                     기존 18px → 본문 hero-title 급 (60px+) 으로 키움. -->
+                <div class="brand-row brand-row-large">
                     <div class="logo-mark">
-                        <svg width="40" height="40" viewBox="0 0 28 28" fill="none">
+                        <svg width="80" height="80" viewBox="0 0 28 28" fill="none">
                             <defs>
                                 <linearGradient id="logoGradHero" x1="0%" y1="0%" x2="100%" y2="100%">
                                     <stop offset="0%" stop-color="#DBDBDE" />

@@ -30,6 +30,19 @@
     font-family: 'JetBrains Mono', system-ui, sans-serif;
     font-size: 13px;
   }
+  /* 2026-05-27: 파트너 피드백 — 스크롤바가 OS 기본(흰/회색) 이라 튀어보임.
+     pywebview = Edge WebView2 (Chromium) → ::-webkit-scrollbar 지원.
+     Firefox 호환 위해 scrollbar-color 도 같이. */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: var(--bg-2); }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(219, 219, 222, 0.14);
+    border-radius: 5px;
+    border: 2px solid var(--bg-2);
+  }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(219, 219, 222, 0.28); }
+  ::-webkit-scrollbar-corner { background: var(--bg-2); }
+  * { scrollbar-width: thin; scrollbar-color: rgba(219, 219, 222, 0.14) #1C1C1C; }
   .wrap { display: flex; height: 100vh; }
   .sidebar {
     width: 260px;
