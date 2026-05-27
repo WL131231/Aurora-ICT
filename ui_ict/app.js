@@ -636,7 +636,7 @@ async function fetchAndRender() {
       api(`/ict/ohlcv?timeframe=${tf}&limit=1000`),
       api(`/ict/markers?timeframe=${tf}&limit=1000`),
       api("/ict/position"),
-      api("/ict/closed_pnl?limit=20"),
+      api("/ict/closed_pnl?limit=50"),  // 2026-05-27: 7D → 30D 윈도우 확장 정합
     ]);
     candleSeries.setData(ohlcv.candles);
     // 2026-05-27: 차트 좌측 공백 제거 — 모든 봉 보이게 맞춤.

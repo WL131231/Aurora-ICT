@@ -602,6 +602,81 @@ def create_app(manager: BotManager) -> FastAPI:
                     "range": f"{e.high:,.0f} ~ {e.low:,.0f}",
                     "interpretation": "위쪽 저항 (가격 도달 시 막힐 위험)",
                 })
+        # 2026-05-27: 파트너 요청 — "FVG 만 나옴" → BOS/CHoCH + OB + Sweep 도 표시.
+        # 봇 본체는 다 보고 있음 (차트 마커에 표시). 판단 패널만 FVG 위주였던 거 보완.
+        try:
+            use_tf = bot.timeframe
+            ohlcv_rows = await bot.client.fetch_ohlcv(bot.symbol, use_tf, 200)
+            if ohlcv_rows:
+                df = pd.DataFrame(
+                    ohlcv_rows,
+                    columns=["ts_ms", "open", "high", "low", "close", "volume"],
+                )
+                df.index = pd.DatetimeIndex(
+                    pd.to_datetime(df["ts_ms"], unit="ms", utc=True),
+                )
+                df = df[["open", "high", "low", "close", "volume"]]
+                _mk = to_chart_markers(
+                    df,
+                    min_rr=manager.settings.min_rr,
+                    fvg_min_size_pct=manager.settings.fvg_min_size_pct,
+                )
+                # 1) 최근 구조 변화 (BOS/CHoCH) — large 우선, 1개
+                struct_src = _mk.large_structure or _mk.structure
+                if struct_src:
+                    s = struct_src[-1]
+                    struct_meta = {
+                        "bos_bullish":   ("green",  "BOS↑",    "상승 추세 지속 (이전 고점 돌파)"),
+                        "bos_bearish":   ("red",    "BOS↓",    "하락 추세 지속 (이전 저점 돌파)"),
+                        "choch_bullish": ("green",  "CHoCH↑",  "추세 전환 — 상승 우세 (전환 신호)"),
+                        "choch_bearish": ("red",    "CHoCH↓",  "추세 전환 — 하락 우세 (전환 신호)"),
+                    }
+                    color, term, interp = struct_meta.get(
+                        s.type, ("yellow", s.type, "구조 변화"),
+                    )
+                    reasons.append({
+                        "color": color, "term": term,
+                        "range": f"{s.broken_level:,.0f}",
+                        "interpretation": interp,
+                    })
+                # 2) 가까운 unmitigated OB — 위/아래 1개씩 (large 우선)
+                ob_src = _mk.large_order_blocks or _mk.order_blocks
+                obs = [o for o in ob_src if not o.mitigated]
+                if cur_price > 0 and obs:
+                    bull_obs = [o for o in obs if o.type == "bullish" and o.high < cur_price]
+                    bear_obs = [o for o in obs if o.type == "bearish" and o.low > cur_price]
+                    bull_obs.sort(key=lambda o: cur_price - o.high)
+                    bear_obs.sort(key=lambda o: o.low - cur_price)
+                    for o in bull_obs[:1]:
+                        reasons.append({
+                            "color": "green", "term": "OB",
+                            "range": f"{o.high:,.0f} ~ {o.low:,.0f}",
+                            "interpretation": "롱 지지 가능성 (기관 매수 흔적)",
+                        })
+                    for o in bear_obs[:1]:
+                        reasons.append({
+                            "color": "red", "term": "OB",
+                            "range": f"{o.high:,.0f} ~ {o.low:,.0f}",
+                            "interpretation": "위쪽 저항 (기관 매도 흔적)",
+                        })
+                # 3) 최근 liquidity sweep — 1개 (large 우선)
+                sweep_src = _mk.large_sweeps or _mk.sweeps
+                if sweep_src:
+                    sw = sweep_src[-1]
+                    if sw.type == "bullish":
+                        reasons.append({
+                            "color": "yellow", "term": "SSL Sweep",
+                            "range": f"{sw.wick_price:,.0f}",
+                            "interpretation": "하단 유동성 흡수 — 반등 가능성 (롱 손절 청산)",
+                        })
+                    elif sw.type == "bearish":
+                        reasons.append({
+                            "color": "yellow", "term": "BSL Sweep",
+                            "range": f"{sw.wick_price:,.0f}",
+                            "interpretation": "상단 유동성 흡수 — 하락 가능성 (숏 손절 청산)",
+                        })
+        except Exception as e:  # noqa: BLE001
+            logger.debug("judgment markers 추출 실패: %s", e)
         # 세션 상태 한 줄
         session = _compute_session_status()
         if session["kind"] == "killzone":
@@ -665,13 +740,13 @@ def create_app(manager: BotManager) -> FastAPI:
         return {"equity": float(eq), "active": True, "session_status": session}
 
     @app.get("/ict/closed_pnl")
-    async def get_closed_pnl(limit: int = 20) -> dict[str, Any]:
+    async def get_closed_pnl(limit: int = 50) -> dict[str, Any]:
         """최근 청산 거래 내역 — UI 우측 P&L 패널용 (Bybit P&L 화면 모사).
 
         거래소 closed-pnl history 를 직접 조회 (수수료/펀딩 반영된 실현치).
 
         Args:
-            limit: 반환할 최대 거래 수 (기본 20).
+            limit: 반환할 최대 거래 수 (기본 50, 30일 윈도우 정합).
 
         Returns:
             ``{"trades": [{symbol, direction, entry_price, exit_price, qty,
@@ -681,9 +756,11 @@ def create_app(manager: BotManager) -> FastAPI:
         bot = manager.bot
         if bot is None:
             return {"trades": []}
-        # 최근 7일 윈도우 (bybit 단일 chunk 범위 한도)
+        # 2026-05-27: 파트너 요청 — 7일 → 30일 윈도우.
+        # bybit V5 closed-pnl 은 chunk 당 7일 한도지만 fetch_closed_positions 가
+        # 7일 chunk 페이지네이션 (max_chunks=30) 으로 자동 분할 처리.
         import time as _time
-        since_ms = int(_time.time() * 1000) - 7 * 24 * 60 * 60 * 1000
+        since_ms = int(_time.time() * 1000) - 30 * 24 * 60 * 60 * 1000
         try:
             closed = await bot.client.fetch_closed_positions(
                 since_ms=since_ms, limit=max(1, min(int(limit), 200)),
