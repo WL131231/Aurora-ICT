@@ -632,11 +632,24 @@ async function fetchAndRender() {
     }
 
     const tf = encodeURIComponent(currentTimeframe);
+    // 2026-05-27 파트너 요청 — "거래소 시작(2020-03) 부터 지금까지 봉 전부".
+    // TF 별 한도 — 큰 TF (1h~1w) 는 Bybit history 다 받기 가능, 작은 TF
+    // (1m/5m) 는 메모리·시간 부담으로 합리적 max. ccxt fetch_ohlcv 가 history
+    // 끝나면 자동 stop (max_pages=100, max 100,000봉).
+    const CANDLE_LIMIT = {
+      "1m": 5000, "5m": 20000, "15m": 50000,
+      "1h": 60000, "2h": 30000, "4h": 15000,
+      "1d": 5000, "1w": 1500,
+    };
+    // 마커 계산은 봉 수에 비례 → 5초 polling 부담 방지 위해 최근 2000봉만.
+    // (옛 봉에는 마커 표시 X — 가격 캔들만 보임. trade-off 안내됨)
+    const candleLimit = CANDLE_LIMIT[currentTimeframe] || 5000;
+    const markerLimit = 2000;
     const [ohlcv, markers, position, pnl] = await Promise.all([
-      api(`/ict/ohlcv?timeframe=${tf}&limit=1000`),
-      api(`/ict/markers?timeframe=${tf}&limit=1000`),
+      api(`/ict/ohlcv?timeframe=${tf}&limit=${candleLimit}`),
+      api(`/ict/markers?timeframe=${tf}&limit=${markerLimit}`),
       api("/ict/position"),
-      api("/ict/closed_pnl?limit=50"),  // 2026-05-27: 7D → 30D 윈도우 확장 정합
+      api("/ict/closed_pnl?limit=50"),
     ]);
     candleSeries.setData(ohlcv.candles);
     // 2026-05-27: 차트 좌측 공백 제거 — 모든 봉 보이게 맞춤.

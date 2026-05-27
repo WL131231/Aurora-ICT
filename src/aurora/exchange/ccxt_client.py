@@ -34,6 +34,9 @@ from aurora.exchange.base import Balance, ClosedPosition, Order, Position
 
 logger = logging.getLogger(__name__)
 
+# Bybit V5 /v5/market/kline limit max — fetch_ohlcv 페이지네이션 분할 단위.
+_OHLCV_MAX_PER_CALL = 1000
+
 
 # tenacity retry — DESIGN.md §3.3 / E-12. PR-2 #31 _fetch_page 와 동일 정책.
 # 일시 네트워크/거래소 장애만 재시도. AuthError 등은 즉시 raise (재시도 무의미).
@@ -188,23 +191,68 @@ class CcxtClient:
     ) -> pd.DataFrame:
         """최근 ``limit`` 봉 OHLCV 가져오기.
 
-        라이브 봇용 — ``since`` 미지정으로 최신 ``limit`` 봉만 한 번 호출.
-        과거 구간 백테스트 데이터 수집은 ``scripts/fetch_ohlcv.py`` 별도 스크립트
-        (페이지네이션 + parquet 저장).
+        라이브 봇용 — 단일 호출 max=1000봉 (Bybit V5 kline 한도). ``limit`` 이
+        1000 초과면 ``since`` 기반 옛날 방향 페이지네이션으로 자동 분할 fetch.
+        max 5000봉 (안전 가드) — UI 차트 가시 범위 확장용 (2026-05-27 파트너 요청).
 
         Args:
             symbol: ccxt 표준 (예: ``"BTC/USDT:USDT"`` for linear perpetual).
             timeframe: Aurora 포맷 (예: ``"1H"``). ccxt 포맷으로 자동 변환.
-            limit: 봉 수 (기본 500, Bybit 최대 1000).
+            limit: 봉 수 (기본 500). 1000 초과는 자동 페이지네이션 (max 5000).
 
         Returns:
-            DataFrame (DatetimeIndex UTC, columns=[open/high/low/close/volume]).
-            응답 비어있으면 빈 DataFrame.
+            DataFrame (DatetimeIndex UTC, columns=[open/high/low/close/volume]),
+            ts 오름차순(옛날→최근). 응답 비어있으면 빈 DataFrame.
         """
         await self._ensure_init()
         ccxt_tf = normalize_to_ccxt(timeframe)
-        page = await self._fetch_ohlcv_page(symbol, ccxt_tf, since_ms=None, limit=limit)
-        return self._page_to_df(page)
+        if limit <= _OHLCV_MAX_PER_CALL:
+            # fast path — 단일 호출 (기존 동작 그대로)
+            page = await self._fetch_ohlcv_page(symbol, ccxt_tf, since_ms=None, limit=limit)
+            return self._page_to_df(page)
+
+        # 2026-05-27: limit > 1000 페이지네이션
+        # 전략 — 첫 호출은 since=None (최신 1000봉) → cursor 를 가장 옛날 봉 ts 로,
+        # 다음 호출은 since=cursor-tf_ms*1000 (그 이전 1000봉 forward) 반복.
+        # 페이지 사이 1봉 겹칠 수 있어 seen ts set 으로 중복 제거.
+        from aurora.backtest.replay import TF_MINUTES
+        from aurora.backtest.tf import normalize_to_aurora
+        aurora_tf = normalize_to_aurora(ccxt_tf)
+        tf_ms = TF_MINUTES[aurora_tf] * 60_000
+
+        seen_ts: set[int] = set()
+        all_rows: list[list[Any]] = []
+        cursor_ts: int | None = None
+        remaining = limit
+        # 2026-05-27 파트너 요청 — "거래소 시작부터 지금까지 전부".
+        # max_pages 5 → 100 (100 × 1000 = 100,000봉). 거래소 history 끝나면
+        # 빈 응답 / 진전 없음으로 자동 stop. Bybit BTCUSDT Perpetual 시작은
+        # 2020-03 → 1H 6.17년 ≈ 54,000봉, 1D 2,250봉, 1W 322봉 모두 커버.
+        max_pages = 100
+
+        for _ in range(max_pages):
+            if remaining <= 0:
+                break
+            page_limit = min(remaining, _OHLCV_MAX_PER_CALL)
+            if cursor_ts is None:
+                page = await self._fetch_ohlcv_page(symbol, ccxt_tf, since_ms=None, limit=page_limit)
+            else:
+                since_ms = cursor_ts - page_limit * tf_ms
+                page = await self._fetch_ohlcv_page(symbol, ccxt_tf, since_ms=since_ms, limit=page_limit)
+            if not page:
+                break
+            new_rows = [r for r in page if r[0] not in seen_ts]
+            if not new_rows:
+                break  # 진전 없음 — 거래소 history 끝
+            for r in new_rows:
+                seen_ts.add(r[0])
+            new_rows.sort(key=lambda r: r[0])
+            all_rows = new_rows + all_rows
+            remaining -= len(new_rows)
+            cursor_ts = new_rows[0][0]
+        # 안전 — 전체 정렬 (페이지 prepend 시 이미 정렬이지만 방어)
+        all_rows.sort(key=lambda r: r[0])
+        return self._page_to_df(all_rows)
 
     @staticmethod
     def _page_to_df(page: list[list[Any]]) -> pd.DataFrame:

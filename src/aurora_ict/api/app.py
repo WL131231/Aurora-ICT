@@ -788,9 +788,13 @@ def create_app(manager: BotManager) -> FastAPI:
     async def get_markers(
         symbol: str | None = None,
         timeframe: str | None = None,
-        limit: int = 200,
+        limit: int = 1500,
     ) -> dict[str, Any]:
-        """OHLCV fetch 후 chart marker 일체를 계산해 반환."""
+        """OHLCV fetch 후 chart marker 일체를 계산해 반환.
+
+        2026-05-27 파트너 요청 — 봉 수 더 많이 보이게. default 200 → 1500
+        (Bybit V5 한도 1000 초과는 ccxt_client.fetch_ohlcv 가 자동 페이지네이션).
+        """
         bot = manager.bot
         if bot is None:
             raise HTTPException(
@@ -843,9 +847,13 @@ def create_app(manager: BotManager) -> FastAPI:
     async def get_ohlcv(
         symbol: str | None = None,
         timeframe: str | None = None,
-        limit: int = 200,
+        limit: int = 1500,
     ) -> dict[str, Any]:
-        """OHLCV 봉 그대로 반환 (UI lightweight-charts candle 입력용)."""
+        """OHLCV 봉 그대로 반환 (UI lightweight-charts candle 입력용).
+
+        2026-05-27 파트너 요청 — 차트에 봉 더 많이 보이게. default 200 → 1500.
+        Bybit V5 한도 1000 초과는 ccxt_client.fetch_ohlcv 가 자동 페이지네이션.
+        """
         bot = manager.bot
         if bot is None:
             raise HTTPException(
