@@ -216,6 +216,11 @@ def create_app(manager: BotManager) -> FastAPI:
 
     @app.post("/ict/start")
     async def start_bot() -> dict[str, Any]:
+        # 2026-05-27: ENABLE 버튼 제거 후 START 가 enable + start 둘 다 담당.
+        try:
+            await manager.set_enabled(True)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
         try:
             await manager.start()
         except ValueError as e:
@@ -224,7 +229,12 @@ def create_app(manager: BotManager) -> FastAPI:
 
     @app.post("/ict/stop")
     async def stop_bot() -> dict[str, Any]:
+        # 2026-05-27: STOP 은 stop + disable (다음 START 까지 진입 차단).
         await manager.stop()
+        try:
+            await manager.set_enabled(False)
+        except ValueError:
+            pass
         return _status_dict(manager)
 
     @app.post("/ict/run-mode")

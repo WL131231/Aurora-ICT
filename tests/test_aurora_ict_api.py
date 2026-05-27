@@ -96,8 +96,12 @@ def test_start_then_status_running(client: TestClient) -> None:
     resp = client.post("/ict/start")
     assert resp.status_code == 200
     assert resp.json()["state"] == "running"
+    # 2026-05-27: ENABLE 버튼 제거 후 START 가 enabled 도 자동 True.
+    assert resp.json()["enabled"] is True
     resp = client.post("/ict/stop")
     assert resp.json()["state"] == "stopped"
+    # STOP 은 enabled=False 로 되돌림 (다음 START 까지 진입 차단).
+    assert resp.json()["enabled"] is False
 
 
 def test_start_without_credentials_returns_400() -> None:
