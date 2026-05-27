@@ -170,3 +170,52 @@ def test_setup_without_fvg_and_zone_raises_when_accessed():
     )
     with pytest.raises(ValueError, match="zone_high"):
         _ = setup.zone_high
+
+
+# ============================================================
+# 2026-05-27 fix: Phase B 도 disable_time_filter 적용 (사각지대 메꿈)
+# ============================================================
+
+
+def test_phase_b_time_filter_disabled_passes_all() -> None:
+    """disable_time_filter=True → killzone 밖이라도 통과 (기존 동작)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from aurora_ict.strategy.silver_bullet import _phase_b_in_time_window
+    ny = ZoneInfo("America/New_York")
+    ts_gap = int(datetime(2026, 5, 27, 6, 0, tzinfo=ny).timestamp() * 1000)
+    assert _phase_b_in_time_window(ts_gap, disable_time_filter=True) is True
+
+
+def test_phase_b_in_killzone_passes_with_filter_on() -> None:
+    """NY AM 안 시각은 disable_time_filter=False 여도 통과."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from aurora_ict.strategy.silver_bullet import _phase_b_in_time_window
+    ny = ZoneInfo("America/New_York")
+    ts_am = int(datetime(2026, 5, 27, 8, 0, tzinfo=ny).timestamp() * 1000)  # NY 08:00 (NY_AM)
+    assert _phase_b_in_time_window(ts_am, disable_time_filter=False) is True
+
+
+def test_phase_b_outside_killzone_blocked_with_filter_on() -> None:
+    """킬존 밖 (NY 06:00 = London 끝과 NY_AM 시작 사이) 은 차단 — 사각지대 fix 검증."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from aurora_ict.strategy.silver_bullet import _phase_b_in_time_window
+    ny = ZoneInfo("America/New_York")
+    ts_gap = int(datetime(2026, 5, 27, 6, 0, tzinfo=ny).timestamp() * 1000)
+    assert _phase_b_in_time_window(ts_gap, disable_time_filter=False) is False
+
+
+def test_phase_b_outside_killzone_blocked_asian_gap() -> None:
+    """Asian 끝(23:59) 과 London 시작(02:00) 사이 — NY 00:30 도 차단."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from aurora_ict.strategy.silver_bullet import _phase_b_in_time_window
+    ny = ZoneInfo("America/New_York")
+    ts_gap = int(datetime(2026, 5, 27, 0, 30, tzinfo=ny).timestamp() * 1000)
+    assert _phase_b_in_time_window(ts_gap, disable_time_filter=False) is False
