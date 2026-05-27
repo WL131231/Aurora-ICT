@@ -105,11 +105,13 @@ class IctSettings(BaseSettings):
     # 30봉 = 5m TF 에서 2.5시간 / 1h TF 에서 30시간. limit retest 시간 넉넉히 확보.
     setup_stale_bars: int = Field(default=30, ge=1, le=100)
     # disable_time_filter: True 면 Silver Bullet / Killzone 시간 윈도우 무시 (24h 매매).
-    # 2026-05-26 장수 결정: **False (Killzone + 미장 시간만)** — 24h 매매가 죽은 시간대
-    # (Asian 후반 등) 손실 비중 커 ICT TIME-first 로 복귀. Killzone = Asian/London/NY AM/
-    # Close/PM (NY AM~Close~PM 가 미장 09:30-16:00 ET 커버). env override 가능
-    # (AURORA_ICT_DISABLE_TIME_FILTER=true 로 24h 복귀).
-    disable_time_filter: bool = Field(default=False)
+    # 라이선스 정책 (model_validator):
+    #   - referral: 사용자 설정 따름 (default True = 24h)
+    #   - sub_*: False 강제 (Killzone+미장)
+    # 2026-05-26 default False 로 변경했으나 2026-05-27 데모 (v0.4.82 22h, 1W5L) 결과
+    # referral 은 24h 가 더 나음 → 2026-05-27 default True 복원. env 로 opt-in 가능
+    # (AURORA_ICT_DISABLE_TIME_FILTER=false 로 referral 도 Killzone).
+    disable_time_filter: bool = Field(default=True)
     # multi_tf: True 면 HTF (Trade TF 위 전체) setup 추적 + LTF retrace/structure
     # shift/FVG confirm 시 진입 (ICT 정통). False 면 단일 TF 매매.
     multi_tf: bool = Field(default=False)

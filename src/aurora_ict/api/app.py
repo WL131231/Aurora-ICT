@@ -407,15 +407,28 @@ def create_app(manager: BotManager) -> FastAPI:
 
     @app.get("/ict/position")
     async def get_position() -> dict[str, Any]:
-        """현재 active position 상세 — UI 하단 패널용.
+        """현재 active position 상세 — UI 하단 패널용 + 지정가 대기 시 pending 필드.
 
         Returns:
-            - ``{"active": False}`` 봇 미가동 또는 포지션 없음
-            - ``{"active": True, ...}`` 현재 active position + mark price + PnL + margin
+            - ``{"active": False, "pending": None}`` — 봇 미가동/플랫 + 대기 주문 없음
+            - ``{"active": False, "pending": {...}}`` — 지정가 미체결 대기 중 (UI 차트 라인용)
+            - ``{"active": True, ..., "pending": None}`` — 활성 포지션 (지정가 대기는 없음)
         """
         bot = manager.bot
+        # pending entry (지정가 미체결 대기) — active 든 아니든 같이 표시.
+        pending: dict[str, Any] | None = None
+        if bot is not None and bot._pending_entry is not None:
+            pe = bot._pending_entry
+            pending = {
+                "direction": pe.direction.value,
+                "entry": pe.entry,
+                "stop_loss": pe.stop_loss,
+                "take_profit": pe.take_profit,
+                "qty": pe.qty,
+                "placed_ts_ms": pe.placed_ts_ms,
+            }
         if bot is None or bot.active_position is None:
-            return {"active": False}
+            return {"active": False, "pending": pending}
 
         ap = bot.active_position
         # #BUG-7 / 사용자 요청: 거래소 포지션 값 그대로 우선 (unrealized_pnl / entry).
@@ -486,7 +499,51 @@ def create_app(manager: BotManager) -> FastAPI:
             "notional": notional,
             "liquidation_price": liq_price,
             "leverage": lev,
+            "pending": pending,
         }
+
+    @app.get("/ict/closed_pnl")
+    async def get_closed_pnl(limit: int = 20) -> dict[str, Any]:
+        """최근 청산 거래 내역 — UI 우측 P&L 패널용 (Bybit P&L 화면 모사).
+
+        거래소 closed-pnl history 를 직접 조회 (수수료/펀딩 반영된 실현치).
+
+        Args:
+            limit: 반환할 최대 거래 수 (기본 20).
+
+        Returns:
+            ``{"trades": [{symbol, direction, entry_price, exit_price, qty,
+              pnl_usd, roi_pct, leverage, closed_at_ts, opened_at_ts}, ...]}``
+            신→구 정렬. 봇 미가동 또는 fetch 실패 시 ``{"trades": []}``.
+        """
+        bot = manager.bot
+        if bot is None:
+            return {"trades": []}
+        # 최근 7일 윈도우 (bybit 단일 chunk 범위 한도)
+        import time as _time
+        since_ms = int(_time.time() * 1000) - 7 * 24 * 60 * 60 * 1000
+        try:
+            closed = await bot.client.fetch_closed_positions(
+                since_ms=since_ms, limit=max(1, min(int(limit), 200)),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("closed_pnl fetch 실패: %s", e)
+            return {"trades": []}
+        trades: list[dict[str, Any]] = []
+        for cp in closed[: max(1, min(int(limit), 200))]:
+            trades.append({
+                "symbol": getattr(cp, "symbol", None),
+                "direction": getattr(cp, "direction", None),
+                "entry_price": getattr(cp, "entry_price", None),
+                "exit_price": getattr(cp, "exit_price", None),
+                "qty": getattr(cp, "qty", None),
+                "pnl_usd": getattr(cp, "pnl_usd", None),
+                "roi_pct": getattr(cp, "roi_pct", None),
+                "leverage": getattr(cp, "leverage", None),
+                "closed_at_ts": getattr(cp, "closed_at_ts", None),
+                "opened_at_ts": getattr(cp, "opened_at_ts", None),
+            })
+        return {"trades": trades}
 
     @app.get("/ict/markers")
     async def get_markers(

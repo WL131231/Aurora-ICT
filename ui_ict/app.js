@@ -55,6 +55,11 @@ const candleSeries = chart.addCandlestickSeries({
   wickUpColor: "#34d399", wickDownColor: "#fb7185",
 });
 
+// 지정가 미체결 라인 — bot.pending_entry 있으면 candleSeries.createPriceLine 으로 표시.
+// 매 polling 마다 비교해 추가/갱신/제거 (Bybit 차트의 limit 주문 라인 모사).
+let pendingPriceLine = null;
+let pendingLineKey = null;  // "${price}|${qty}|${direction}" — 같은 키면 재생성 skip
+
 // OB 박스 — BaselineSeries 풀 (각 활성 OB 마다 1개)
 let obBoxSeries = [];
 // FVG 박스 — BaselineSeries 풀
@@ -630,10 +635,11 @@ async function fetchAndRender() {
     }
 
     const tf = encodeURIComponent(currentTimeframe);
-    const [ohlcv, markers, position] = await Promise.all([
+    const [ohlcv, markers, position, pnl] = await Promise.all([
       api(`/ict/ohlcv?timeframe=${tf}&limit=1000`),
       api(`/ict/markers?timeframe=${tf}&limit=1000`),
       api("/ict/position"),
+      api("/ict/closed_pnl?limit=20"),
     ]);
     candleSeries.setData(ohlcv.candles);
     // 마지막 봉 시간 — PD Zone area 끝점에 사용
@@ -642,6 +648,8 @@ async function fetchAndRender() {
     }
     renderMarkers(markers);
     renderPositions(position);
+    renderPendingLimit(position);
+    renderPnL(pnl);
   } catch (e) {
     toast(`API: ${e.message}`, true);
   }
@@ -710,6 +718,65 @@ $("positions-tbody").addEventListener("click", async (ev) => {
     btn.disabled = false;
   }
 });
+
+// ============================================================
+// 우측 P&L 패널 + 지정가 라인 — 사용자 결정 2026-05-27 추가
+// ============================================================
+
+/** 거래소 closed-pnl history 를 우측 P&L 패널 테이블에 렌더. */
+function renderPnL(data) {
+  const tbody = $("pnl-tbody");
+  const count = $("pnl-count");
+  const trades = (data && Array.isArray(data.trades)) ? data.trades : [];
+  count.textContent = trades.length;
+  if (trades.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" class="pnl-empty">청산 거래 없음 — 첫 종료 시 표시됩니다</td></tr>';
+    return;
+  }
+  const rows = trades.map((t) => {
+    const sym = (t.symbol || "").replace(":USDT", "").replace("/USDT", "USDT");
+    const dirCls = t.direction === "long" ? "pnl-side-long" : "pnl-side-short";
+    const pnl = (typeof t.pnl_usd === "number") ? t.pnl_usd : 0;
+    const pnlCls = pnl >= 0 ? "pnl-pos" : "pnl-neg";
+    const pnlStr = (pnl >= 0 ? "+" : "") + pnl.toFixed(2);
+    const entry = (typeof t.entry_price === "number") ? t.entry_price.toFixed(2) : "—";
+    const qty = (typeof t.qty === "number") ? t.qty.toFixed(3) : "—";
+    const ts = (typeof t.closed_at_ts === "number") ? new Date(t.closed_at_ts) : null;
+    const tstr = ts ? `${String(ts.getMonth()+1).padStart(2,"0")}-${String(ts.getDate()).padStart(2,"0")} ${String(ts.getHours()).padStart(2,"0")}:${String(ts.getMinutes()).padStart(2,"0")}` : "—";
+    return `<tr>
+      <td><span class="${dirCls}">${sym}</span></td>
+      <td class="num">${entry}</td>
+      <td class="num">${qty}</td>
+      <td class="num ${pnlCls}">${pnlStr}</td>
+      <td class="pnl-time">${tstr}</td>
+    </tr>`;
+  }).join("");
+  tbody.innerHTML = rows;
+}
+
+/** 봇이 지정가 미체결 대기 중이면 차트에 horizontal price line + qty 라벨 표시.
+ *  position.pending 없으면 line 제거 (체결됨/취소됨). */
+function renderPendingLimit(position) {
+  const pe = position && position.pending;
+  const key = pe ? `${pe.entry}|${pe.qty}|${pe.direction}` : null;
+  if (pendingLineKey === key) return;  // 동일 — skip
+  // 기존 라인 제거
+  if (pendingPriceLine !== null) {
+    try { candleSeries.removePriceLine(pendingPriceLine); } catch (e) { /* noop */ }
+    pendingPriceLine = null;
+  }
+  pendingLineKey = key;
+  if (!pe) return;
+  const isLong = pe.direction === "long";
+  pendingPriceLine = candleSeries.createPriceLine({
+    price: pe.entry,
+    color: isLong ? "#34d399" : "#fb7185",
+    lineWidth: 1,
+    lineStyle: 2,   // dashed
+    axisLabelVisible: true,
+    title: `Limit ${pe.entry.toFixed(2)}  ${pe.qty.toFixed(3)}`,
+  });
+}
 
 // TF 토글 — 클릭 시 currentTimeframe 갱신 + localStorage 저장 + 즉시 재렌더
 function _updateTfButtons() {
