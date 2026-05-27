@@ -341,7 +341,8 @@
   .session-us_open  { color: #34d399; border-color: #34d399; }
   .session-none     { color: var(--text-3); }
 
-  /* 우상단 햄버거 토글 — 사이드바 접기/펴기 */
+  /* 우상단 햄버거 토글 — 우측 P&L 패널 접기/펴기
+     2026-05-27: 파트너 피드백 — 햄버거가 좌측 사이드바가 아니라 우측 P&L 패널을 토글해야 함 */
   .sidebar-toggle {
     position: absolute; top: 10px; right: 12px;
     width: 32px; height: 28px;
@@ -357,8 +358,8 @@
     display: block; height: 2px; background: var(--text-2); border-radius: 1px;
   }
   .sidebar-toggle:hover { border-color: var(--text-2); }
-  /* 사이드바 접힘 — body 클래스로 토글 */
-  body.sidebar-collapsed .sidebar { display: none; }
+  /* P&L 패널 접힘 — body 클래스로 토글 */
+  body.pnl-collapsed .pnl-panel { display: none; }
 
   /* 좌하단 판단 패널 — 봇이 시장 어떻게 보는지 시각화 */
   .judgment-panel {
@@ -374,9 +375,11 @@
     max-height: 50vh;
     overflow-y: auto;
   }
+  /* 2026-05-27: 파트너 피드백 — Reason/Entry Condition 등 헤더 + 해석/디테일 색을
+     text-3(#888892) 에서 text-2(#B0B0B6) 로 한 단계 밝게. 폰트도 살짝 키움. */
   .jp-header {
-    font-size: 10px; letter-spacing: 0.15em;
-    color: var(--text-3);
+    font-size: 10.5px; letter-spacing: 0.15em;
+    color: var(--text-2);
     margin-bottom: 8px;
     border-bottom: 1px solid var(--line);
     padding-bottom: 6px;
@@ -393,8 +396,8 @@
     display: flex; justify-content: space-between;
   }
   .jp-section-title {
-    font-size: 10px; letter-spacing: 0.12em;
-    color: var(--text-3);
+    font-size: 10.5px; letter-spacing: 0.12em;
+    color: var(--text-2);
     margin: 10px 0 5px;
     border-bottom: 1px solid var(--line);
     padding-bottom: 3px;
@@ -417,11 +420,11 @@
   .jp-reason-dot.yellow { background: #fbbf24; }
   .jp-reason-term  { color: var(--text-1); font-weight: 500; }
   .jp-reason-range { color: var(--text-2); font-size: 10.5px; }
-  .jp-reason-interp { color: var(--text-3); font-size: 10px; margin-left: 11px; margin-top: 1px; }
+  .jp-reason-interp { color: var(--text-2); font-size: 10.5px; margin-left: 11px; margin-top: 1px; }
   .jp-entry {
     color: var(--text-1); line-height: 1.4;
   }
-  .jp-entry-detail { color: var(--text-3); font-size: 10px; margin-top: 3px; }
+  .jp-entry-detail { color: var(--text-2); font-size: 10.5px; margin-top: 3px; }
 
   /* 우측 P&L 패널 — 최근 7일 청산 거래 (Bybit P&L 화면 모사) */
   .pnl-panel {

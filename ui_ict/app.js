@@ -966,11 +966,12 @@ function escapeHtml(s) {
 setInterval(refreshJudgment, 5000);
 refreshJudgment();
 
-// 사이드바 토글 (햄버거)
+// 햄버거 토글 — 우측 P&L 패널 접기/펴기
+// 2026-05-27: 파트너 피드백 ("저 pnl 창 말한거양") — 좌측 사이드바가 아니라 우측 P&L 토글
 const _btnSidebarToggle = $("btn-sidebar-toggle");
 if (_btnSidebarToggle) {
   _btnSidebarToggle.onclick = () => {
-    document.body.classList.toggle("sidebar-collapsed");
+    document.body.classList.toggle("pnl-collapsed");
   };
 }
 
