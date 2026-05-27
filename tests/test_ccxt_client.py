@@ -613,6 +613,78 @@ async def test_fetch_closed_positions_bybit_pagination_within_chunk():
 
 
 @pytest.mark.asyncio
+async def test_fetch_closed_positions_bybit_chunks_iterate_recent_first():
+    """chunk 순회 방향 — 최근(now)부터 옛날(since_ms) 방향 (2026-05-27 fix).
+
+    회귀 방지 — 파트너 보고: 30일 조회 시 옛날(5/8~5/11) 만 표시되고 최근
+    (5/27) 거래 누락. 옛날 chunk 부터 순회하면서 limit early-exit 으로 최근
+    chunks fetch 안 한 게 원인. fix 후 첫 호출의 endTime 이 now_ms 여야 함.
+    """
+    with patch("aurora.exchange.ccxt_client.settings") as mock_settings, \
+         patch("aurora.exchange.ccxt_client.time") as mock_time:
+        mock_settings.run_mode = "demo"
+        mock_time.time = lambda: 1735100000.0
+        client = _make_client(exchange_id="bybit")
+        client._mock_ex.private_get_v5_position_closed_pnl = AsyncMock(  # type: ignore[attr-defined]
+            return_value={"result": {"list": [], "nextPageCursor": ""}},
+        )
+
+        now_ms = int(1735100000.0 * 1000)
+        thirty_days_ago = now_ms - 30 * 24 * 60 * 60 * 1000
+        await client.fetch_closed_positions(since_ms=thirty_days_ago)
+
+        # 첫 호출 = 최근 chunk = (now - 7d, now)
+        first_call = client._mock_ex.private_get_v5_position_closed_pnl.call_args_list[0]  # type: ignore[attr-defined]
+        first_params = first_call.args[0] if first_call.args else first_call.kwargs.get("params", {})
+        assert first_params["endTime"] == now_ms, "첫 chunk 의 endTime 은 now_ms 여야 함 (최근부터 순회)"
+        assert first_params["startTime"] == now_ms - 7 * 24 * 60 * 60 * 1000
+
+        # 마지막 호출 = 가장 옛날 chunk = (now - 30d, now - 28d)
+        last_call = client._mock_ex.private_get_v5_position_closed_pnl.call_args_list[-1]  # type: ignore[attr-defined]
+        last_params = last_call.args[0] if last_call.args else last_call.kwargs.get("params", {})
+        assert last_params["startTime"] == thirty_days_ago
+
+
+@pytest.mark.asyncio
+async def test_fetch_closed_positions_bybit_limit_early_exit_keeps_recent():
+    """limit 채워지면 옛날 chunk fetch skip — 최근 거래 보장 (2026-05-27 fix).
+
+    버그 시나리오: 30일 조회 시 옛날 chunk 에서 limit 채워지면 최근 chunk
+    안 도는 게 root cause. fix 후 — 최근 chunk 에서 채워지면 옛날은 skip
+    (최근 거래 보장됨).
+    """
+    with patch("aurora.exchange.ccxt_client.settings") as mock_settings, \
+         patch("aurora.exchange.ccxt_client.time") as mock_time:
+        mock_settings.run_mode = "demo"
+        mock_time.time = lambda: 1735100000.0
+        client = _make_client(exchange_id="bybit")
+
+        # 첫(최근) chunk 가 limit 만큼 채움 → 옛날 chunks skip 되어야 함
+        recent_records = [
+            {
+                "symbol": "BTCUSDT", "side": "Sell", "leverage": "10",
+                "closedSize": "0.01", "avgEntryPrice": "60000",
+                "avgExitPrice": "61000", "closedPnl": "10",
+                "createdTime": "1735000000000", "updatedTime": str(1735090000000 + i),
+            }
+            for i in range(50)
+        ]
+        client._mock_ex.private_get_v5_position_closed_pnl = AsyncMock(  # type: ignore[attr-defined]
+            return_value={"result": {"list": recent_records, "nextPageCursor": ""}},
+        )
+
+        now_ms = int(1735100000.0 * 1000)
+        thirty_days_ago = now_ms - 30 * 24 * 60 * 60 * 1000
+        result = await client.fetch_closed_positions(since_ms=thirty_days_ago, limit=50)
+
+        # 30일이지만 첫 chunk 에서 limit 채움 → 1번만 호출 (옛날 4 chunks skip)
+        assert client._mock_ex.private_get_v5_position_closed_pnl.call_count == 1, (  # type: ignore[attr-defined]
+            "limit 채웠는데 다음 chunk fetch — 최근 거래만 보장하려면 early exit"
+        )
+        assert len(result) == 50
+
+
+@pytest.mark.asyncio
 async def test_fetch_closed_positions_bybit_network_error_returns_empty():
     """네트워크 에러 시 raise 안 하고 빈 리스트 (UI 안전)."""
     import ccxt
