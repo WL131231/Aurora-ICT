@@ -65,6 +65,19 @@ body {
     background: var(--bg);
 }
 
+/* 2026-05-27: 파트너 피드백 — 스크롤바도 모노톤으로 통일.
+   본체 (ui_ict/index.html) 와 동일 패턴. log-area 등 한정 영역 스크롤 대상. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--bg-card); }
+::-webkit-scrollbar-thumb {
+    background: rgba(219, 219, 222, 0.14);
+    border-radius: 5px;
+    border: 2px solid var(--bg-card);
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(219, 219, 222, 0.28); }
+::-webkit-scrollbar-corner { background: var(--bg-card); }
+* { scrollbar-width: thin; scrollbar-color: rgba(219, 219, 222, 0.14) #1C1C1C; }
+
 /* 2026-05-27: 파트너 요청 — 배경 손 그림 / 텍스처 / 그라디언트 모두 제거.
    body 단색 (#141316) 만 사용. .bg-gradient / .bg-texture / .bg-hands DOM 제거됨. */
 
