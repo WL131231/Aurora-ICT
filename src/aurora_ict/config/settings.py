@@ -87,10 +87,10 @@ class IctSettings(BaseSettings):
     # confluence_score 0 → base, 1/2/3+ → base + step * score (max capped).
     # 사용자 정책: 0→40, 1→55, 2→70, 3+→90 (step=15).
     position_pct_step: float = Field(default=15.0, ge=0.0, le=50.0)
-    # min_rr 1.5 — v0.4.60 정통화(2.0) 후 진입 빈도 너무 깎여 1.5 로 rollback.
-    # SL = FVG 가장자리 단순 + 단일 TP 조합에서 RR 2.0 만족 setup 빈도 급감 관찰
-    # (2026-05-21 새벽 데모 0건). 정통보다 빈도 우선 (장수 결정).
-    min_rr: float = Field(default=1.5, ge=1.0)
+    # min_rr — v0.4.60 정통화 시 2.0 → v0.4.61 빈도 우려로 1.5 rollback → 2026-05-27
+    # 데모 (v0.4.82 22h, 1W 5L, -843 USDT, 평균이익<평균손실 비대칭) 후 **2.0 복원**.
+    # 작은 이익에 큰 손실 패턴을 1:2 이상만 통과시켜 완화. 빈도↓ 기대값↑.
+    min_rr: float = Field(default=2.0, ge=1.0)
     # min_confluence: B+ 등급 게이트 (#1/#8, 2026-05-25 장수 결정). HTF boost 까지 반영된
     # 최종 confluence_score (OB+1/sweep+1/macro+1~2/HTF FVG +1~3, 합 0~7) 가 이 값 미만이면
     # 진입 skip → 빈도↓·품질↑. 등급 C0~1/B2~3/B+4~5/A6+.

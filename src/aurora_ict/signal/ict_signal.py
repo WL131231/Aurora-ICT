@@ -112,7 +112,10 @@ def generate_ict_signal(
     # v0.4.71+ Phase B: 새 4 source (Turtle / Mitigation / Implied / Rejection) setup
     # 추가 — 기존 FVG setup 과 같은 후보 리스트로 통합.
     from aurora_ict.strategy.silver_bullet import build_extra_source_setups
-    extra_setups = build_extra_source_setups(df, min_rr=min_rr, bias=bias)
+    extra_setups = build_extra_source_setups(
+        df, min_rr=min_rr, bias=bias,
+        disable_time_filter=disable_time_filter,
+    )
     if extra_setups:
         setups = list(setups) + extra_setups
         # anchor_idx 순 정렬 — 가장 최근 setup 이 마지막에 오게

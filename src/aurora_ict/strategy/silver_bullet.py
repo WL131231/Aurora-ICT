@@ -793,11 +793,24 @@ def _build_rejection_setup(
     )
 
 
+def _phase_b_in_time_window(ts_ms: int, disable_time_filter: bool) -> bool:
+    """Phase B 소스 시간 필터 — disable_time_filter=True 면 무조건 통과, 아니면 SB 또는
+    Killzone 안일 때만 통과. (Phase B 소스는 ``window`` 필드를 source 이름으로 쓰므로
+    별도 시간 검사 필요. 사용자 결정 2026-05-27: 시간 필터를 Phase B 에도 적용해 손실 컷.)
+    """
+    if disable_time_filter:
+        return True
+    if in_silver_bullet(ts_ms) is not None:
+        return True
+    return classify_killzone(ts_ms) is not None
+
+
 def build_extra_source_setups(
     df: pd.DataFrame,
     *,
     min_rr: float = 1.5,
     bias: TrendDirection | None = None,
+    disable_time_filter: bool = True,
 ) -> list[SilverBulletSetup]:
     """v0.4.71+ Phase B: 새 4 source 의 detect 호출 + setup 변환.
 
@@ -805,6 +818,10 @@ def build_extra_source_setups(
         df: OHLCV DataFrame.
         min_rr: 최소 RR (RR 미달 setup skip).
         bias: HTF bias. 박혀있으면 반대 방향 setup 제외 (bias 일치만).
+        disable_time_filter: True 면 시간 필터 skip (기존 동작 / UI 마커 호환).
+            False 면 ``ts_ms`` 가 SB 또는 Killzone 안 일 때만 통과 (2026-05-27 fix —
+            Phase B 가 ``window`` 를 source 식별자로 써서 silver_bullet 의 시간 필터를
+            우회하던 사각지대 메꿈).
 
     Returns:
         ``SilverBulletSetup`` 리스트 — 각 source 의 빈도 균등하게.
@@ -820,37 +837,38 @@ def build_extra_source_setups(
     atr_val = _atr_last(df)  # #LIVE-7: SL 최소 폭 (1.5×ATR) 계산용
     setups: list[SilverBulletSetup] = []
 
+    def _accept(built: SilverBulletSetup | None) -> None:
+        if built is None:
+            return
+        if not _matches_bias(built.direction, bias):
+            return
+        if not _phase_b_in_time_window(built.ts_ms, disable_time_filter):
+            return
+        setups.append(built)
+
     # 1) Turtle Soup
     ts_setups = detect_turtle_soup_setups(df, lookback=20)
     for ts in ts_setups[-3:]:   # 최근 3개만 (오래된 거 stale)
-        built = _build_turtle_setup(ts, df, swings, min_rr=min_rr, atr_val=atr_val)
-        if built and _matches_bias(built.direction, bias):
-            setups.append(built)
+        _accept(_build_turtle_setup(ts, df, swings, min_rr=min_rr, atr_val=atr_val))
 
     # 2) Mitigation Block
     detect_liquidity_sweeps(df, swings)   # mitigated 마킹
     obs = detect_order_blocks(df, swings=swings)
     mbs = detect_mitigation_blocks(obs, df)
     for mb in mbs[-3:]:
-        built = _build_mitigation_setup(mb, df, swings, min_rr=min_rr, atr_val=atr_val)
-        if built and _matches_bias(built.direction, bias):
-            setups.append(built)
+        _accept(_build_mitigation_setup(mb, df, swings, min_rr=min_rr, atr_val=atr_val))
 
     # 3) Implied FVG
     ifvgs = detect_implied_fvgs(df)
     for ifvg in ifvgs[-3:]:
-        built = _build_implied_fvg_setup(
+        _accept(_build_implied_fvg_setup(
             ifvg, df, swings, min_rr=min_rr, atr_val=atr_val,
-        )
-        if built and _matches_bias(built.direction, bias):
-            setups.append(built)
+        ))
 
     # 4) Rejection Block
     rbs = detect_rejection_blocks(df)
     for rb in rbs[-3:]:
-        built = _build_rejection_setup(rb, df, swings, min_rr=min_rr, atr_val=atr_val)
-        if built and _matches_bias(built.direction, bias):
-            setups.append(built)
+        _accept(_build_rejection_setup(rb, df, swings, min_rr=min_rr, atr_val=atr_val))
 
     return setups
 
