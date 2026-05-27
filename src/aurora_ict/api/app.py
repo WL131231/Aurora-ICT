@@ -137,6 +137,35 @@ def _settings_safe_dict(settings: IctSettings) -> dict[str, Any]:
     }
 
 
+_KILLZONE_LABEL = {
+    "asian": "Asian", "london": "London", "ny_am": "NY AM",
+    "london_close": "London Close", "pm": "NY PM",
+}
+
+
+def _compute_session_status() -> dict[str, str]:
+    """현재 세션 상태 — 킬존/미장/None (좌상단 표시용, 2026-05-27 추가).
+
+    우선순위: 킬존 안 → 'Kill zone : <name>' / NYSE 시간(09:30-16:00 ET, 평일)
+    → 'U.S. stock market Open' / 둘 다 아님 → 'None'.
+    """
+    import time as _time
+    from datetime import datetime, time
+    from zoneinfo import ZoneInfo
+
+    from aurora_ict.timing.killzone import classify_killzone
+
+    now_ms = int(_time.time() * 1000)
+    kz = classify_killzone(now_ms)
+    if kz is not None:
+        label = _KILLZONE_LABEL.get(kz.value, kz.value)
+        return {"kind": "killzone", "label": f"Kill zone : {label}"}
+    ny = datetime.fromtimestamp(now_ms / 1000.0, tz=ZoneInfo("America/New_York"))
+    if ny.weekday() < 5 and time(9, 30) <= ny.time() <= time(16, 0):
+        return {"kind": "us_open", "label": "U.S. stock market Open"}
+    return {"kind": "none", "label": "None"}
+
+
 def _status_dict(manager: BotManager) -> dict[str, Any]:
     """BotManager status → dict."""
     st = manager.status()
@@ -501,6 +530,29 @@ def create_app(manager: BotManager) -> FastAPI:
             "leverage": lev,
             "pending": pending,
         }
+
+    @app.get("/ict/equity")
+    async def get_equity() -> dict[str, Any]:
+        """현재 잔고(USDT) + 현재 세션 상태(킬존/미장/None) — 좌측·좌상단 표시용.
+
+        2026-05-27 추가. session_status:
+          - {"kind":"killzone","label":"Kill zone : Asian"} — 킬존 안
+          - {"kind":"us_open","label":"U.S. stock market Open"} — NYSE 시간(킬존 밖)
+          - {"kind":"none","label":"None"} — 둘 다 아님
+        """
+        bot = manager.bot
+        session = _compute_session_status()
+        if bot is None:
+            return {"equity": 0.0, "active": False, "session_status": session}
+        try:
+            eq = await bot._fetch_equity()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("equity fetch 실패: %s", e)
+            return {
+                "equity": 0.0, "active": True, "error": "fetch_failed",
+                "session_status": session,
+            }
+        return {"equity": float(eq), "active": True, "session_status": session}
 
     @app.get("/ict/closed_pnl")
     async def get_closed_pnl(limit: int = 20) -> dict[str, Any]:

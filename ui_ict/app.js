@@ -459,10 +459,7 @@ function renderStatus(s) {
     }
   }
 
-  // Enable 토글 상태 반영
-  const btnEn = $("btn-toggle-enabled");
-  btnEn.classList.toggle("on", !!s.enabled);
-  btnEn.textContent = s.enabled ? "DISABLE" : "ENABLE";
+  // 2026-05-27: Bot Enable 버튼 제거됨 — Start/Stop 으로만 제어.
 
   // 차트 상단 심볼 라벨 — 매매 TF 도 함께 표시
   const lbl = $("chart-symbol-label");
@@ -642,6 +639,8 @@ async function fetchAndRender() {
       api("/ict/closed_pnl?limit=20"),
     ]);
     candleSeries.setData(ohlcv.candles);
+    // 2026-05-27: 차트 좌측 공백 제거 — 모든 봉 보이게 맞춤.
+    try { chart.timeScale().fitContent(); } catch (e) { /* noop */ }
     // 마지막 봉 시간 — PD Zone area 끝점에 사용
     if (ohlcv.candles && ohlcv.candles.length > 0) {
       lastBarTimeSec = ohlcv.candles[ohlcv.candles.length - 1].time;
@@ -831,35 +830,7 @@ $("tf-toggle").addEventListener("click", async (ev) => {
   await fetchAndRender();
 });
 
-// 연결 테스트 — 현재 mode 키로 거래소 ping
-$("btn-test-conn").onclick = async () => {
-  const btn = $("btn-test-conn");
-  const status = $("conn-status");
-  btn.disabled = true;
-  status.textContent = "테스트 중...";
-  status.className = "v conn-test";
-  try {
-    const result = await api("/ict/test-connection", "POST");
-    if (result.ok) {
-      const bal = result.balance_usdt !== null && result.balance_usdt !== undefined
-        ? `${_fmt(result.balance_usdt, 2)} USDT`
-        : "(잔고 unknown)";
-      status.textContent = `OK · ${bal}`;
-      status.className = "v conn-ok";
-      toast(`연결 성공 — ${result.mode.toUpperCase()} · ${bal}`);
-    } else {
-      status.textContent = `FAIL: ${result.error?.substring(0, 30) || ""}`;
-      status.className = "v conn-fail";
-      toast(result.error || "연결 실패", true);
-    }
-  } catch (e) {
-    status.textContent = "ERROR";
-    status.className = "v conn-fail";
-    toast(e.message, true);
-  } finally {
-    btn.disabled = false;
-  }
-};
+// 2026-05-27: btn-test-conn / btn-toggle-enabled 제거됨. 실시간 잔고 + START/STOP 으로 대체.
 
 // "다시 입력" 클릭 시 — 강제로 입력 폼 보여줌 (status 갱신 전까지 유지)
 if ($("btn-cred-reenter")) {
@@ -870,14 +841,7 @@ if ($("btn-cred-reenter")) {
   };
 }
 
-$("btn-toggle-enabled").onclick = async () => {
-  const currentlyOn = $("btn-toggle-enabled").classList.contains("on");
-  try {
-    await api("/ict/enabled", "POST", { enabled: !currentlyOn });
-    toast(currentlyOn ? "Bot disabled" : "Bot enabled");
-    await fetchAndRender();
-  } catch (e) { toast(e.message, true); }
-};
+// 2026-05-27: ENABLE/DISABLE 토글 제거. Start/Stop 만 사용.
 
 // ============================================================
 // #SAFETY-1 Daily Loss Limit — 입력 + 상태 폴링
@@ -924,6 +888,44 @@ $("btn-dll-set").onclick = async () => {
 
 setInterval(refreshDailyLossLimit, 5000);
 refreshDailyLossLimit();
+
+// ============================================================
+// 실시간 잔고 + 세션 상태 (좌사이드바 + 좌상단 배지) — 2026-05-27 추가
+// ============================================================
+async function refreshEquityAndSession() {
+  try {
+    const r = await api("/ict/equity", "GET");
+    // 잔고
+    const valEl = $("equity-value");
+    const subEl = $("equity-sub");
+    if (r.active && typeof r.equity === "number") {
+      valEl.textContent = `${r.equity.toFixed(2)} USDT`;
+      subEl.textContent = "실시간 (5초)";
+    } else {
+      valEl.textContent = "—";
+      subEl.textContent = "봇 시작 후 실시간 표시";
+    }
+    // 세션 상태 — 좌상단 배지
+    const badge = $("session-badge");
+    const ss = r.session_status || { kind: "none", label: "None" };
+    if (badge) {
+      badge.textContent = ss.label;
+      badge.className = `session-badge session-${ss.kind}`;
+    }
+  } catch (e) {
+    // 조용히 무시
+  }
+}
+setInterval(refreshEquityAndSession, 5000);
+refreshEquityAndSession();
+
+// 사이드바 토글 (햄버거)
+const _btnSidebarToggle = $("btn-sidebar-toggle");
+if (_btnSidebarToggle) {
+  _btnSidebarToggle.onclick = () => {
+    document.body.classList.toggle("sidebar-collapsed");
+  };
+}
 
 // ============================================================
 // resize
