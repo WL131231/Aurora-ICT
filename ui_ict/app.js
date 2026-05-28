@@ -1091,8 +1091,10 @@ document.addEventListener("click", (ev) => {
   banner.style.display = "none";
 });
 
-// 5분 주기 polling — 새 공지 빠르게 감지. 부팅 직후 1회는 bootstrap 끝에 호출.
-setInterval(refreshNotice, 5 * 60 * 1000);
+// 30초 주기 polling — 새 공지 빠르게 감지 (등록 직후 max 30초 안에 표시).
+// 2026-05-28 파트너 피드백: "새로고침해야 뜨네" → 5분 → 30초.
+// 부담: GET /ict/notice 매 30초, 사용자별 1번 SQL 쿼리 → 무시 가능.
+setInterval(refreshNotice, 30 * 1000);
 
 /** 봇이 지정가 미체결 대기 중이면 차트에 horizontal price line + qty 라벨 표시.
  *  position.pending 없으면 line 제거 (체결됨/취소됨). */
