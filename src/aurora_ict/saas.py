@@ -162,6 +162,18 @@ def main() -> int:
     # 실로직은 모듈 함수 ``auto_resume_running_bots`` 가 담당 (테스트 분리 용이).
     @app.on_event("startup")
     async def _auto_resume_hook() -> None:
+        # 2026-05-29: 매매 로그 사용자별 격리 마이그레이션 — 1회 실행 (idempotent).
+        # AURORA_ICT_LEGACY_TRADES_OWNER 환경변수가 가리키는 사용자 디렉토리로
+        # 기존 /data/trades.* 를 이관. 환경변수 미설정이면 skip (안전).
+        try:
+            from aurora_ict.interfaces.trades_migration import (
+                migrate_legacy_trades_to_user_dir,
+            )
+            from aurora_ict.paths import data_dir as _d
+            mig = migrate_legacy_trades_to_user_dir(_d())
+            logger.info("legacy trades 마이그레이션 결과 — %s", mig)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("legacy trades 마이그레이션 실패 (무시, 봇 진행): %s", e)
         await auto_resume_running_bots(mu, db_path)
 
     # FastAPI shutdown 이벤트 — uvicorn graceful 종료 시 모든 사용자 봇 정지.

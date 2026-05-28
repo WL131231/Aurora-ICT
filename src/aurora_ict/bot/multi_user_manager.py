@@ -203,6 +203,10 @@ class MultiUserBotManager:
             # WS flip watcher — 테스트/리소스 절약 위해 multi-user 에선 기본 끔.
             # 운영 환경에서 사용자별 WS 연결 N개는 부담 — 추후 공유 stream 으로 개선.
             flip_watch_enabled=False,
+            # 2026-05-29 매매 로그 격리 — 사용자별 trades.jsonl/db 디렉토리 주입.
+            # _user_data_dir(code) = <data_dir>/users/<code>/. TradesStore lazy init
+            # 시 이 디렉토리에 trades.jsonl / trades.db / trade_journal.log 생성.
+            trades_data_dir=self._user_data_dir(user_code),
         )
         self._slots[user_code] = _UserBotSlot(
             settings=settings, bot=bot, client=client,
