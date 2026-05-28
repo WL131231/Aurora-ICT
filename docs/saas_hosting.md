@@ -1,5 +1,28 @@
 # Aurora-ICT SaaS 호스팅 가이드
 
+## 자동 배포 (GitHub Actions → Fly.io) — 1회 설정
+
+main 브랜치에 푸시되면 `.github/workflows/fly-deploy.yml` 이 자동으로
+`flyctl deploy --remote-only` 실행. 수동 `flyctl deploy` 불필요.
+
+**1회 설정**:
+
+1) Fly.io deploy token 생성 (만료 무제한):
+   ```powershell
+   flyctl tokens create deploy -x 999999h
+   ```
+   출력 토큰 복사.
+
+2) GitHub repo → Settings → **Secrets and variables → Actions** → **New repository secret**:
+   - Name: `FLY_API_TOKEN`
+   - Value: 위 토큰 붙여넣기 → Save.
+
+3) 이후 main 푸시 시 자동 배포. Actions 탭에서 진행 확인 가능.
+
+수동 트리거: GitHub Actions 탭 → "Fly.io 자동 배포" → "Run workflow".
+
+---
+
 다중 사용자 (multi-user) 모드의 Aurora-ICT 를 Docker 컨테이너로 패키징해
 Fly.io / Railway / 자체 VPS 등에 배포하는 절차를 정리한다.
 
