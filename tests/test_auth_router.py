@@ -204,6 +204,64 @@ def test_status_authed_after_setup(client: TestClient) -> None:
     assert body["has_api_keys"] is False  # 아직 api-keys 안 박음
 
 
+def test_status_includes_license_fields_for_referral(client: TestClient) -> None:
+    """status — referral 사용자: expires_at=None (무기한), created_at 채워짐.
+
+    2026-05-28 — 우측 라이선스 카드용 응답 확장 검증.
+    """
+    client.post(
+        "/auth/setup-pin",
+        json={
+            "code": "AICT-REFR-REFR-REFR",
+            "pin": "Aa1!aaaa",
+            "pin_confirm": "Aa1!aaaa",
+        },
+    )
+    body = client.get("/auth/status").json()
+    assert body["authenticated"] is True
+    # 응답 키 존재.
+    assert "expires_at" in body
+    assert "created_at" in body
+    # referral 은 만료 없음 → None.
+    assert body["expires_at"] is None
+    # 가입 시각은 항상 NOT NULL. ISO 8601 UTC (Z 접미사).
+    assert isinstance(body["created_at"], str)
+    assert body["created_at"].endswith("Z")
+
+
+def test_status_includes_license_fields_for_subscription(
+    client: TestClient, db_path,
+) -> None:
+    """status — sub_30d 등 구독 사용자: expires_at 값 그대로 전달.
+
+    DB 에 사전 등록 (라이선스 발급 시 별도 도구가 하듯) → setup-pin 으로 PIN 채움
+    → status 응답에서 expires_at 노출 검증.
+    """
+    # 구독 라이선스 사전 등록 (운영 흐름 모사) — expires_at 명시.
+    expiry = "2027-05-28T00:00:00Z"
+    users_db.create_user(
+        db_path,
+        code="AICT-SUB1-SUB1-SUB1",
+        license_type="sub_365d",
+        expires_at=expiry,
+    )
+    # PIN 채움 (자동 로그인).
+    client.post(
+        "/auth/setup-pin",
+        json={
+            "code": "AICT-SUB1-SUB1-SUB1",
+            "pin": "Aa1!aaaa",
+            "pin_confirm": "Aa1!aaaa",
+        },
+    )
+    body = client.get("/auth/status").json()
+    assert body["authenticated"] is True
+    assert body["license_type"] == "sub_365d"
+    assert body["expires_at"] == expiry
+    assert isinstance(body["created_at"], str)
+    assert body["created_at"].endswith("Z")
+
+
 # ============================================================
 # 3. api-keys
 # ============================================================

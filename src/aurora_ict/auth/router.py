@@ -230,7 +230,12 @@ def create_auth_router(
         Returns:
             미인증: ``{"authenticated": False, "needs_pin_setup": bool}``
             인증:   ``{"authenticated": True, "code": ..., "license_type": ...,
-                       "has_api_keys": bool}``
+                       "has_api_keys": bool, "expires_at": str|None,
+                       "created_at": str|None}``
+
+        2026-05-28 — 파트너 요청. UI 우측 라이선스 카드용으로 만료일/가입일 노출.
+        ``expires_at`` 은 referral 사용자는 None (무기한), sub_* 는 ISO 8601 UTC.
+        ``created_at`` 은 가입 시각 (UI 가 잔여일 계산에 활용).
         """
         token = extract_session_token(request)
         user_code = pin.get_user_from_session(token) if token else None
@@ -255,6 +260,10 @@ def create_auth_router(
             "code": user["code"],
             "license_type": user.get("license_type", "referral"),
             "has_api_keys": bool(user.get("api_key") and user.get("api_secret_enc")),
+            # referral 은 expires_at 이 NULL — UI 가 "무기한" 으로 표시.
+            "expires_at": user.get("expires_at"),
+            # 가입 시각 — UI 가 잔여일 / 기간 표시에 사용. NOT NULL 컬럼.
+            "created_at": user.get("created_at"),
         }
 
     @router.post("/api-keys")

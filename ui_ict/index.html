@@ -375,7 +375,22 @@
     display: block; height: 2px; background: var(--text-2); border-radius: 1px;
   }
   .sidebar-toggle:hover { border-color: var(--text-2); }
-  /* P&L 패널 접힘 — body 클래스로 토글 */
+  /* 좌상단 햄버거 (모바일 가로용) — 사이드바 토글 */
+  .mobile-sidebar-toggle {
+    position: absolute; top: 10px; left: 12px;
+    width: 32px; height: 28px;
+    background: rgba(20,20,25,0.85);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    cursor: pointer;
+    flex-direction: column; justify-content: center;
+    gap: 4px; padding: 0 7px;
+    z-index: 6;
+  }
+  .mobile-sidebar-toggle span {
+    display: block; height: 2px; background: var(--text-2); border-radius: 1px;
+  }
+  /* P&L 패널 접힘 — body 클래스로 토글 (데스크탑) */
   body.pnl-collapsed .pnl-panel { display: none; }
 
   /* 좌하단 판단 패널 — 봇이 시장 어떻게 보는지 시각화 */
@@ -443,7 +458,8 @@
   }
   .jp-entry-detail { color: var(--text-2); font-size: 10.5px; margin-top: 3px; }
 
-  /* 우측 P&L 패널 — 최근 7일 청산 거래 (Bybit P&L 화면 모사) */
+  /* 우측 P&L 패널 — 3섹션 (거래 리스트 / 라이선스 / 누적 P&L 그래프)
+     2026-05-28: 파트너 요청 — 단일 거래 리스트 → 3섹션 분할. */
   .pnl-panel {
     width: 340px;
     background: var(--bg-2);
@@ -454,6 +470,196 @@
     overflow: hidden;
   }
   .pnl-panel .positions-header { padding: 10px 14px; }
+
+  /* (1) 상단 — 거래 리스트 섹션 (50vh 까지) */
+  .pnl-section-trades {
+    display: flex;
+    flex-direction: column;
+    max-height: 50vh;
+    border-bottom: 1px solid var(--line);
+    overflow: hidden;
+  }
+  .pnl-section-trades .positions-scroll {
+    flex: 1;
+    overflow-y: auto;
+  }
+
+  /* (2) 중간 — 라이선스 정보 카드 */
+  .license-card {
+    padding: 12px 14px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--line);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .license-card .lc-header {
+    font-size: 10px;
+    letter-spacing: 0.25em;
+    color: var(--text-1);
+    font-weight: 500;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+  }
+  .license-card .lc-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 3px 0;
+    font-size: 11px;
+  }
+  .license-card .lc-row .lc-k { color: var(--text-3); letter-spacing: 0.05em; }
+  .license-card .lc-row .lc-v { color: var(--text-1); font-weight: 500; }
+  .license-card .lc-period {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--line);
+    font-size: 10.5px;
+    color: var(--text-2);
+    line-height: 1.5;
+  }
+  .license-card .lc-period .lc-date { color: var(--text-1); font-weight: 500; }
+  .license-card .lc-days-warn { color: #fbbf24; }
+  .license-card .lc-days-crit { color: #fb7185; }
+
+  /* (3) 하단 — P&L 누적 그래프 + 토글 */
+  .pnl-chart-section {
+    padding: 10px 12px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 0 0 auto;
+  }
+  .pnl-chart-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 10px;
+    letter-spacing: 0.25em;
+    color: var(--text-1);
+    text-transform: uppercase;
+  }
+  .pnl-chart-cum {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    color: var(--text-2);
+    text-transform: none;
+  }
+  .pnl-chart-cum.pos { color: #34d399; }
+  .pnl-chart-cum.neg { color: #fb7185; }
+  #pnl-chart {
+    width: 100%;
+    height: 160px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+  }
+  /* 토글 (전체기간 / 90D / 60D / 30D / 7D) — 기존 tf-toggle 톤 재사용 */
+  .pnl-range-toggle {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 2px;
+    background: var(--surface);
+    border-radius: 4px;
+    padding: 2px;
+    border: 1px solid var(--line);
+  }
+  .pnl-range-toggle button {
+    width: auto;
+    margin: 0;
+    padding: 5px 0;
+    font-size: 10px;
+    font-weight: 500;
+    background: transparent;
+    border: none;
+    color: var(--text-2);
+    letter-spacing: 0.04em;
+    text-transform: none;
+    border-radius: 3px;
+  }
+  .pnl-range-toggle button:hover {
+    background: rgba(219, 219, 222, 0.06);
+    color: var(--text-1);
+  }
+  .pnl-range-toggle button.active {
+    background: var(--accent);
+    color: var(--bg);
+  }
+
+  /* ============================================================
+     모바일 / 태블릿 — 가로(landscape) 모드 지원
+     2026-05-28: 파트너 요청 — 세로면 회전 안내, 가로면 사이드바/P&L 토글.
+     ============================================================ */
+  .mobile-rotate-notice {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    z-index: 200;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 18px;
+    text-align: center;
+    padding: 32px;
+    color: var(--text-1);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .mobile-rotate-notice .mrn-icon {
+    font-size: 56px;
+    color: var(--accent);
+    animation: rotate-hint 2.4s ease-in-out infinite;
+  }
+  .mobile-rotate-notice .mrn-msg {
+    font-size: 14px;
+    letter-spacing: 0.2em;
+    line-height: 1.6;
+  }
+  .mobile-rotate-notice .mrn-sub {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    color: var(--text-3);
+  }
+  @keyframes rotate-hint {
+    0%,40% { transform: rotate(0deg); }
+    60%,100% { transform: rotate(-90deg); }
+  }
+  /* 세로 모드 + 모바일/태블릿 폭 → 회전 안내 풀스크린, 본문 숨김. */
+  @media (orientation: portrait) and (max-width: 1024px) {
+    .mobile-rotate-notice { display: flex; }
+    .wrap { display: none !important; }
+  }
+  /* 가로 모드 + 모바일/태블릿 — 사이드바/P&L default hidden, 햄버거로 토글. */
+  @media (orientation: landscape) and (max-width: 1024px),
+         (orientation: landscape) and (max-height: 600px) {
+    /* 좌측 사이드바 — 기본 hidden. body.sidebar-open 일 때만 표시. */
+    body:not(.sidebar-open) .sidebar { display: none; }
+    /* 우측 P&L 패널 — 기본 hidden. body.pnl-open 일 때만 표시 (햄버거로 토글). */
+    body:not(.pnl-open) .pnl-panel { display: none; }
+    /* pnl-collapsed 데스크탑 클래스는 모바일에서 의미 X (open 클래스가 우선). */
+    body.pnl-collapsed .pnl-panel { display: none; }
+    body.pnl-open .pnl-panel {
+      display: flex;
+      position: absolute;
+      top: 0; right: 0; bottom: 0;
+      width: min(85vw, 360px);
+      z-index: 50;
+      box-shadow: -4px 0 16px rgba(0, 0, 0, 0.5);
+    }
+    body.sidebar-open .sidebar {
+      display: block;
+      position: absolute;
+      top: 0; left: 0; bottom: 0;
+      width: min(85vw, 280px);
+      z-index: 50;
+      box-shadow: 4px 0 16px rgba(0, 0, 0, 0.5);
+    }
+    /* 좌상단 햄버거 (사이드바) — 모바일 가로에서만 표시. */
+    #btn-mobile-sidebar { display: flex; }
+    /* 차트는 풀폭 점유. */
+    .main { width: 100%; }
+  }
+  /* 데스크탑에서는 모바일용 사이드바 햄버거 숨김. */
+  #btn-mobile-sidebar { display: none; }
   .pnl-table {
     width: 100%;
     border-collapse: collapse;
@@ -1017,8 +1223,12 @@
       <div id="chart"></div>
       <!-- 좌상단 세션 상태 (Killzone/미장/None) — /ict/equity.session_status 폴링 -->
       <div id="session-badge" class="session-badge session-none">None</div>
-      <!-- 우상단 햄버거 — 사이드바 토글 -->
-      <button id="btn-sidebar-toggle" class="sidebar-toggle" title="사이드바 접기/펴기">
+      <!-- 좌상단 햄버거 — 모바일 가로 모드에서 사이드바 토글 (CSS 가 데스크탑에선 hidden) -->
+      <button id="btn-mobile-sidebar" class="mobile-sidebar-toggle" title="좌측 메뉴 열기">
+        <span></span><span></span><span></span>
+      </button>
+      <!-- 우상단 햄버거 — 우측 P&L 패널 토글 (데스크탑에선 접기/펴기, 모바일에선 열기/닫기) -->
+      <button id="btn-sidebar-toggle" class="sidebar-toggle" title="우측 패널 접기/펴기">
         <span></span><span></span><span></span>
       </button>
       <!-- 좌하단 판단 패널 (2026-05-27) — 봇이 시장을 어떻게 보는지 시각화 -->
@@ -1082,30 +1292,76 @@
     </div>
   </main>
 
-  <!-- 우측 P&L 패널 — 최근 30일 청산 거래 (거래소 closed-pnl)
-       2026-05-27: 파트너 요청 — 7D → 30D 윈도우 확장 -->
+  <!-- 우측 P&L 패널 — 3섹션: (1) 거래 리스트 · (2) 라이선스 카드 · (3) 누적 P&L 그래프
+       2026-05-28: 파트너 요청 — 단일 거래 리스트 → 3섹션 분할. -->
   <aside class="pnl-panel">
-    <div class="positions-header">
-      <span class="positions-title">P&amp;L · LAST 30D</span>
-      <span class="positions-count" id="pnl-count">0</span>
-    </div>
-    <div class="positions-scroll">
-      <table class="pnl-table">
-        <thead>
-          <tr>
-            <th>Market</th>
-            <th class="num">Entry</th>
-            <th class="num">Qty</th>
-            <th class="num">P&amp;L</th>
-            <th>Time</th>
-          </tr>
-        </thead>
-        <tbody id="pnl-tbody">
-          <tr><td colspan="5" class="pnl-empty">청산 거래 없음 — 첫 종료 시 표시됩니다</td></tr>
-        </tbody>
-      </table>
-    </div>
+    <!-- (1) P&L LAST 30D 거래 리스트 (상단, 50vh) -->
+    <section class="pnl-section-trades">
+      <div class="positions-header">
+        <span class="positions-title">P&amp;L · LAST 30D</span>
+        <span class="positions-count" id="pnl-count">0</span>
+      </div>
+      <div class="positions-scroll">
+        <table class="pnl-table">
+          <thead>
+            <tr>
+              <th>Market</th>
+              <th class="num">Entry</th>
+              <th class="num">Qty</th>
+              <th class="num">P&amp;L</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody id="pnl-tbody">
+            <tr><td colspan="5" class="pnl-empty">청산 거래 없음 — 첫 종료 시 표시됩니다</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- (2) 라이선스 정보 카드 (중간) — /auth/status 응답 기반 -->
+    <section class="license-card" id="license-card">
+      <div class="lc-header">LICENSE</div>
+      <div class="lc-row">
+        <span class="lc-k">Type</span>
+        <span class="lc-v" id="lc-type">—</span>
+      </div>
+      <div class="lc-period">
+        <div class="lc-row" style="padding:0">
+          <span class="lc-k">Period</span>
+          <span class="lc-v" id="lc-days-left">—</span>
+        </div>
+        <div id="lc-period-text" style="margin-top:4px">
+          <span class="lc-date" id="lc-start">—</span>
+          <span style="color:var(--text-3)"> ~ </span>
+          <span class="lc-date" id="lc-end">—</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- (3) 누적 P&L 그래프 (하단) + 기간 토글 -->
+    <section class="pnl-chart-section">
+      <div class="pnl-chart-header">
+        <span>P&amp;L CURVE</span>
+        <span class="pnl-chart-cum" id="pnl-chart-cum">—</span>
+      </div>
+      <div id="pnl-chart"></div>
+      <div class="pnl-range-toggle" id="pnl-range-toggle">
+        <button data-range="all">전체</button>
+        <button data-range="90">90D</button>
+        <button data-range="60">60D</button>
+        <button data-range="30" class="active">30D</button>
+        <button data-range="7">7D</button>
+      </div>
+    </section>
   </aside>
+</div>
+
+<!-- 모바일 세로 모드 안내 — CSS media query 가 가로/세로 전환 -->
+<div class="mobile-rotate-notice" id="mobile-rotate-notice">
+  <div class="mrn-icon">⟳</div>
+  <div class="mrn-msg">화면을 가로로 돌려주세요</div>
+  <div class="mrn-sub">AURORA · ICT 는 가로 화면에 최적화되어 있습니다</div>
 </div>
 
 <div id="toast" class="toast"></div>
