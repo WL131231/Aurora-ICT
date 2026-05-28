@@ -372,6 +372,55 @@
   .session-us_open  { color: #34d399; border-color: #34d399; }
   .session-none     { color: var(--text-3); }
 
+  /* 2026-05-28: 공지 banner — 우상단 (햄버거 옆), dismissible.
+     관리자가 Telegram bot 또는 /admin/notice 로 등록 → 모든 로그인 사용자에게 표시. */
+  .notice-banner {
+    position: fixed;
+    top: 10px; right: 60px;
+    z-index: 300;
+    max-width: calc(100vw - 200px);
+    display: none;       /* JS 가 flex 로 토글 */
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', system-ui, sans-serif;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    line-height: 1.4;
+    background: rgba(20, 20, 25, 0.95);
+    border: 1px solid var(--line);
+    color: var(--text-1);
+    backdrop-filter: blur(6px);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  }
+  .notice-banner.sev-info     { border-color: #60a5fa; color: #cfe1fb; }
+  .notice-banner.sev-warn     { border-color: #fbbf24; color: #fde4a8; }
+  .notice-banner.sev-critical { border-color: #fb7185; color: #fed4d8;
+                                 box-shadow: 0 0 12px rgba(251, 113, 133, 0.35); }
+  .notice-banner-msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .notice-banner-close {
+    width: 22px; height: 22px;
+    padding: 0; margin: 0;
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--text-2);
+    font-size: 14px; line-height: 1;
+    cursor: pointer; border-radius: 3px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .notice-banner-close:hover { color: var(--text-1); border-color: var(--text-2); }
+
+  /* 모바일 banner — 화면 가득 펼쳐 메시지 잘 보이게 */
+  @media (max-width: 1024px) {
+    .notice-banner {
+      top: 56px; left: 8px; right: 8px;
+      max-width: calc(100vw - 16px);
+      font-size: 11px;
+    }
+    .notice-banner-msg { white-space: normal; }
+  }
+
   /* 우상단 햄버거 토글 — 우측 P&L 패널 접기/펴기
      2026-05-27: 파트너 피드백 — 햄버거가 좌측 사이드바가 아니라 우측 P&L 패널을 토글해야 함 */
   .sidebar-toggle {
@@ -1545,6 +1594,12 @@
       <div id="chart"></div>
       <!-- 좌상단 세션 상태 (Killzone/미장/None) — /ict/equity.session_status 폴링 -->
       <div id="session-badge" class="session-badge session-none">None</div>
+      <!-- 2026-05-28: 공지 banner — JS 가 /ict/notice 응답에 따라 display:flex 토글 -->
+      <div id="notice-banner" class="notice-banner" role="alert" aria-live="polite">
+        <span class="notice-banner-msg" id="notice-banner-msg"></span>
+        <button class="notice-banner-close" id="notice-banner-close"
+                title="닫기" aria-label="공지 닫기">×</button>
+      </div>
       <!-- 좌상단 햄버거 — 모바일 가로 모드에서 사이드바 토글 (CSS 가 데스크탑에선 hidden) -->
       <button id="btn-mobile-sidebar" class="mobile-sidebar-toggle" title="좌측 메뉴 열기">
         <span></span><span></span><span></span>

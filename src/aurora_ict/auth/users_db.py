@@ -154,6 +154,9 @@ def init_db(db_path: Path | str) -> None:
         # 기존 DB 마이그레이션 — bot_running 컬럼 없으면 추가.
         _ensure_bot_running_column(conn)
         conn.commit()
+    # 2026-05-28: 공지사항 테이블도 같은 파일에 idempotent 생성.
+    from aurora_ict.auth.notices_db import init_notices_table
+    init_notices_table(path)
 
 
 def create_user(

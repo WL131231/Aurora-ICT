@@ -1040,6 +1040,60 @@ async function refreshLicenseCard() {
 }
 setInterval(refreshLicenseCard, 5 * 60 * 1000);
 
+// ============================================================
+// 공지 banner — 우상단, dismissible
+// 2026-05-28: 관리자가 Telegram bot 또는 /admin/notice 로 등록 → 모든 사용자에게 표시.
+// localStorage 에 dismissed id 저장 — 같은 공지 다시 안 보임.
+// 새 공지 (다른 id) 는 다시 표시.
+// ============================================================
+const _NOTICE_DISMISSED_KEY = "aurora_ict_dismissed_notices";
+
+function _getDismissedNoticeIds() {
+  try {
+    const raw = localStorage.getItem(_NOTICE_DISMISSED_KEY);
+    if (!raw) return new Set();
+    return new Set(JSON.parse(raw));
+  } catch (e) { return new Set(); }
+}
+
+function _markNoticeDismissed(id) {
+  const set = _getDismissedNoticeIds();
+  set.add(id);
+  try { localStorage.setItem(_NOTICE_DISMISSED_KEY, JSON.stringify([...set])); }
+  catch (e) { /* noop */ }
+}
+
+async function refreshNotice() {
+  const banner = document.getElementById("notice-banner");
+  if (!banner) return;
+  try {
+    const data = await api("/ict/notice");
+    if (!data || !data.active || _getDismissedNoticeIds().has(data.id)) {
+      banner.style.display = "none";
+      return;
+    }
+    const msgEl = document.getElementById("notice-banner-msg");
+    if (msgEl) msgEl.textContent = data.message || "";
+    banner.className = "notice-banner sev-" + (data.severity || "info");
+    banner.style.display = "flex";
+    banner.dataset.noticeId = String(data.id);
+  } catch (e) { /* noop — 미인증 시 401 정상 */ }
+}
+
+// 닫기 버튼 (이벤트 위임 — banner 가 동적으로 보였다 안 보였다 해도 작동)
+document.addEventListener("click", (ev) => {
+  const btn = ev.target && ev.target.closest && ev.target.closest("#notice-banner-close");
+  if (!btn) return;
+  const banner = document.getElementById("notice-banner");
+  if (!banner) return;
+  const id = parseInt(banner.dataset.noticeId || "0", 10);
+  if (id > 0) _markNoticeDismissed(id);
+  banner.style.display = "none";
+});
+
+// 5분 주기 polling — 새 공지 빠르게 감지. 부팅 직후 1회는 bootstrap 끝에 호출.
+setInterval(refreshNotice, 5 * 60 * 1000);
+
 /** 봇이 지정가 미체결 대기 중이면 차트에 horizontal price line + qty 라벨 표시.
  *  position.pending 없으면 line 제거 (체결됨/취소됨). */
 function renderPendingLimit(position) {
@@ -1671,3 +1725,6 @@ if (document.readyState === "loading") {
 
 // 부팅 — DOM 준비 즉시 게이트/메인 결정.
 bootstrap();
+
+// 공지 banner — 인증 후 1회 즉시 fetch (이후는 setInterval 5분 주기).
+setTimeout(() => { refreshNotice(); }, 2000);
