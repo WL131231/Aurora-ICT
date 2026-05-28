@@ -1161,6 +1161,99 @@
     color: var(--text-1);
     border-color: var(--line-strong);
   }
+  /* 2026-05-29: Live 모드 — DEMO/LIVE 슬롯 분리 UI */
+  .cred-mode-toggle {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 4px;
+  }
+  .cred-mode-toggle button {
+    flex: 1;
+    padding: 6px 0;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    color: var(--text-3);
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .cred-mode-toggle button[data-cred-mode="demo"].active {
+    background: rgba(245, 158, 11, 0.18);
+    border-color: rgba(245, 158, 11, 0.55);
+    color: #fbbf24;
+  }
+  .cred-mode-toggle button[data-cred-mode="live"].active {
+    background: rgba(251, 113, 133, 0.18);
+    border-color: rgba(251, 113, 133, 0.55);
+    color: #fb7185;
+  }
+  .cred-slot-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 8px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+  }
+  .cred-slot-label {
+    flex: 0 0 38px;
+    font-weight: 600;
+    color: #fbbf24;
+    letter-spacing: 0.15em;
+  }
+  .cred-slot-label.cred-slot-live { color: #fb7185; }
+  .cred-slot-status {
+    flex: 1;
+    color: var(--text-2);
+  }
+  .cred-slot-status.ok { color: #34d399; }
+  .cred-slot-status.missing { color: var(--text-3); }
+  .cred-reenter-mini {
+    background: transparent;
+    border: 1px dashed var(--line);
+    color: var(--text-3);
+    font-size: 9px;
+    padding: 3px 7px;
+    letter-spacing: 0.1em;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  .cred-reenter-mini:hover {
+    color: var(--text-1);
+    border-color: var(--line-strong);
+  }
+  /* 로그인 후 키 등록 페이지에도 동일 토글 */
+  .auth-mode-toggle {
+    display: flex;
+    gap: 6px;
+    margin: 8px 0 0 0;
+  }
+  .auth-mode-toggle button {
+    flex: 1;
+    padding: 8px 0;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    color: var(--text-3);
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  .auth-mode-toggle button[data-auth-mode="demo"].active {
+    background: rgba(245, 158, 11, 0.18);
+    border-color: rgba(245, 158, 11, 0.55);
+    color: #fbbf24;
+  }
+  .auth-mode-toggle button[data-auth-mode="live"].active {
+    background: rgba(251, 113, 133, 0.18);
+    border-color: rgba(251, 113, 133, 0.55);
+    color: #fb7185;
+  }
   #btn-toggle-enabled.on {
     background: var(--accent);
     color: var(--bg);
@@ -1451,10 +1544,21 @@
     </p>
   </div>
 
-  <!-- (C) API 키 등록 — 로그인 완료 + has_api_keys=false -->
+  <!-- (C) API 키 등록 — 로그인 완료 + has_api_keys=false
+       2026-05-29: Live 모드 지원 — DEMO/LIVE 슬롯 선택 라디오 추가. 신규
+       가입자는 기본 DEMO 를 강제 (LIVE 단독 등록은 메인 화면에서 추가). -->
   <div class="auth-card" id="auth-keys" style="display:none">
     <h1>AURORA · ICT</h1>
     <p class="auth-sub">거래소 API 키 등록</p>
+
+    <div class="auth-mode-toggle" id="auth-mode-toggle">
+      <button type="button" data-auth-mode="demo" class="active">DEMO</button>
+      <button type="button" data-auth-mode="live">LIVE</button>
+    </div>
+    <p class="auth-hint" id="auth-mode-hint" style="margin-top:6px">
+      Bybit <b>Demo Trading</b> 키 (api-demo.bybit.com). 처음 사용자는 데모로 시작 권장.
+    </p>
+
     <label for="keys-api-key">API Key</label>
     <input id="keys-api-key" type="text" autocomplete="off" placeholder="거래소에서 발급받은 키" />
     <label for="keys-api-secret">API Secret</label>
@@ -1513,20 +1617,32 @@
     <p class="trade-tf-hint">진입 봉 단위 — 선택한 TF 이상 봉으로 매매 결정 (1m 은 노이즈로 제외)</p>
 
     <h2>API Credentials</h2>
-    <!-- 미등록 상태 — 입력 폼 (state: form) -->
+    <!-- 2026-05-29: demo/live 슬롯 분리. 라디오로 저장 대상 모드 선택.
+         Bybit 은 Demo / Live 가 별도 시스템 → 키도 별도 발급 필요. -->
     <div class="cred-form" id="cred-form-block">
+      <div class="cred-mode-toggle" id="cred-mode-toggle">
+        <button type="button" data-cred-mode="demo" class="active">DEMO</button>
+        <button type="button" data-cred-mode="live">LIVE</button>
+      </div>
       <input id="cred-api-key" type="password" placeholder="API Key" autocomplete="off" />
       <input id="cred-api-secret" type="password" placeholder="API Secret" autocomplete="off" />
       <button id="btn-save-cred">SAVE KEYS</button>
-      <p class="cred-hint">Demo 키 권장 — .env 파일에 저장됩니다</p>
+      <p class="cred-hint" id="cred-form-hint">
+        <b>DEMO</b> 슬롯 — Bybit Demo Trading 키
+      </p>
     </div>
-    <!-- 등록 완료 상태 — 상태 표시 + 재등록 버튼 (state: saved) -->
+    <!-- 등록 완료 상태 — 두 모드 슬롯 각각 표시 (2026-05-29 분리). -->
     <div class="cred-saved" id="cred-saved-block" style="display:none">
-      <div class="cred-ok">
-        <span class="cred-ok-icon">✓</span>
-        <span id="cred-ok-text">키 등록됨</span>
+      <div class="cred-slot-row">
+        <span class="cred-slot-label">DEMO</span>
+        <span id="cred-demo-status" class="cred-slot-status">—</span>
+        <button data-cred-reenter="demo" class="cred-reenter-mini">재등록</button>
       </div>
-      <button id="btn-cred-reenter" class="cred-reenter">다시 입력</button>
+      <div class="cred-slot-row">
+        <span class="cred-slot-label cred-slot-live">LIVE</span>
+        <span id="cred-live-status" class="cred-slot-status">—</span>
+        <button data-cred-reenter="live" class="cred-reenter-mini">재등록</button>
+      </div>
     </div>
 
     <h2>Equity</h2>

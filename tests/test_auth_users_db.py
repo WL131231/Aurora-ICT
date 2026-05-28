@@ -134,7 +134,11 @@ def test_set_pin_missing_code_returns_false(db_path):
 
 
 def test_set_api_keys_success(db_path):
-    """set_api_keys — 키/암호문 저장 성공."""
+    """set_api_keys — 키/암호문 저장 성공.
+
+    2026-05-29: 기본 mode="demo" backward compat — legacy api_key 컬럼 +
+    신규 demo_api_key 컬럼 동시에 채움.
+    """
     users_db.create_user(db_path, "AICT-KEY1-KEY1-KEY1")
     ok = users_db.set_api_keys(
         db_path,
@@ -146,8 +150,15 @@ def test_set_api_keys_success(db_path):
 
     user = users_db.get_user_by_code(db_path, "AICT-KEY1-KEY1-KEY1")
     assert user is not None
+    # Legacy 컬럼 (기존 코드 경로 호환).
     assert user["api_key"] == "pub_abc123"
     assert user["api_secret_enc"] == "gAAAA_pretend_fernet_token"
+    # 신규 demo 컬럼 (2026-05-29 dual-key).
+    assert user["demo_api_key"] == "pub_abc123"
+    assert user["demo_api_secret_enc"] == "gAAAA_pretend_fernet_token"
+    # Live 컬럼은 비어있어야 함.
+    assert user["live_api_key"] is None
+    assert user["live_api_secret_enc"] is None
 
 
 def test_set_api_keys_rejects_empty(db_path):
@@ -165,6 +176,173 @@ def test_set_api_keys_missing_code_returns_false(db_path):
         db_path, "AICT-NONE-NONE-NONE", "pub", "ciphertext",
     )
     assert ok is False
+
+
+# ============================================================
+# 2026-05-29: Live 모드 지원 — demo/live 키 슬롯 분리 + 마이그레이션
+# ============================================================
+
+
+def test_set_api_keys_live_mode_separate_slot(db_path):
+    """set_api_keys(mode="live") — live 슬롯만 갱신, legacy/demo 슬롯 무영향."""
+    users_db.create_user(db_path, "AICT-LIVE-0001-AAAA")
+    # 먼저 demo 키 등록 (기본 mode).
+    users_db.set_api_keys(
+        db_path, "AICT-LIVE-0001-AAAA", "demo_pub", "demo_secret_enc",
+    )
+    # 이어서 live 키 등록 — 다른 값으로.
+    ok = users_db.set_api_keys(
+        db_path,
+        code="AICT-LIVE-0001-AAAA",
+        api_key="live_pub_zzz",
+        api_secret_enc="live_secret_enc_zzz",
+        mode="live",
+    )
+    assert ok is True
+
+    user = users_db.get_user_by_code(db_path, "AICT-LIVE-0001-AAAA")
+    assert user is not None
+    # demo 슬롯은 그대로.
+    assert user["demo_api_key"] == "demo_pub"
+    assert user["demo_api_secret_enc"] == "demo_secret_enc"
+    # Legacy 컬럼도 그대로 (live 저장은 legacy 안 건드림).
+    assert user["api_key"] == "demo_pub"
+    assert user["api_secret_enc"] == "demo_secret_enc"
+    # live 슬롯에만 새 값.
+    assert user["live_api_key"] == "live_pub_zzz"
+    assert user["live_api_secret_enc"] == "live_secret_enc_zzz"
+
+
+def test_set_api_keys_invalid_mode_raises(db_path):
+    """set_api_keys — mode 가 demo/live 외 값이면 ValueError."""
+    users_db.create_user(db_path, "AICT-INVA-INVA-MODE")
+    with pytest.raises(ValueError, match="mode"):
+        users_db.set_api_keys(
+            db_path, "AICT-INVA-INVA-MODE", "k", "s", mode="testnet",
+        )
+
+
+def test_get_api_keys_roundtrip_both_modes(db_path):
+    """get_api_keys — demo / live 각각 저장 후 조회 일치."""
+    users_db.create_user(db_path, "AICT-GETK-0001-AAAA")
+    users_db.set_api_keys(
+        db_path, "AICT-GETK-0001-AAAA", "demo_k", "demo_s_enc", mode="demo",
+    )
+    users_db.set_api_keys(
+        db_path, "AICT-GETK-0001-AAAA", "live_k", "live_s_enc", mode="live",
+    )
+    assert users_db.get_api_keys(db_path, "AICT-GETK-0001-AAAA", "demo") == (
+        "demo_k", "demo_s_enc",
+    )
+    assert users_db.get_api_keys(db_path, "AICT-GETK-0001-AAAA", "live") == (
+        "live_k", "live_s_enc",
+    )
+
+
+def test_get_api_keys_returns_none_when_missing(db_path):
+    """get_api_keys — 키 미등록이면 None (호출자는 has_api_keys 로 분기 가능)."""
+    users_db.create_user(db_path, "AICT-NOKE-NOKE-NOKE")
+    assert users_db.get_api_keys(db_path, "AICT-NOKE-NOKE-NOKE", "demo") is None
+    assert users_db.get_api_keys(db_path, "AICT-NOKE-NOKE-NOKE", "live") is None
+    # 미존재 user code 도 None.
+    assert users_db.get_api_keys(db_path, "AICT-XXXX-XXXX-XXXX", "demo") is None
+
+
+def test_get_api_keys_legacy_demo_fallback(db_path):
+    """get_api_keys(mode="demo") — 신규 슬롯 비어있고 legacy 만 있는 row 도 fallback.
+
+    마이그레이션 직전 row 시뮬레이션 — 신규 demo 컬럼이 비어있고 legacy api_key
+    만 있는 경우, demo 조회 시 legacy 값으로 fallback 해야 한다.
+    """
+    users_db.create_user(db_path, "AICT-LEGC-LEGC-LEGC")
+    # 직접 SQL — 신규 컬럼은 NULL, legacy 컬럼만 채움 (마이그레이션 전 상태).
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "UPDATE users SET api_key = ?, api_secret_enc = ?, "
+            "demo_api_key = NULL, demo_api_secret_enc = NULL "
+            "WHERE code = ?",
+            ("legacy_k", "legacy_s_enc", "AICT-LEGC-LEGC-LEGC"),
+        )
+        conn.commit()
+    pair = users_db.get_api_keys(db_path, "AICT-LEGC-LEGC-LEGC", "demo")
+    assert pair == ("legacy_k", "legacy_s_enc")
+    # live 슬롯은 비어있으므로 None.
+    assert users_db.get_api_keys(db_path, "AICT-LEGC-LEGC-LEGC", "live") is None
+
+
+def test_has_api_keys_per_mode(db_path):
+    """has_api_keys — 모드별로 정확히 분리."""
+    users_db.create_user(db_path, "AICT-HASK-HASK-HASK")
+    assert users_db.has_api_keys(db_path, "AICT-HASK-HASK-HASK", "demo") is False
+    assert users_db.has_api_keys(db_path, "AICT-HASK-HASK-HASK", "live") is False
+    users_db.set_api_keys(
+        db_path, "AICT-HASK-HASK-HASK", "k", "s_enc", mode="demo",
+    )
+    assert users_db.has_api_keys(db_path, "AICT-HASK-HASK-HASK", "demo") is True
+    assert users_db.has_api_keys(db_path, "AICT-HASK-HASK-HASK", "live") is False
+    users_db.set_api_keys(
+        db_path, "AICT-HASK-HASK-HASK", "k2", "s2_enc", mode="live",
+    )
+    assert users_db.has_api_keys(db_path, "AICT-HASK-HASK-HASK", "live") is True
+
+
+def test_dual_key_migration_from_legacy_row(tmp_path):
+    """_ensure_dual_key_columns — legacy 만 있는 row 가 demo 슬롯으로 복사된다.
+
+    스키마가 신규 4컬럼 도입되기 전에 저장된 row 시뮬레이션:
+      1) 신규 컬럼 없는 테이블로 row insert (수동 SQL).
+      2) init_db 재호출 → 마이그레이션 실행.
+      3) demo 슬롯에 legacy 값이 그대로 복사돼야 함.
+    """
+    path = tmp_path / "legacy.db"
+    # 1) 신규 컬럼 없는 구식 스키마로 테이블 생성.
+    with sqlite3.connect(str(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE NOT NULL,
+                pin_hash TEXT,
+                api_key TEXT,
+                api_secret_enc TEXT,
+                license_type TEXT NOT NULL DEFAULT 'referral',
+                expires_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_login_at TEXT
+            )
+            """,
+        )
+        # legacy key 있는 row 1개 박음.
+        conn.execute(
+            "INSERT INTO users(code, api_key, api_secret_enc, "
+            "license_type, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "AICT-MIGR-MIGR-MIGR",
+                "legacy_pub",
+                "legacy_enc",
+                "referral",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+        conn.commit()
+
+    # 2) init_db 호출 → 마이그레이션 실행 (컬럼 4개 추가 + legacy → demo 복사).
+    users_db.init_db(path)
+
+    # 3) demo 슬롯에 legacy 값이 복사됐는지 확인.
+    user = users_db.get_user_by_code(path, "AICT-MIGR-MIGR-MIGR")
+    assert user is not None
+    assert user["api_key"] == "legacy_pub"  # legacy 그대로
+    assert user["demo_api_key"] == "legacy_pub"  # 복사됨
+    assert user["demo_api_secret_enc"] == "legacy_enc"
+    assert user["live_api_key"] is None  # live 는 비어있음
+    # get_api_keys 로도 demo 회수 성공.
+    assert users_db.get_api_keys(path, "AICT-MIGR-MIGR-MIGR", "demo") == (
+        "legacy_pub", "legacy_enc",
+    )
 
 
 def test_update_last_login_success(db_path):

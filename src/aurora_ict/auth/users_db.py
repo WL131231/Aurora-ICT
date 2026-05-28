@@ -52,6 +52,13 @@ from typing import Any
 # OOM / 재배포로 프로세스가 죽어도 다시 살아날 때 list_running_codes 로
 # 자동 재가동. 기존 DB 는 ``_ensure_bot_running_column`` 가 ALTER TABLE
 # 마이그레이션 (idempotent, PRAGMA table_info 확인 후 없으면 추가).
+#
+# 2026-05-29 (Live 모드 지원): 거래소 API 키를 demo/live 슬롯으로 분리 저장.
+# 기존 ``api_key`` / ``api_secret_enc`` 는 deprecated 이지만 backward compat
+# 위해 컬럼 유지 — ``_ensure_dual_key_columns`` 가 ALTER TABLE 로 demo/live
+# 컬럼 추가하고 기존 row 의 api_key 를 demo 슬롯으로 복사 (가장 보수적 가정).
+# 이유: Bybit 은 Demo Trading 과 Live 가 별도 시스템 → API 키도 분리 발급.
+# 같은 키로 양쪽 호출 시 401 / sign error 발생 → 모드별로 다른 키 보관 필수.
 _DDL_USERS = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,6 +66,10 @@ CREATE TABLE IF NOT EXISTS users (
     pin_hash TEXT,
     api_key TEXT,
     api_secret_enc TEXT,
+    demo_api_key TEXT,
+    demo_api_secret_enc TEXT,
+    live_api_key TEXT,
+    live_api_secret_enc TEXT,
     license_type TEXT NOT NULL DEFAULT 'referral',
     expires_at TEXT,
     created_at TEXT NOT NULL,
@@ -135,6 +146,50 @@ def _ensure_bot_running_column(conn: sqlite3.Connection) -> None:
         )
 
 
+def _ensure_dual_key_columns(conn: sqlite3.Connection) -> None:
+    """기존 users 테이블에 demo/live 키 컬럼 없으면 ALTER TABLE 로 추가.
+
+    2026-05-29 (Live 모드 지원) — 단일 ``api_key`` / ``api_secret_enc`` 슬롯을
+    demo/live 로 분리. 마이그레이션 정책:
+
+      1) 4 컬럼 (``demo_api_key``, ``demo_api_secret_enc``, ``live_api_key``,
+         ``live_api_secret_enc``) 이 없으면 추가 (각각 nullable TEXT).
+      2) 기존 ``api_key`` / ``api_secret_enc`` 가 NOT NULL 인데 새 demo 컬럼은
+         비어있는 row 들은 demo 슬롯으로 1회 복사 — 사용자가 Live 키 신규 등록
+         전까지 데모 모드는 끊김 없이 동작.
+
+    Why 가장 보수적 가정 = demo: 기본 ``run_mode`` 가 demo 이고, 지금까지 사용자가
+    등록한 키는 Bybit Demo Trading 키였음. Live 슬롯으로 복사하면 잘못된 키로
+    실거래 가능성 있어 위험 — 무조건 demo 로 박는다.
+
+    Args:
+        conn: 열려있는 SQLite 연결 (호출자가 commit 책임).
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    # 누락 컬럼만 골라 ALTER (idempotent — 이미 있으면 skip).
+    for col in (
+        "demo_api_key",
+        "demo_api_secret_enc",
+        "live_api_key",
+        "live_api_secret_enc",
+    ):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT")
+
+    # 기존 key 를 demo 슬롯으로 1회 복사 — demo 슬롯 비어있는 row 만 대상.
+    # 이미 demo 슬롯에 값이 있으면 (신규 등록 완료 후) 덮어쓰지 않음 (멱등).
+    conn.execute(
+        """
+        UPDATE users
+        SET demo_api_key = api_key,
+            demo_api_secret_enc = api_secret_enc
+        WHERE api_key IS NOT NULL
+          AND api_secret_enc IS NOT NULL
+          AND (demo_api_key IS NULL OR demo_api_key = '')
+        """,
+    )
+
+
 def init_db(db_path: Path | str) -> None:
     """users.db 테이블 생성 — idempotent (이미 있으면 no-op).
 
@@ -151,8 +206,9 @@ def init_db(db_path: Path | str) -> None:
         conn.execute(_DDL_INDEX_CODE)
         conn.execute(_DDL_SESSIONS)
         conn.execute(_DDL_INDEX_SESSIONS_EXPIRES)
-        # 기존 DB 마이그레이션 — bot_running 컬럼 없으면 추가.
+        # 기존 DB 마이그레이션 — 누락 컬럼 추가 + 기존 데이터 보존.
         _ensure_bot_running_column(conn)
+        _ensure_dual_key_columns(conn)
         conn.commit()
     # 2026-05-28: 공지사항 테이블도 같은 파일에 idempotent 생성.
     from aurora_ict.auth.notices_db import init_notices_table
@@ -252,35 +308,129 @@ def set_api_keys(
     code: str,
     api_key: str,
     api_secret_enc: str,
+    mode: str = "demo",
 ) -> bool:
-    """거래소 API 키 등록 — ``api_secret_enc`` 는 keystore.encrypt_secret 결과여야 함.
+    """거래소 API 키 등록 — ``mode`` 슬롯 (demo/live) 에 저장.
+
+    2026-05-29: Live 모드 지원 — 기존 단일 슬롯 (``api_key`` / ``api_secret_enc``)
+    이 demo/live 로 분리됨. ``mode`` 파라미터 추가, 기본 ``"demo"`` 로 backward compat.
+
+    동기화 정책: ``mode="demo"`` 일 때는 legacy ``api_key`` / ``api_secret_enc``
+    컬럼도 함께 갱신 (기존 코드 경로가 이 컬럼을 읽고 있을 수 있어 안전망).
+    ``mode="live"`` 는 live 슬롯만 갱신하고 legacy 컬럼은 건드리지 않음.
 
     Args:
         db_path: users.db 경로.
         code: 대상 사용자 라이선스 코드.
         api_key: 거래소 발급 public key (평문 OK).
         api_secret_enc: Fernet 으로 암호화된 secret (base64 문자열).
+        mode: ``"demo"`` 또는 ``"live"``. 그 외 값은 ValueError.
 
     Returns:
         True 면 업데이트 성공, False 면 해당 code 존재 X.
 
     Raises:
-        ValueError: ``api_key`` 또는 ``api_secret_enc`` 가 빈 문자열.
+        ValueError: ``api_key`` 또는 ``api_secret_enc`` 가 빈 문자열,
+            또는 ``mode`` 가 허용 외 값.
     """
     if not api_key or not api_secret_enc:
         raise ValueError("api_key 와 api_secret_enc 는 비어있을 수 없습니다.")
+    if mode not in ("demo", "live"):
+        raise ValueError(f"mode 는 'demo' 또는 'live' 여야 합니다: {mode!r}")
     now = _utcnow_iso()
     with _connect(db_path) as conn:
-        cur = conn.execute(
-            """
-            UPDATE users
-            SET api_key = ?, api_secret_enc = ?, updated_at = ?
-            WHERE code = ?
-            """,
-            (api_key, api_secret_enc, now, code),
-        )
+        if mode == "demo":
+            # demo 슬롯 + legacy 컬럼 동시 갱신 (backward compat).
+            cur = conn.execute(
+                """
+                UPDATE users
+                SET demo_api_key = ?,
+                    demo_api_secret_enc = ?,
+                    api_key = ?,
+                    api_secret_enc = ?,
+                    updated_at = ?
+                WHERE code = ?
+                """,
+                (api_key, api_secret_enc, api_key, api_secret_enc, now, code),
+            )
+        else:  # live
+            cur = conn.execute(
+                """
+                UPDATE users
+                SET live_api_key = ?,
+                    live_api_secret_enc = ?,
+                    updated_at = ?
+                WHERE code = ?
+                """,
+                (api_key, api_secret_enc, now, code),
+            )
         conn.commit()
         return cur.rowcount > 0
+
+
+def get_api_keys(
+    db_path: Path | str,
+    code: str,
+    mode: str,
+) -> tuple[str, str] | None:
+    """모드별 거래소 API 키 조회 — ``(api_key, api_secret_enc)`` 반환.
+
+    2026-05-29: Live 모드 지원. demo 슬롯이 비어 있고 legacy ``api_key`` 가 있는
+    구식 row 대비 — demo 조회 시 legacy 컬럼도 fallback 으로 본다.
+
+    Args:
+        db_path: users.db 경로.
+        code: 대상 사용자 라이선스 코드.
+        mode: ``"demo"`` 또는 ``"live"``.
+
+    Returns:
+        ``(api_key, api_secret_enc)`` 튜플, 키 미등록이면 None.
+        ``api_secret_enc`` 는 암호문 그대로 (호출자가 keystore.decrypt_secret).
+
+    Raises:
+        ValueError: ``mode`` 가 허용 외 값.
+    """
+    if mode not in ("demo", "live"):
+        raise ValueError(f"mode 는 'demo' 또는 'live' 여야 합니다: {mode!r}")
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT api_key, api_secret_enc,
+                   demo_api_key, demo_api_secret_enc,
+                   live_api_key, live_api_secret_enc
+            FROM users WHERE code = ?
+            """,
+            (code,),
+        ).fetchone()
+        if row is None:
+            return None
+    if mode == "live":
+        ak = row["live_api_key"]
+        sk = row["live_api_secret_enc"]
+    else:
+        # demo — 신규 슬롯 우선, 없으면 legacy fallback (마이그레이션 전 row 대응).
+        ak = row["demo_api_key"] or row["api_key"]
+        sk = row["demo_api_secret_enc"] or row["api_secret_enc"]
+    if not ak or not sk:
+        return None
+    return (str(ak), str(sk))
+
+
+def has_api_keys(db_path: Path | str, code: str, mode: str) -> bool:
+    """모드별 API 키 등록 여부 — boolean.
+
+    Args:
+        db_path: users.db 경로.
+        code: 대상 사용자 라이선스 코드.
+        mode: ``"demo"`` 또는 ``"live"``.
+
+    Returns:
+        해당 모드 슬롯에 키가 모두 들어있으면 True.
+
+    Raises:
+        ValueError: ``mode`` 가 허용 외 값.
+    """
+    return get_api_keys(db_path, code, mode) is not None
 
 
 def update_last_login(db_path: Path | str, code: str) -> bool:
@@ -545,8 +695,10 @@ __all__ = [
     "delete_all_sessions",
     "delete_session",
     "delete_sessions_for_user",
+    "get_api_keys",
     "get_session",
     "get_user_by_code",
+    "has_api_keys",
     "init_db",
     "list_running_codes",
     "set_api_keys",

@@ -62,10 +62,15 @@ class LoginRequest(BaseModel):
 
 
 class ApiKeysRequest(BaseModel):
-    """거래소 API 키 등록 요청."""
+    """거래소 API 키 등록 요청.
+
+    2026-05-29 (Live 모드 지원): ``mode`` 추가 — ``"demo"`` / ``"live"`` 슬롯
+    선택. 미지정 시 ``"demo"`` (backward compat: 구 UI 호출도 그대로 동작).
+    """
 
     api_key: str = Field(min_length=1, max_length=256)
     api_secret: str = Field(min_length=1, max_length=512)
+    mode: str = Field(default="demo", pattern="^(demo|live)$")
 
 
 # ============================================================
@@ -263,11 +268,18 @@ def create_auth_router(
                 "needs_pin_setup": False,
                 "app_version": __version__,
             }
+        # 2026-05-29 (Live 모드 지원): demo/live 키 등록 여부를 별도로 노출.
+        # 기존 ``has_api_keys`` 는 둘 중 하나라도 있으면 True (backward compat) —
+        # 구식 UI 도 "키 등록됨" 으로 인식하도록.
+        has_demo = users_db.has_api_keys(db_path, user["code"], "demo")
+        has_live = users_db.has_api_keys(db_path, user["code"], "live")
         return {
             "authenticated": True,
             "code": user["code"],
             "license_type": user.get("license_type", "referral"),
-            "has_api_keys": bool(user.get("api_key") and user.get("api_secret_enc")),
+            "has_api_keys": bool(has_demo or has_live),
+            "has_demo_keys": has_demo,
+            "has_live_keys": has_live,
             # referral 은 expires_at 이 NULL — UI 가 "무기한" 으로 표시.
             "expires_at": user.get("expires_at"),
             # 가입 시각 — UI 가 잔여일 / 기간 표시에 사용. NOT NULL 컬럼.
@@ -280,7 +292,7 @@ def create_auth_router(
     @router.post("/api-keys")
     async def set_api_keys_endpoint(
         req: ApiKeysRequest, request: Request,
-    ) -> dict[str, bool]:
+    ) -> dict[str, object]:
         """거래소 API 키 등록/갱신 — secret 은 Fernet 으로 암호화 후 저장.
 
         인증 필요 — cookie 세션 토큰 검증.
@@ -301,13 +313,15 @@ def create_auth_router(
             )
         # secret 만 암호화 — public api_key 는 평문 OK (조회용).
         secret_enc = keystore.encrypt_secret(api_secret, key=master_key)
-        ok = users_db.set_api_keys(db_path, user_code, api_key, secret_enc)
+        ok = users_db.set_api_keys(
+            db_path, user_code, api_key, secret_enc, mode=req.mode,
+        )
         if not ok:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="해당 사용자가 존재하지 않습니다.",
             )
-        return {"ok": True}
+        return {"ok": True, "mode": req.mode}
 
     return router
 

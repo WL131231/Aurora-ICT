@@ -101,42 +101,56 @@ class MultiUserBotManager:
     def _build_user_settings(self, user_code: str) -> IctSettings:
         """DB row → 사용자별 IctSettings (api_key/secret 복호화 포함).
 
+        2026-05-29 (Live 모드 지원): 사용자가 demo / live 키를 각각 등록할 수
+        있게 되어 양쪽 슬롯을 모두 DB 에서 가져옴. 현재 ``run_mode`` 의 키만
+        필수 — 그 키가 없으면 ValueError (start 차단). 반대편 모드 키는
+        있으면 settings 에 박고, 없으면 빈 SecretStr 로 둔다 (모드 전환 시
+        ``/ict/run-mode`` 가드에서 다시 검증).
+
         Args:
             user_code: 대상 사용자 라이선스 코드.
 
         Returns:
-            base_settings 를 깊은 복사한 IctSettings 에 사용자별 api_key/secret 박은 것.
+            base_settings 를 깊은 복사한 IctSettings 에 사용자별 demo/live
+            api_key/secret 박은 것.
 
         Raises:
-            ValueError: 사용자 미존재 또는 api_key/secret 미등록 (start 전 필수).
+            ValueError: 사용자 미존재 또는 현재 run_mode 의 키 미등록.
         """
         user = users_db.get_user_by_code(self.db_path, user_code)
         if user is None:
             raise ValueError(f"사용자 '{user_code}' 가 DB 에 없습니다.")
-        api_key = user.get("api_key")
-        secret_enc = user.get("api_secret_enc")
-        if not api_key or not secret_enc:
-            raise ValueError(
-                f"사용자 '{user_code}' 의 거래소 API 키가 등록되지 않았습니다.",
-            )
-        # secret 복호화 — keystore master key 사용. 키 불일치 시 InvalidToken.
-        api_secret = keystore.decrypt_secret(secret_enc, key=self.master_key)
+        license_type = user.get("license_type", "referral")
 
         # base_settings 복사 — pydantic v2 model_copy 깊은 복사.
         base = self.base_settings if self.base_settings is not None else IctSettings()
         settings = base.model_copy(deep=True)
-        # 사용자 라이선스 타입 적용 (referral / sub_*) — _enforce_license_tier_policy
-        # 가 자동 호출되도록 다시 IctSettings 인스턴스 생성.
-        license_type = user.get("license_type", "referral")
-        # 현 run_mode 기준 양쪽 키 슬롯에 박음 (mode 전환 시 동일 키 재사용 가정).
-        # SaaS 사용자는 하나의 거래소 키만 다루는 정책.
-        if base.run_mode is RunMode.LIVE:
-            settings.live_api_key = SecretStr(api_key)
-            settings.live_api_secret = SecretStr(api_secret)
-        else:
-            settings.demo_api_key = SecretStr(api_key)
-            settings.demo_api_secret = SecretStr(api_secret)
         settings.license_type = license_type
+
+        # 양쪽 모드 키 로드 — 있는 것만 박는다.
+        demo_pair = users_db.get_api_keys(self.db_path, user_code, "demo")
+        live_pair = users_db.get_api_keys(self.db_path, user_code, "live")
+        if demo_pair is not None:
+            demo_key, demo_sec_enc = demo_pair
+            demo_secret = keystore.decrypt_secret(demo_sec_enc, key=self.master_key)
+            settings.demo_api_key = SecretStr(demo_key)
+            settings.demo_api_secret = SecretStr(demo_secret)
+        if live_pair is not None:
+            live_key, live_sec_enc = live_pair
+            live_secret = keystore.decrypt_secret(live_sec_enc, key=self.master_key)
+            settings.live_api_key = SecretStr(live_key)
+            settings.live_api_secret = SecretStr(live_secret)
+
+        # 현재 run_mode 의 키가 비어있으면 start 불가 — UI 가 등록 안내.
+        if base.run_mode is RunMode.LIVE and live_pair is None:
+            raise ValueError(
+                f"사용자 '{user_code}' 의 LIVE 거래소 API 키가 등록되지 않았습니다.",
+            )
+        if base.run_mode is RunMode.DEMO and demo_pair is None:
+            raise ValueError(
+                f"사용자 '{user_code}' 의 DEMO 거래소 API 키가 등록되지 않았습니다.",
+            )
+
         # 모델 validator 재실행 — license_type 변경에 따른 disable_time_filter 강제.
         settings = settings.model_validate(settings.model_dump())
         return settings
@@ -316,36 +330,37 @@ class MultiUserBotManager:
         ui_ict/app.js 의 ``b.dataset.tradeTf === s.timeframe`` 토글 매칭 가능하게.
         """
         slot = self._slots.get(user_code)
+        # demo/live 키 등록 여부 — 슬롯 유무와 무관하게 DB 진실값 (2026-05-29).
+        has_demo = users_db.has_api_keys(self.db_path, user_code, "demo")
+        has_live = users_db.has_api_keys(self.db_path, user_code, "live")
         if slot is None or slot.bot is None:
-            # 슬롯 없음 — DB 만 봐서 credentials 여부 보고.
-            user = users_db.get_user_by_code(self.db_path, user_code)
-            has_creds = bool(
-                user and user.get("api_key") and user.get("api_secret_enc"),
-            )
-            # base_settings 없으면 IctSettings() 기본 — get_or_create_bot 과 동일 분기.
-            base_tf = (
-                self.base_settings.timeframe
-                if self.base_settings is not None
-                else IctSettings().timeframe
-            )
+            base = self.base_settings if self.base_settings is not None else IctSettings()
+            run_mode = base.run_mode.value
+            # 현재 모드 기준 등록 여부 — UI 가 "키 등록" CTA 결정에 사용.
+            has_creds = has_live if run_mode == "live" else has_demo
             return {
                 "state": BotState.STOPPED.value,
-                "run_mode": "demo",
+                "run_mode": run_mode,
                 "enabled": False,
                 "symbol": "",
-                "timeframe": base_tf,
+                "timeframe": base.timeframe,
                 "has_credentials": has_creds,
+                "has_demo_credentials": has_demo,
+                "has_live_credentials": has_live,
                 "has_active_position": False,
                 "last_setup_ts_ms": 0,
             }
         bot = slot.bot
+        run_mode = slot.settings.run_mode.value
         return {
             "state": bot.state.value,
-            "run_mode": slot.settings.run_mode.value,
+            "run_mode": run_mode,
             "enabled": slot.settings.enabled,
             "symbol": bot.symbol,
             "timeframe": slot.settings.timeframe,
             "has_credentials": slot.settings.has_credentials(),
+            "has_demo_credentials": has_demo,
+            "has_live_credentials": has_live,
             "has_active_position": bot.active_position is not None,
             "last_setup_ts_ms": bot._last_setup_ts_ms,
         }
