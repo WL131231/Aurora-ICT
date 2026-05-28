@@ -633,6 +633,44 @@
     overflow-y: auto;
     padding: 32px 16px;
   }
+
+  /* 2026-05-28: 파트너 요청 — 메인 페이지 (로그인) 배경에 큰 워터마크 워드마크.
+     AUR(◆ 다이아몬드 마크)RA / ICT 두 줄, 투명도 매우 흐릿. */
+  .auth-bg-wordmark {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    pointer-events: none;
+    z-index: 101;            /* auth-gate(100) 위, auth-card(자식이라 가시) 보다 아래 */
+    color: rgba(219, 219, 222, 0.07);  /* 흐릿 */
+    user-select: none;
+  }
+  .auth-bg-wordmark .wm-aurora {
+    display: flex; align-items: center;
+    font-family: "Bodoni Moda", "Playfair Display", "Times New Roman", serif;
+    font-size: clamp(80px, 16vw, 240px);
+    letter-spacing: 0.04em;
+    line-height: 0.9;
+    font-weight: 400;
+  }
+  .auth-bg-wordmark .wm-diamond {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 0.85em; height: 0.85em;
+    margin: 0 0.04em;
+  }
+  .auth-bg-wordmark .wm-diamond svg {
+    width: 100%; height: 100%;
+  }
+  .auth-bg-wordmark .wm-ict {
+    font-family: "Bodoni Moda", "Playfair Display", "Times New Roman", serif;
+    font-size: clamp(40px, 8vw, 110px);
+    letter-spacing: 0.45em;
+    margin-top: 0.15em;
+    font-weight: 400;
+    padding-left: 0.45em;     /* 'ICT' 의 letter-spacing 보정 — 시각 중앙 정렬 */
+  }
+  /* 로그인 카드는 워터마크 위에 또렷이 보이게 */
+  .auth-card { position: relative; z-index: 102; }
   .auth-card {
     width: 100%;
     max-width: 420px;
@@ -787,6 +825,23 @@
      single-user 모드 (multi_user=False) 에서는 한 번도 표시 X.
      ============================================================ -->
 <div id="auth-gate" class="auth-gate">
+  <!-- 2026-05-28: 큰 워터마크 워드마크 — AUR(◆)RA / ICT, 매우 흐릿 (alpha 0.07).
+       로그인 카드 뒤에 깔리는 시각 배경. -->
+  <div class="auth-bg-wordmark" aria-hidden="true">
+    <div class="wm-aurora">
+      <span>AUR</span>
+      <span class="wm-diamond">
+        <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+          <path d="M50 5 L95 50 L50 95 L5 50 Z"
+                stroke="currentColor" stroke-width="3" fill="none" />
+          <path d="M50 28 L72 50 L50 72 L28 50 Z"
+                fill="currentColor" opacity="0.55" />
+        </svg>
+      </span>
+      <span>RA</span>
+    </div>
+    <div class="wm-ict">ICT</div>
+  </div>
   <!-- (A) PIN 설정 필요 — needs_pin_setup=true -->
   <div class="auth-card" id="auth-setup" style="display:none">
     <h1>AURORA · ICT</h1>
