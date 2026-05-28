@@ -664,11 +664,13 @@ async function fetchAndRender() {
     // (옛 봉에는 마커 표시 X — 가격 캔들만 보임. trade-off 안내됨)
     const candleLimit = CANDLE_LIMIT[currentTimeframe] || 5000;
     const markerLimit = 2000;
+    // 2026-05-28: P&L 누적 그래프 (전체기간) 용으로 limit=200 (백엔드 cap).
+    // 리스트 화면은 상위 50건만 표시, 그래프는 전체를 활용.
     const [ohlcv, markers, position, pnl] = await Promise.all([
       api(`/ict/ohlcv?timeframe=${tf}&limit=${candleLimit}`),
       api(`/ict/markers?timeframe=${tf}&limit=${markerLimit}`),
       api("/ict/position"),
-      api("/ict/closed_pnl?limit=50"),
+      api("/ict/closed_pnl?limit=200"),
     ]);
     candleSeries.setData(ohlcv.candles);
     // 2026-05-27: 차트 좌측 공백 제거 — 모든 봉 보이게 맞춤.
@@ -760,17 +762,25 @@ $("positions-tbody").addEventListener("click", async (ev) => {
 // 우측 P&L 패널 + 지정가 라인 — 사용자 결정 2026-05-27 추가
 // ============================================================
 
-/** 거래소 closed-pnl history 를 우측 P&L 패널 테이블에 렌더. */
+// 최근 fetch 한 trades 전체 (그래프용) — renderPnL 가 갱신.
+// 토글이 매 fetch 마다 server 호출 없이 클라이언트에서 재필터.
+let _lastTrades = [];
+
+/** 거래소 closed-pnl history 를 우측 P&L 패널 테이블 + 누적 그래프에 렌더. */
 function renderPnL(data) {
   const tbody = $("pnl-tbody");
   const count = $("pnl-count");
   const trades = (data && Array.isArray(data.trades)) ? data.trades : [];
+  _lastTrades = trades;
   count.textContent = trades.length;
   if (trades.length === 0) {
     tbody.innerHTML = '<tr><td colspan="5" class="pnl-empty">청산 거래 없음 — 첫 종료 시 표시됩니다</td></tr>';
+    renderPnLChart(trades);
     return;
   }
-  const rows = trades.map((t) => {
+  // 리스트는 최근 50건만 표시 (도배 방지). 그래프는 전체 활용.
+  const listTrades = trades.slice(0, 50);
+  const rows = listTrades.map((t) => {
     const sym = (t.symbol || "").replace(":USDT", "").replace("/USDT", "USDT");
     const dirCls = t.direction === "long" ? "pnl-side-long" : "pnl-side-short";
     const pnl = (typeof t.pnl_usd === "number") ? t.pnl_usd : 0;
@@ -789,7 +799,206 @@ function renderPnL(data) {
     </tr>`;
   }).join("");
   tbody.innerHTML = rows;
+  renderPnLChart(trades);
 }
+
+// ============================================================
+// (3) 누적 P&L 그래프 — lightweight-charts LineSeries (별도 instance).
+// 토글 (전체기간/90D/60D/30D/7D) localStorage 영속.
+// ============================================================
+const VALID_PNL_RANGES = ["all", "90", "60", "30", "7"];
+let pnlRange = localStorage.getItem("aurora_ict_pnl_range") || "30";
+if (!VALID_PNL_RANGES.includes(pnlRange)) pnlRange = "30";
+
+let _pnlChart = null;
+let _pnlSeries = null;
+
+function _ensurePnLChart() {
+  if (_pnlChart) return;
+  const el = document.getElementById("pnl-chart");
+  if (!el || typeof LightweightCharts === "undefined") return;
+  _pnlChart = LightweightCharts.createChart(el, {
+    layout: { background: { color: "#201F1F" }, textColor: "#888892" },
+    grid: {
+      vertLines: { color: "rgba(219,219,222,0.04)" },
+      horzLines: { color: "rgba(219,219,222,0.04)" },
+    },
+    timeScale: {
+      borderColor: "rgba(219,219,222,0.10)",
+      timeVisible: true, secondsVisible: false,
+      fixLeftEdge: true, fixRightEdge: true,
+    },
+    rightPriceScale: {
+      borderColor: "rgba(219,219,222,0.10)",
+      autoScale: true,
+    },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    handleScale: false,
+    handleScroll: false,
+    width: el.clientWidth,
+    height: el.clientHeight || 160,
+  });
+  _pnlSeries = _pnlChart.addLineSeries({
+    color: "#34d399",
+    lineWidth: 2,
+    priceLineVisible: false,
+    lastValueVisible: true,
+    crosshairMarkerVisible: true,
+  });
+}
+
+/** trades 전체를 기간 토글로 필터 → 누적 P&L 라인 갱신. */
+function renderPnLChart(trades) {
+  _ensurePnLChart();
+  if (!_pnlChart || !_pnlSeries) return;
+
+  // 기간 필터 — 전체 / N일.
+  const nowMs = Date.now();
+  let filtered = (trades || []).filter(
+    (t) => typeof t.closed_at_ts === "number"
+      && typeof t.pnl_usd === "number",
+  );
+  if (pnlRange !== "all") {
+    const days = parseInt(pnlRange, 10);
+    if (!isNaN(days) && days > 0) {
+      const cutoffMs = nowMs - days * 24 * 60 * 60 * 1000;
+      filtered = filtered.filter((t) => t.closed_at_ts >= cutoffMs);
+    }
+  }
+  // 시간 오름차순 (서버는 신→구).
+  filtered.sort((a, b) => a.closed_at_ts - b.closed_at_ts);
+
+  // 누적 PnL 계산 — {time(sec), value}.
+  // 같은 시각 거래 dedup (lightweight-charts 가 time 중복 거부).
+  let cum = 0;
+  const points = [];
+  const seenTs = new Set();
+  filtered.forEach((t) => {
+    cum += Number(t.pnl_usd);
+    let ts = Math.floor(t.closed_at_ts / 1000);
+    while (seenTs.has(ts)) ts += 1;  // 중복 시 1초씩 밀어서 회피.
+    seenTs.add(ts);
+    points.push({ time: ts, value: Number(cum.toFixed(2)) });
+  });
+
+  // 색 — 마지막 누적이 양수면 green, 음수면 red.
+  const finalCum = points.length ? points[points.length - 1].value : 0;
+  const lineColor = finalCum >= 0 ? "#34d399" : "#fb7185";
+  _pnlSeries.applyOptions({ color: lineColor });
+  _pnlSeries.setData(points);
+  try { _pnlChart.timeScale().fitContent(); } catch (e) { /* noop */ }
+
+  // 헤더 우측 누적 표시.
+  const cumEl = $("pnl-chart-cum");
+  if (cumEl) {
+    if (points.length === 0) {
+      cumEl.textContent = "—";
+      cumEl.className = "pnl-chart-cum";
+    } else {
+      const sign = finalCum >= 0 ? "+" : "";
+      cumEl.textContent = `${sign}${finalCum.toFixed(2)} USDT`;
+      cumEl.className = "pnl-chart-cum " + (finalCum >= 0 ? "pos" : "neg");
+    }
+  }
+}
+
+function _updatePnLRangeButtons() {
+  document.querySelectorAll("#pnl-range-toggle button").forEach((b) => {
+    b.classList.toggle("active", b.dataset.range === pnlRange);
+  });
+}
+
+// 토글 버튼 — 클릭 시 pnlRange 변경 + 그래프 재렌더 (server 호출 X).
+const _pnlRangeToggleEl = document.getElementById("pnl-range-toggle");
+if (_pnlRangeToggleEl) {
+  _pnlRangeToggleEl.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-range]");
+    if (!btn) return;
+    const r = btn.dataset.range;
+    if (!VALID_PNL_RANGES.includes(r) || r === pnlRange) return;
+    pnlRange = r;
+    localStorage.setItem("aurora_ict_pnl_range", r);
+    _updatePnLRangeButtons();
+    renderPnLChart(_lastTrades);
+  });
+}
+_updatePnLRangeButtons();
+
+// ============================================================
+// (2) 라이선스 카드 렌더 — /auth/status 응답 활용
+// ============================================================
+const LICENSE_KO = {
+  referral: "레퍼럴",
+  sub_30d: "구독 30일",
+  sub_90d: "구독 90일",
+  sub_365d: "구독 365일",
+};
+
+function _fmtDateYmd(iso) {
+  // ISO 8601 → "YYYY-MM-DD" (KST 변환은 표시 정합성을 위해 local time).
+  if (!iso || typeof iso !== "string") return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+
+/** /auth/status 응답을 받아 라이선스 카드 갱신. status 가 null 이면 placeholder. */
+function renderLicenseCard(status) {
+  const typeEl = $("lc-type");
+  const startEl = $("lc-start");
+  const endEl = $("lc-end");
+  const daysEl = $("lc-days-left");
+  if (!typeEl || !startEl || !endEl || !daysEl) return;
+  if (!status || !status.authenticated) {
+    typeEl.textContent = "—";
+    startEl.textContent = "—";
+    endEl.textContent = "—";
+    daysEl.textContent = "—";
+    daysEl.className = "lc-v";
+    return;
+  }
+  const lt = status.license_type || "referral";
+  typeEl.textContent = LICENSE_KO[lt] || lt;
+  startEl.textContent = _fmtDateYmd(status.created_at);
+
+  if (!status.expires_at) {
+    // referral — 무기한.
+    endEl.textContent = "무기한";
+    daysEl.textContent = "—";
+    daysEl.className = "lc-v";
+  } else {
+    endEl.textContent = _fmtDateYmd(status.expires_at);
+    // 잔여일 계산 — 만료까지 (음수면 0).
+    const now = Date.now();
+    const exp = new Date(status.expires_at).getTime();
+    if (isNaN(exp)) {
+      daysEl.textContent = "—";
+      daysEl.className = "lc-v";
+    } else {
+      const days = Math.max(0, Math.ceil((exp - now) / (24 * 60 * 60 * 1000)));
+      daysEl.textContent = `${days}일 남음`;
+      // 7일 미만 critical, 30일 미만 warn.
+      daysEl.className = "lc-v";
+      if (days < 7) daysEl.classList.add("lc-days-crit");
+      else if (days < 30) daysEl.classList.add("lc-days-warn");
+    }
+  }
+}
+
+// 라이선스 카드 갱신 — 5분마다 /auth/status 재폴링 (만료일 잔여 표시 동기화).
+async function refreshLicenseCard() {
+  try {
+    const opts = { credentials: "include" };
+    const resp = await fetch(`${API}/auth/status`, opts);
+    if (!resp.ok) return;
+    const s = await resp.json();
+    renderLicenseCard(s);
+  } catch (e) { /* noop */ }
+}
+setInterval(refreshLicenseCard, 5 * 60 * 1000);
 
 /** 봇이 지정가 미체결 대기 중이면 차트에 horizontal price line + qty 라벨 표시.
  *  position.pending 없으면 line 제거 (체결됨/취소됨). */
@@ -1006,10 +1215,41 @@ refreshJudgment();
 
 // 햄버거 토글 — 우측 P&L 패널 접기/펴기
 // 2026-05-27: 파트너 피드백 ("저 pnl 창 말한거양") — 좌측 사이드바가 아니라 우측 P&L 토글
+// 2026-05-28: 모바일 가로 모드에서는 default hidden 이므로 'pnl-open' 클래스로 토글 (CSS 분리).
+//             데스크탑에서는 기존처럼 'pnl-collapsed' 토글.
+function _isMobileLandscape() {
+  return window.matchMedia(
+    "(orientation: landscape) and (max-width: 1024px)," +
+    "(orientation: landscape) and (max-height: 600px)",
+  ).matches;
+}
+
 const _btnSidebarToggle = $("btn-sidebar-toggle");
 if (_btnSidebarToggle) {
   _btnSidebarToggle.onclick = () => {
-    document.body.classList.toggle("pnl-collapsed");
+    if (_isMobileLandscape()) {
+      // 모바일 가로 — overlay 열기/닫기.
+      document.body.classList.toggle("pnl-open");
+      // P&L 열 때 사이드바 자동 닫기 (overlay 겹침 방지).
+      if (document.body.classList.contains("pnl-open")) {
+        document.body.classList.remove("sidebar-open");
+      }
+    } else {
+      // 데스크탑 — 기존 접기/펴기.
+      document.body.classList.toggle("pnl-collapsed");
+    }
+  };
+}
+
+// 좌상단 모바일 사이드바 햄버거 — 가로 모드에서만 활성 (CSS).
+const _btnMobileSidebar = $("btn-mobile-sidebar");
+if (_btnMobileSidebar) {
+  _btnMobileSidebar.onclick = () => {
+    document.body.classList.toggle("sidebar-open");
+    // 사이드바 열 때 P&L 자동 닫기.
+    if (document.body.classList.contains("sidebar-open")) {
+      document.body.classList.remove("pnl-open");
+    }
   };
 }
 
@@ -1019,8 +1259,18 @@ if (_btnSidebarToggle) {
 function fit() {
   const r = chartEl.getBoundingClientRect();
   chart.applyOptions({ width: r.width, height: r.height });
+  // P&L 차트도 같이 — 우측 패널 너비 변화 / 모바일 회전 시 폭 재계산.
+  if (_pnlChart) {
+    const pe = document.getElementById("pnl-chart");
+    if (pe) {
+      const w = pe.clientWidth;
+      const h = pe.clientHeight || 160;
+      try { _pnlChart.applyOptions({ width: w, height: h }); } catch (e) { /* noop */ }
+    }
+  }
 }
 window.addEventListener("resize", fit);
+window.addEventListener("orientationchange", () => setTimeout(fit, 100));
 fit();
 
 // 부팅 시 version 1회 fetch (config endpoint)
@@ -1144,6 +1394,9 @@ async function bootstrap() {
   AUTH.multiUser = r.multiUser;
   if (!r.multiUser) {
     // single-user (.exe / pywebview) — 게이트 한 번도 표시 X, 기존 흐름 그대로.
+    // 라이선스 카드는 SaaS 다중 사용자용 — single-user 면 의미 X, 숨김.
+    const lc = document.getElementById("license-card");
+    if (lc) lc.style.display = "none";
     showMainScreen();
     fetchVersion();
     fetchAndRender();
@@ -1168,6 +1421,8 @@ async function bootstrap() {
   }
   // 인증 + 키 등록 완료 — 메인 봇 UI.
   showMainScreen();
+  // 라이선스 카드 초기 렌더 (status 응답 그대로 활용 — /auth/status 재호출 생략).
+  renderLicenseCard(s);
   fetchVersion();
   fetchAndRender();
 }
