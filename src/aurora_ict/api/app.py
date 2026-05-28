@@ -870,14 +870,16 @@ def _register_multi_user_routes(
         limit: int = 1500,
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
-        """OHLCV 기반 chart markers — multi-user 사용자별."""
-        slot = mu_manager._slots.get(user_code)
-        bot = slot.bot if slot is not None else None
-        if bot is None:
-            raise HTTPException(
-                status_code=404,
-                detail="봇이 실행 중이 아닙니다 — /ict/start 먼저 호출하세요",
-            )
+        """OHLCV 기반 chart markers — multi-user 사용자별.
+
+        2026-05-28 lazy 로딩 — START 전에도 차트 보이게. 봇 인스턴스 없으면
+        ``ensure_bot_ready`` 로 자동 생성 + prefetch 시작 (가동 X).
+        API 키 미등록 시 404 응답.
+        """
+        try:
+            bot = await mu_manager.ensure_bot_ready(user_code)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
         use_symbol = symbol or bot.symbol
         use_tf = timeframe or bot.timeframe
         try:
@@ -928,13 +930,16 @@ def _register_multi_user_routes(
         limit: int = 1500,
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
-        """OHLCV 봉 — multi-user 사용자별 (bot prefetch cache 활용)."""
-        slot = mu_manager._slots.get(user_code)
-        bot = slot.bot if slot is not None else None
-        if bot is None:
-            raise HTTPException(
-                status_code=404, detail="봇이 실행 중이 아닙니다",
-            )
+        """OHLCV 봉 — multi-user 사용자별 (bot prefetch cache 활용).
+
+        2026-05-28 lazy 로딩 — START 전에도 차트 보이게. 봇 인스턴스 없으면
+        ``ensure_bot_ready`` 로 자동 생성 + prefetch 시작 (가동 X).
+        API 키 미등록 시 404 응답.
+        """
+        try:
+            bot = await mu_manager.ensure_bot_ready(user_code)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
         use_symbol = symbol or bot.symbol
         use_tf = timeframe or bot.timeframe
         try:

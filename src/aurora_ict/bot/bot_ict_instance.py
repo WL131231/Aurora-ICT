@@ -333,6 +333,20 @@ class BotIctInstance:
         self._prefetch_task = asyncio.create_task(self._prefetch_all_ohlcv_tfs())
         logger.info("BotIctInstance %s 시작", self.symbol)
 
+    def ensure_prefetch_started(self) -> None:
+        """봇 가동 안 해도 OHLCV cache prefetch 시작 (idempotent).
+
+        2026-05-28: SaaS UX — 로그인 후 START 전에도 차트 봉/마커 보이게.
+        한 번 시작하면 ``_prefetch_task`` 보관, 이미 시작했거나 진행 중이면 noop.
+
+        ``start()`` 와 별개 — state 는 변경하지 않음 (STOPPED 유지). UI lazy 로딩
+        용 진입점이며, 사용자가 명시적으로 START 누르기 전엔 매매 loop 안 돔.
+        """
+        if self._prefetch_task is not None and not self._prefetch_task.done():
+            return  # 이미 진행 중
+        # 완료된 task 가 남아 있을 수도 — 새 task 로 교체해 재시도 가능하게.
+        self._prefetch_task = asyncio.create_task(self._prefetch_all_ohlcv_tfs())
+
     async def _recover_position_from_exchange(self) -> None:
         """봇 시작 시 거래소 측 활성 포지션 복원.
 

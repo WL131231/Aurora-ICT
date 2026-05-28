@@ -195,6 +195,28 @@ class MultiUserBotManager:
         )
         return bot
 
+    async def ensure_bot_ready(self, user_code: str) -> BotIctInstance:
+        """차트 lazy 로딩용 — 봇 인스턴스 생성 + prefetch 시작 (가동 X).
+
+        2026-05-28: SaaS UX — 사용자가 START 누르기 전, 로그인 직후부터
+        차트 봉/마커가 보이도록 OHLCV cache prefetch 만 미리 시작.
+        ``start()`` 와 달리 거래소 leverage 설정 / 매매 loop 가동은 하지 않음 —
+        봇 state 는 STOPPED 유지.
+
+        Args:
+            user_code: 대상 사용자 라이선스 코드.
+
+        Returns:
+            BotIctInstance (state=STOPPED 일 수 있음, prefetch task 진행 중).
+
+        Raises:
+            ValueError: 사용자 미존재 또는 API key 미등록 (호출자가 401/404 응답).
+        """
+        async with self._get_lock(user_code):
+            bot = await self.get_or_create_bot(user_code)
+            bot.ensure_prefetch_started()
+            return bot
+
     async def start(self, user_code: str) -> None:
         """사용자 봇 기동 — get_or_create 후 BotIctInstance.start 호출.
 
@@ -254,7 +276,12 @@ class MultiUserBotManager:
             logger.debug("ccxt exchange close 실패 (무시): %s", e)
 
     async def status(self, user_code: str) -> dict[str, Any]:
-        """사용자 봇 상태 스냅샷 (없으면 stopped + has_credentials 만)."""
+        """사용자 봇 상태 스냅샷 (없으면 stopped + has_credentials 만).
+
+        2026-05-28: UI Trade Timeframe 토글 active 표시 위해 ``timeframe`` 필드 추가.
+        slot 없을 때는 base_settings.timeframe (기본 trade TF) 을 응답해
+        ui_ict/app.js 의 ``b.dataset.tradeTf === s.timeframe`` 토글 매칭 가능하게.
+        """
         slot = self._slots.get(user_code)
         if slot is None or slot.bot is None:
             # 슬롯 없음 — DB 만 봐서 credentials 여부 보고.
@@ -262,11 +289,18 @@ class MultiUserBotManager:
             has_creds = bool(
                 user and user.get("api_key") and user.get("api_secret_enc"),
             )
+            # base_settings 없으면 IctSettings() 기본 — get_or_create_bot 과 동일 분기.
+            base_tf = (
+                self.base_settings.timeframe
+                if self.base_settings is not None
+                else IctSettings().timeframe
+            )
             return {
                 "state": BotState.STOPPED.value,
                 "run_mode": "demo",
                 "enabled": False,
                 "symbol": "",
+                "timeframe": base_tf,
                 "has_credentials": has_creds,
                 "has_active_position": False,
                 "last_setup_ts_ms": 0,
@@ -277,6 +311,7 @@ class MultiUserBotManager:
             "run_mode": slot.settings.run_mode.value,
             "enabled": slot.settings.enabled,
             "symbol": bot.symbol,
+            "timeframe": slot.settings.timeframe,
             "has_credentials": slot.settings.has_credentials(),
             "has_active_position": bot.active_position is not None,
             "last_setup_ts_ms": bot._last_setup_ts_ms,
