@@ -495,6 +495,45 @@ function renderStatus(s) {
 // ============================================================
 // Markers (FVG / Sweep / Structure / Setup)
 // ============================================================
+/** OHLCV first ts 이전 markers 일괄 필터링 (mutation in place).
+ *
+ *  2026-05-28 파트너 피드백: 차트 봉 안 그려진 옛 영역에 BOS/CHoCH/EQH/EQL
+ *  라벨만 떠있는 버그 — OHLCV cache miss 시 fast path (200봉) + markers 는
+ *  cache 전체 (수천 봉) 반환 불일치.
+ *
+ *  fix: payload.markers 의 각 list 를 first ts (ms) 이상만 남김.
+ *  killzones / macros 는 end_ms 기준, equal_levels 는 swing_ts_list 첫 ts.
+ */
+function _filterMarkersByFirstBar(payload, firstTsSec) {
+  if (!payload || !payload.markers || firstTsSec == null || firstTsSec <= 0) return;
+  const firstMs = firstTsSec * 1000;
+  const m = payload.markers;
+  const byTs = (list) => (list || []).filter((it) => (it.ts_ms || 0) >= firstMs);
+  m.fvgs = byTs(m.fvgs);
+  m.ifvgs = byTs(m.ifvgs);
+  m.breakers = byTs(m.breakers);
+  m.dols = byTs(m.dols);
+  m.sweeps = byTs(m.sweeps);
+  m.structure = byTs(m.structure);
+  m.swings = byTs(m.swings);
+  m.setups = byTs(m.setups);
+  m.order_blocks = byTs(m.order_blocks);
+  m.internal_swings = byTs(m.internal_swings);
+  m.internal_structure = byTs(m.internal_structure);
+  m.large_swings = byTs(m.large_swings);
+  m.large_structure = byTs(m.large_structure);
+  m.large_sweeps = byTs(m.large_sweeps);
+  m.large_order_blocks = byTs(m.large_order_blocks);
+  // killzones / macros 는 [start_ms, end_ms] 구간 — 끝점이 first 이후면 그림.
+  m.killzones = (m.killzones || []).filter((k) => (k.end_ms || 0) >= firstMs);
+  m.macros = (m.macros || []).filter((k) => (k.end_ms || 0) >= firstMs);
+  // equal_levels 는 swing_ts_list 의 첫 ts (가장 옛날 swing) 기준.
+  m.equal_levels = (m.equal_levels || []).filter((e) => {
+    const tsList = e.swing_ts_list || [];
+    return tsList.length === 0 || tsList[0] >= firstMs;
+  });
+}
+
 function renderMarkers(payload) {
   const m = payload.markers;
   $("c-fvgs").textContent = payload.count.fvgs;
@@ -681,6 +720,12 @@ async function fetchAndRender() {
     // 마지막 봉 시간 — PD Zone area 끝점에 사용
     if (ohlcv.candles && ohlcv.candles.length > 0) {
       lastBarTimeSec = ohlcv.candles[ohlcv.candles.length - 1].time;
+    }
+    // 2026-05-28 fix — OHLCV cache miss 시 200봉 sync + background prefetch.
+    // markers 는 전체 cache 봉 영역 계산해 반환 → 차트 봉보다 옛 영역에 마커만 떠
+    // "봉 없는 라벨" 보임. ohlcv 의 first ts 이전 markers 전부 필터링.
+    if (ohlcv.candles && ohlcv.candles.length > 0) {
+      _filterMarkersByFirstBar(markers, ohlcv.candles[0].time);
     }
     renderMarkers(markers);
     renderPositions(position);
