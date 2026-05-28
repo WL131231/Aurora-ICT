@@ -322,18 +322,64 @@ def test_closed_pnl_when_bot_stopped(client: TestClient) -> None:
 
 
 # ============================================================
-# 4. markers / ohlcv — 봇 미가동 시 404
+# 4. markers / ohlcv — 2026-05-28 lazy 로딩: 봇 미가동·키 등록 상태면 200,
+#    봇 state 는 STOPPED 유지 (매매 X). 키 미등록만 404.
 # ============================================================
 
 
-def test_markers_404_when_bot_stopped(client: TestClient) -> None:
+def test_markers_lazy_loads_when_bot_stopped_with_keys(
+    client: TestClient, mu,
+) -> None:
+    """봇 미가동 + API 키 등록 — markers 자동 lazy 로딩 (이전 404 → 200)."""
     _register_user(client)
+    resp = client.get("/ict/markers?limit=50")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "markers" in body
+    assert "count" in body
+    # 봇 state 는 그대로 STOPPED — 매매 가동 X.
+    st = client.get("/ict/status").json()
+    assert st["state"] == "stopped"
+
+
+def test_ohlcv_lazy_loads_when_bot_stopped_with_keys(
+    client: TestClient, mu,
+) -> None:
+    """봇 미가동 + API 키 등록 — ohlcv 자동 lazy 로딩 (이전 404 → 200)."""
+    _register_user(client)
+    resp = client.get("/ict/ohlcv?limit=50")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["timeframe"]
+    assert len(body["candles"]) > 0
+    # 봇 state 는 그대로 STOPPED.
+    st = client.get("/ict/status").json()
+    assert st["state"] == "stopped"
+
+
+def test_markers_404_when_no_api_keys(client: TestClient, db_path) -> None:
+    """API 키 미등록 사용자 — markers 는 404 (ensure_bot_ready ValueError 전파)."""
+    code = "AICT-NOKM-NOKM-NOKM"
+    users_db.create_user(db_path, code)
+    # PIN 만 세팅, api-keys 는 안 함.
+    r = client.post(
+        "/auth/setup-pin",
+        json={"code": code, "pin": "Aa1!aaaa", "pin_confirm": "Aa1!aaaa"},
+    )
+    assert r.status_code == 200
     resp = client.get("/ict/markers")
     assert resp.status_code == 404
 
 
-def test_ohlcv_404_when_bot_stopped(client: TestClient) -> None:
-    _register_user(client)
+def test_ohlcv_404_when_no_api_keys(client: TestClient, db_path) -> None:
+    """API 키 미등록 사용자 — ohlcv 는 404 (ensure_bot_ready ValueError 전파)."""
+    code = "AICT-NOKO-NOKO-NOKO"
+    users_db.create_user(db_path, code)
+    r = client.post(
+        "/auth/setup-pin",
+        json={"code": code, "pin": "Aa1!aaaa", "pin_confirm": "Aa1!aaaa"},
+    )
+    assert r.status_code == 200
     resp = client.get("/ict/ohlcv")
     assert resp.status_code == 404
 

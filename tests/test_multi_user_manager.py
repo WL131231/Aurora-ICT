@@ -357,3 +357,154 @@ async def test_stop_unknown_user_is_noop(
     # 예외 없이 그냥 통과.
     await mu.stop("AICT-GHST-GHST-GHST")
     await mu.stop_all()
+
+
+# ============================================================
+# 4. status timeframe 필드 (2026-05-28 UI Trade TF 토글 버그 fix)
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_status_includes_timeframe_when_no_slot(
+    db_path, base_settings, master_key,
+) -> None:
+    """status — 슬롯 없을 때도 base_settings.timeframe 응답.
+
+    UI 의 trade-tf 토글 (app.js b.dataset.tradeTf === s.timeframe) 이 작동하려면
+    state=stopped 일 때도 timeframe 필드가 필요. base_settings 의 기본 TF 반영.
+    """
+    code = "AICT-TFST-TFST-TFST"
+    users_db.create_user(db_path, code)
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,
+        master_key=master_key,
+    )
+    st = await mu.status(code)
+    assert "timeframe" in st
+    assert st["timeframe"] == base_settings.timeframe
+
+
+@pytest.mark.asyncio
+async def test_status_includes_timeframe_when_slot_active(
+    db_path, base_settings, master_key,
+) -> None:
+    """status — slot 활성 상태에서도 settings.timeframe 응답."""
+    code = "AICT-TFRN-TFRN-TFRN"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc)
+
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,
+        master_key=master_key,
+    )
+    await mu.start(code)
+    st = await mu.status(code)
+    assert "timeframe" in st
+    assert st["timeframe"] == base_settings.timeframe
+    await mu.stop(code)
+
+
+@pytest.mark.asyncio
+async def test_status_timeframe_default_when_base_settings_none(
+    db_path, master_key,
+) -> None:
+    """status — base_settings=None 이어도 timeframe 필드 누락 X (IctSettings 기본 TF)."""
+    code = "AICT-TFDF-TFDF-TFDF"
+    users_db.create_user(db_path, code)
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=None,
+        master_key=master_key,
+    )
+    st = await mu.status(code)
+    assert "timeframe" in st
+    assert st["timeframe"] == IctSettings().timeframe
+
+
+# ============================================================
+# 5. ensure_bot_ready (2026-05-28 차트 lazy 로딩)
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_ensure_bot_ready_raises_when_no_api_keys(
+    db_path, base_settings, master_key,
+) -> None:
+    """ensure_bot_ready — API 키 미등록 시 ValueError (호출자가 404 매핑)."""
+    code = "AICT-EBNK-EBNK-EBNK"
+    users_db.create_user(db_path, code)
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,
+        master_key=master_key,
+    )
+    with pytest.raises(ValueError, match="API"):
+        await mu.ensure_bot_ready(code)
+
+
+@pytest.mark.asyncio
+async def test_ensure_bot_ready_creates_bot_and_starts_prefetch_without_start(
+    db_path, base_settings, master_key,
+) -> None:
+    """ensure_bot_ready — 봇 인스턴스 생성 + prefetch 시작, state 는 STOPPED 유지.
+
+    START 누르기 전에도 차트 봉/마커 데이터 받을 수 있도록 cache prefetch 만 가동.
+    state 가 STOPPED 임이 핵심 — 매매 loop 안 돔.
+    """
+    code = "AICT-EBOK-EBOK-EBOK"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc)
+
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,
+        master_key=master_key,
+    )
+    bot = await mu.ensure_bot_ready(code)
+    # 봇 인스턴스 존재 + STOPPED 유지 (start() 호출 X).
+    assert bot is not None
+    assert bot.state is BotState.STOPPED
+    # prefetch task 생성됨.
+    assert bot._prefetch_task is not None
+    # set_leverage 는 호출되지 않음 (start 와 별개).
+    assert clients[0].leverage_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ensure_bot_ready_is_idempotent(
+    db_path, base_settings, master_key,
+) -> None:
+    """ensure_bot_ready 재호출 — 같은 봇 인스턴스, prefetch 중복 시작 X."""
+    code = "AICT-EBID-EBID-EBID"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc)
+
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,
+        master_key=master_key,
+    )
+    bot1 = await mu.ensure_bot_ready(code)
+    first_task = bot1._prefetch_task
+    bot2 = await mu.ensure_bot_ready(code)
+    assert bot1 is bot2
+    # 첫 task 가 아직 진행 중이면 같은 task — 재시작 X (idempotent).
+    if first_task is not None and not first_task.done():
+        assert bot2._prefetch_task is first_task
