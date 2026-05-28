@@ -8,8 +8,8 @@
 #
 # 도메인 + HTTPS 는 Fly 가 LetsEncrypt 로 자동 발급 (force_https=true).
 
-app = "aurora-ict-saas"
-primary_region = "nrt"
+app = "aurora-ict-one"
+primary_region = "sin"
 
 [build]
   # Dockerfile 사용 — 별도 builder 지정 X.
