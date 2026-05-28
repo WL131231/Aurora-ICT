@@ -1,0 +1,44 @@
+name: Fly.io 자동 배포
+
+# 트리거:
+#   1) main 브랜치 push (PR 머지 직후 즉시 배포)
+#   2) workflow_dispatch (수동 트리거 — 비상 재배포)
+#
+# 요구사항 (1회 설정):
+#   - GitHub repo Settings → Secrets and variables → Actions → New repository secret
+#     · Name: FLY_API_TOKEN
+#     · Value: PowerShell 에서 `flyctl tokens create deploy -x 999999h` 출력값
+#
+# 안전장치:
+#   - main 브랜치만 (다른 브랜치 push 영향 X)
+#   - 'ui_ict/**' 또는 'src/**' 또는 'Dockerfile' 또는 'fly.toml' 변경 시만 (문서만 바뀌면 skip)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "ui_ict/**"
+      - "Dockerfile"
+      - "fly.toml"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to Fly.io
+    runs-on: ubuntu-latest
+    concurrency:
+      group: fly-deploy
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: flyctl 설치
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: 배포 (--remote-only, Fly builders)
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
