@@ -1,12 +1,15 @@
 """users_db 모듈 — 실제 SQLite (in tmp_path) 사용, mock 0.
 
 검증 대상 함수:
-    - init_db (idempotent)
+    - init_db (idempotent, sessions 테이블 포함)
     - create_user (정상 + 중복 코드 IntegrityError)
     - get_user_by_code (존재 / 미존재)
     - set_pin (정상 + 평문 거부 + 미존재 code)
     - set_api_keys (정상 + 빈 값 거부 + 미존재 code)
     - update_last_login (정상 + 미존재 code)
+    - create_session_row / get_session / delete_session
+    - delete_sessions_for_user / delete_all_sessions
+    - cleanup_expired_sessions (만료 row 일괄 정리)
 
 담당: 지영민 (SaaS 전환 PR)
 """
@@ -14,6 +17,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 
 import pytest
 
@@ -197,3 +201,199 @@ def test_multiple_users_coexist(db_path):
     assert u1["id"] != u2["id"]
     assert u1["license_type"] == "sub_30d"
     assert u2["license_type"] == "sub_90d"
+
+
+# ============================================================
+# 세션 영속화 (Fly.io 재배포 대비, 2026-05-28)
+# ============================================================
+
+
+def test_init_db_creates_sessions_table(tmp_path):
+    """init_db — sessions 테이블 + idx_sessions_expires 인덱스 생성."""
+    path = tmp_path / "sess.db"
+    users_db.init_db(path)
+
+    with sqlite3.connect(str(path)) as conn:
+        tables = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'",
+            ).fetchall()
+        }
+        assert "sessions" in tables
+        indices = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'",
+            ).fetchall()
+        }
+        assert "idx_sessions_expires" in indices
+
+
+def test_create_session_row_and_get_session_round_trip(db_path):
+    """create_session_row → get_session 으로 같은 user_code 회수."""
+    users_db.create_user(db_path, "AICT-SES1-SES1-SES1")
+    ok = users_db.create_session_row(
+        db_path,
+        token="tok_round_trip_1",
+        user_code="AICT-SES1-SES1-SES1",
+        ttl_sec=3600,
+    )
+    assert ok is True
+
+    row = users_db.get_session(db_path, "tok_round_trip_1")
+    assert row is not None
+    assert row["token"] == "tok_round_trip_1"
+    assert row["user_code"] == "AICT-SES1-SES1-SES1"
+    # ISO 8601 UTC Z 접미사
+    assert row["issued_at"].endswith("Z")
+    assert row["expires_at"].endswith("Z")
+    # expires > issued
+    assert row["expires_at"] > row["issued_at"]
+
+
+def test_get_session_returns_none_for_missing_token(db_path):
+    """get_session — 미존재 토큰이면 None."""
+    assert users_db.get_session(db_path, "no_such_token") is None
+    assert users_db.get_session(db_path, "") is None
+
+
+def test_get_session_excludes_expired_rows(db_path):
+    """get_session — 만료된 세션은 row 가 있어도 None 반환."""
+    users_db.create_user(db_path, "AICT-EXPI-EXPI-EXPI")
+    # 1초 TTL — 즉시 만료시키기 위해 sleep.
+    users_db.create_session_row(
+        db_path, token="tok_expires_soon",
+        user_code="AICT-EXPI-EXPI-EXPI", ttl_sec=1,
+    )
+    # 만료 직전엔 valid.
+    assert users_db.get_session(db_path, "tok_expires_soon") is not None
+    # 만료 통과 대기 — ISO 초 정밀도 + buffer.
+    time.sleep(1.5)
+    assert users_db.get_session(db_path, "tok_expires_soon") is None
+
+
+def test_create_session_row_rejects_empty_token(db_path):
+    """create_session_row — 빈 토큰은 ValueError."""
+    with pytest.raises(ValueError, match="token"):
+        users_db.create_session_row(
+            db_path, token="", user_code="AICT-X-X-X", ttl_sec=60,
+        )
+
+
+def test_create_session_row_rejects_empty_user_code(db_path):
+    """create_session_row — 빈 user_code 는 ValueError (DB 백엔드 정합)."""
+    with pytest.raises(ValueError, match="user_code"):
+        users_db.create_session_row(
+            db_path, token="tok_x", user_code="", ttl_sec=60,
+        )
+
+
+def test_create_session_row_rejects_non_positive_ttl(db_path):
+    """create_session_row — ttl_sec 0 또는 음수는 ValueError."""
+    users_db.create_user(db_path, "AICT-TTLZ-TTLZ-TTLZ")
+    with pytest.raises(ValueError, match="ttl_sec"):
+        users_db.create_session_row(
+            db_path, token="tok_ttl0",
+            user_code="AICT-TTLZ-TTLZ-TTLZ", ttl_sec=0,
+        )
+    with pytest.raises(ValueError, match="ttl_sec"):
+        users_db.create_session_row(
+            db_path, token="tok_ttlneg",
+            user_code="AICT-TTLZ-TTLZ-TTLZ", ttl_sec=-5,
+        )
+
+
+def test_delete_session_removes_row(db_path):
+    """delete_session — 1건 삭제 + 멱등."""
+    users_db.create_user(db_path, "AICT-DEL1-DEL1-DEL1")
+    users_db.create_session_row(
+        db_path, token="tok_del", user_code="AICT-DEL1-DEL1-DEL1", ttl_sec=60,
+    )
+    assert users_db.delete_session(db_path, "tok_del") is True
+    # 두 번째 호출 — 이미 없음, False (멱등).
+    assert users_db.delete_session(db_path, "tok_del") is False
+    assert users_db.get_session(db_path, "tok_del") is None
+
+
+def test_delete_session_empty_token_returns_false(db_path):
+    """delete_session — 빈/None 토큰은 False (예외 X)."""
+    assert users_db.delete_session(db_path, "") is False
+
+
+def test_delete_sessions_for_user_removes_all_for_code(db_path):
+    """delete_sessions_for_user — 특정 사용자 세션만 일괄 제거."""
+    users_db.create_user(db_path, "AICT-MUL1-MUL1-MUL1")
+    users_db.create_user(db_path, "AICT-MUL2-MUL2-MUL2")
+    for i in range(3):
+        users_db.create_session_row(
+            db_path, token=f"u1_tok_{i}",
+            user_code="AICT-MUL1-MUL1-MUL1", ttl_sec=600,
+        )
+    users_db.create_session_row(
+        db_path, token="u2_tok_only",
+        user_code="AICT-MUL2-MUL2-MUL2", ttl_sec=600,
+    )
+
+    removed = users_db.delete_sessions_for_user(db_path, "AICT-MUL1-MUL1-MUL1")
+    assert removed == 3
+    # 다른 사용자 세션은 살아있음.
+    assert users_db.get_session(db_path, "u2_tok_only") is not None
+    # 자기 세션은 모두 사라짐.
+    for i in range(3):
+        assert users_db.get_session(db_path, f"u1_tok_{i}") is None
+
+
+def test_delete_sessions_for_user_unknown_returns_zero(db_path):
+    """delete_sessions_for_user — 미존재 user_code 면 0."""
+    assert users_db.delete_sessions_for_user(db_path, "AICT-NONE-NONE-NONE") == 0
+    # 빈 user_code 도 0 (안전).
+    assert users_db.delete_sessions_for_user(db_path, "") == 0
+
+
+def test_delete_all_sessions_clears_table(db_path):
+    """delete_all_sessions — sessions 테이블 전체 비움 + count 반환."""
+    users_db.create_user(db_path, "AICT-ALL1-ALL1-ALL1")
+    users_db.create_user(db_path, "AICT-ALL2-ALL2-ALL2")
+    users_db.create_session_row(
+        db_path, token="all_t1", user_code="AICT-ALL1-ALL1-ALL1", ttl_sec=60,
+    )
+    users_db.create_session_row(
+        db_path, token="all_t2", user_code="AICT-ALL2-ALL2-ALL2", ttl_sec=60,
+    )
+    removed = users_db.delete_all_sessions(db_path)
+    assert removed == 2
+    assert users_db.get_session(db_path, "all_t1") is None
+    assert users_db.get_session(db_path, "all_t2") is None
+
+
+def test_cleanup_expired_sessions_removes_only_expired(db_path):
+    """cleanup_expired_sessions — 만료 row 만 제거, 유효 row 는 보존."""
+    users_db.create_user(db_path, "AICT-CLN1-CLN1-CLN1")
+    # 1초 TTL — 만료 예정.
+    users_db.create_session_row(
+        db_path, token="expired_tok",
+        user_code="AICT-CLN1-CLN1-CLN1", ttl_sec=1,
+    )
+    # 1시간 TTL — 유효 유지.
+    users_db.create_session_row(
+        db_path, token="alive_tok",
+        user_code="AICT-CLN1-CLN1-CLN1", ttl_sec=3600,
+    )
+    time.sleep(1.5)
+    removed = users_db.cleanup_expired_sessions(db_path)
+    assert removed == 1
+
+    # 유효 세션은 살아있고, 만료 세션은 row 자체가 사라짐.
+    assert users_db.get_session(db_path, "alive_tok") is not None
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE token = ?",
+            ("expired_tok",),
+        ).fetchone()
+        assert row[0] == 0
+
+
+def test_cleanup_expired_sessions_empty_table_returns_zero(db_path):
+    """cleanup_expired_sessions — 빈 테이블에선 0."""
+    assert users_db.cleanup_expired_sessions(db_path) == 0

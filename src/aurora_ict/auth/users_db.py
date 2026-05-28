@@ -18,6 +18,17 @@
     - ``expires_at`` — ISO 8601 UTC (예: ``2026-12-31T23:59:59Z``)
     - 모든 시각 필드는 UTC ISO 8601 — 봇이 KST 변환은 표시 직전에만
 
+    ``sessions(token, user_code, issued_at, expires_at)``
+
+    - ``token`` PRIMARY KEY — secrets.token_urlsafe(32) 결과
+    - ``user_code`` — users.code FK (소프트 참조 — 사용자 row 삭제 시 cascade X,
+      revoke_sessions_for_user 가 명시 정리)
+    - 만료 시각도 ISO 8601 UTC — 인덱스 ``idx_sessions_expires`` 로 cleanup 가속
+
+    파트너 결정 2026-05-28 — Fly.io 재배포 시 봇 프로세스가 죽어도 세션 유지
+    하기 위해 메모리 dict 를 DB 로 영속화. 재배포 후에도 사용자가 다시 로그인할
+    필요 없음.
+
 보안:
     - 모든 쿼리 parameterized (``?`` placeholder) — SQL injection 방지
     - 컨텍스트 매니저 (``with sqlite3.connect``) — 트랜잭션 안전
@@ -30,6 +41,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -52,6 +64,24 @@ CREATE TABLE IF NOT EXISTS users (
 
 # code 로 lookup 빈도 높음 — UNIQUE 인덱스가 이미 SQLite 가 자동 생성하지만 명시.
 _DDL_INDEX_CODE = "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_code ON users(code)"
+
+# 세션 영속화 — Fly.io 재배포 시 사용자 강제 로그아웃 방지 (2026-05-28).
+# FK 는 선언만 — PRAGMA foreign_keys 가 켜져 있어도 users 삭제 흐름이 현재 없으므로
+# 실 cascade 동작은 발생 X. revoke_sessions_for_user 가 명시적으로 정리.
+_DDL_SESSIONS = """
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_code TEXT NOT NULL,
+    issued_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY (user_code) REFERENCES users(code)
+)
+"""
+
+# 만료 cleanup 가속용 — startup 시 _cleanup_expired_sessions 가 full scan 대신 인덱스 활용.
+_DDL_INDEX_SESSIONS_EXPIRES = (
+    "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)"
+)
 
 
 def _utcnow_iso() -> str:
@@ -94,6 +124,8 @@ def init_db(db_path: Path | str) -> None:
     with _connect(path) as conn:
         conn.execute(_DDL_USERS)
         conn.execute(_DDL_INDEX_CODE)
+        conn.execute(_DDL_SESSIONS)
+        conn.execute(_DDL_INDEX_SESSIONS_EXPIRES)
         conn.commit()
 
 
@@ -245,8 +277,192 @@ def update_last_login(db_path: Path | str, code: str) -> bool:
         return cur.rowcount > 0
 
 
+# ============================================================
+# 세션 영속화 — Fly.io 재배포 대비 (2026-05-28)
+# ============================================================
+
+
+# 기본 세션 TTL — pin 모듈 / router 와 동일 (30일). 호출자가 명시 override 가능.
+_DEFAULT_SESSION_TTL_SEC = 30 * 24 * 3600
+
+
+def _iso_from_epoch(epoch_sec: float) -> str:
+    """epoch 초 → ISO 8601 UTC (Z 접미사).
+
+    Args:
+        epoch_sec: ``time.time()`` 결과 형식의 초 (float 허용).
+
+    Returns:
+        예: ``"2026-05-28T12:34:56Z"`` — microsecond 절사.
+    """
+    return (
+        datetime.fromtimestamp(epoch_sec, tz=UTC)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def create_session_row(
+    db_path: Path | str,
+    token: str,
+    user_code: str,
+    ttl_sec: int = _DEFAULT_SESSION_TTL_SEC,
+) -> bool:
+    """세션 1건 영속화 — Fly.io 재배포 후에도 토큰 유효성 유지.
+
+    Args:
+        db_path: users.db 경로 (sessions 테이블 포함).
+        token: ``secrets.token_urlsafe(32)`` 결과 (UNIQUE 가정).
+        user_code: 토큰이 귀속될 사용자 라이선스 코드. 비어있으면 ValueError.
+        ttl_sec: 만료까지 초 (기본 30일). 음수면 ValueError.
+
+    Returns:
+        True 면 INSERT 성공, False 면 PK 충돌 (실제로는 거의 발생 X — 32바이트 무작위).
+
+    Raises:
+        ValueError: ``token`` / ``user_code`` 가 빈 문자열 또는 ``ttl_sec`` 가 양수가 아님.
+    """
+    # 방어적 가드 — 빈 토큰 / 빈 user_code 는 호출 측 실수 가능성 높음.
+    if not token or not isinstance(token, str):
+        raise ValueError("token 은 비어있을 수 없습니다.")
+    if not user_code or not isinstance(user_code, str):
+        raise ValueError("user_code 는 비어있을 수 없습니다.")
+    if not isinstance(ttl_sec, int) or ttl_sec <= 0:
+        raise ValueError("ttl_sec 은 양의 정수여야 합니다.")
+
+    now_sec = time.time()
+    issued = _iso_from_epoch(now_sec)
+    expires = _iso_from_epoch(now_sec + ttl_sec)
+    try:
+        with _connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO sessions (token, user_code, issued_at, expires_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (token, user_code, issued, expires),
+            )
+            conn.commit()
+            return True
+    except sqlite3.IntegrityError:
+        # token PK 충돌 — token_urlsafe(32) 가 우연히 겹치는 천문학적 확률.
+        return False
+
+
+def get_session(db_path: Path | str, token: str) -> dict[str, Any] | None:
+    """토큰으로 세션 조회 — 만료된 row 는 자동 제외 (반환 None).
+
+    만료된 row 를 호출 시점에 DELETE 하지는 않음 — cleanup_expired_sessions 가 일괄
+    정리. 조회 핫패스에서 쓰기 트랜잭션 일으키지 않기 위함.
+
+    Args:
+        db_path: users.db 경로.
+        token: 조회할 세션 토큰.
+
+    Returns:
+        ``{"token", "user_code", "issued_at", "expires_at"}`` dict, 또는 미존재/만료 시 None.
+    """
+    if not token or not isinstance(token, str):
+        return None
+    now_iso = _utcnow_iso()
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT token, user_code, issued_at, expires_at
+            FROM sessions
+            WHERE token = ? AND expires_at > ?
+            """,
+            (token, now_iso),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+
+def delete_session(db_path: Path | str, token: str) -> bool:
+    """단일 세션 삭제 — 로그아웃 시 호출. 미존재 토큰도 False 반환 (예외 X).
+
+    Args:
+        db_path: users.db 경로.
+        token: 삭제할 세션 토큰.
+
+    Returns:
+        True 면 1건 삭제, False 면 미존재 (멱등 보장).
+    """
+    if not token or not isinstance(token, str):
+        return False
+    with _connect(db_path) as conn:
+        cur = conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def delete_sessions_for_user(db_path: Path | str, user_code: str) -> int:
+    """특정 사용자의 모든 세션 삭제 — PIN 변경 / 계정 잠금 시 호출.
+
+    Args:
+        db_path: users.db 경로.
+        user_code: 대상 사용자 라이선스 코드. 빈 문자열이면 0 반환 (안전).
+
+    Returns:
+        삭제된 세션 개수 (0 이상).
+    """
+    if not user_code or not isinstance(user_code, str):
+        return 0
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            "DELETE FROM sessions WHERE user_code = ?",
+            (user_code,),
+        )
+        conn.commit()
+        return int(cur.rowcount)
+
+
+def delete_all_sessions(db_path: Path | str) -> int:
+    """sessions 테이블 전체 비우기 — 보안 사고 / 마스터 키 회전 시.
+
+    Args:
+        db_path: users.db 경로.
+
+    Returns:
+        삭제된 세션 개수.
+    """
+    with _connect(db_path) as conn:
+        cur = conn.execute("DELETE FROM sessions")
+        conn.commit()
+        return int(cur.rowcount)
+
+
+def cleanup_expired_sessions(db_path: Path | str) -> int:
+    """만료된 세션 row 일괄 제거 — 서버 startup 시 1회 호출 권장.
+
+    idx_sessions_expires 인덱스가 있어 row 수가 많아도 빠름.
+
+    Args:
+        db_path: users.db 경로.
+
+    Returns:
+        제거된 세션 개수.
+    """
+    now_iso = _utcnow_iso()
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            "DELETE FROM sessions WHERE expires_at <= ?",
+            (now_iso,),
+        )
+        conn.commit()
+        return int(cur.rowcount)
+
+
 __all__ = [
+    "cleanup_expired_sessions",
+    "create_session_row",
     "create_user",
+    "delete_all_sessions",
+    "delete_session",
+    "delete_sessions_for_user",
+    "get_session",
     "get_user_by_code",
     "init_db",
     "set_api_keys",
