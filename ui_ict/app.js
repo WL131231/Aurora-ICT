@@ -1215,10 +1215,15 @@ function escapeHtml(s) {
 setInterval(refreshJudgment, 5000);
 refreshJudgment();
 
-// 햄버거 토글 — 우측 P&L 패널 접기/펴기
+// 햄버거 토글 — 우측 P&L 패널 / 좌측 사이드바 / 봇 판단 패널 (모바일 가로)
 // 2026-05-27: 파트너 피드백 ("저 pnl 창 말한거양") — 좌측 사이드바가 아니라 우측 P&L 토글
-// 2026-05-28: 모바일 가로 모드에서는 default hidden 이므로 'pnl-open' 클래스로 토글 (CSS 분리).
-//             데스크탑에서는 기존처럼 'pnl-collapsed' 토글.
+// 2026-05-28: 모바일 가로 모드 재설계 — 셋 다 default hidden + overlay 형식.
+//   · 좌상단 햄버거 (≡)  → 좌측 사이드바 (.sidebar-open)
+//   · 우상단 햄버거 (≡)  → 우측 P&L 패널 (.pnl-open)
+//   · 우하단 fab (ⓘ)     → 좌하단 봇 판단 패널 (.judgment-open)
+//   · 셋은 서로 배타적 (하나 열면 나머지 자동 닫힘)
+//   · overlay 클릭 시 모두 닫힘
+// 데스크탑에서는 기존처럼 우측 P&L 만 'pnl-collapsed' 토글.
 function _isMobileLandscape() {
   return window.matchMedia(
     "(orientation: landscape) and (max-width: 1024px)," +
@@ -1226,16 +1231,32 @@ function _isMobileLandscape() {
   ).matches;
 }
 
+/** 모바일 가로 — 지정한 패널만 열고 나머지 자동 닫음. panel: "sidebar" | "pnl" | "judgment" | null. */
+function _setMobilePanel(panel) {
+  const body = document.body;
+  body.classList.toggle("sidebar-open",  panel === "sidebar");
+  body.classList.toggle("pnl-open",      panel === "pnl");
+  body.classList.toggle("judgment-open", panel === "judgment");
+  // fab active 시각 동기화 — 봇 판단 패널 열렸을 때만 fab 강조.
+  const fab = document.getElementById("btn-judgment-toggle");
+  if (fab) fab.classList.toggle("active", panel === "judgment");
+}
+
+/** 현재 어떤 패널이 열려있는지 — 가로 모드 토글 핸들러용. */
+function _currentMobilePanel() {
+  const c = document.body.classList;
+  if (c.contains("sidebar-open"))  return "sidebar";
+  if (c.contains("pnl-open"))      return "pnl";
+  if (c.contains("judgment-open")) return "judgment";
+  return null;
+}
+
 const _btnSidebarToggle = $("btn-sidebar-toggle");
 if (_btnSidebarToggle) {
   _btnSidebarToggle.onclick = () => {
     if (_isMobileLandscape()) {
-      // 모바일 가로 — overlay 열기/닫기.
-      document.body.classList.toggle("pnl-open");
-      // P&L 열 때 사이드바 자동 닫기 (overlay 겹침 방지).
-      if (document.body.classList.contains("pnl-open")) {
-        document.body.classList.remove("sidebar-open");
-      }
+      // 모바일 가로 — P&L overlay 열기/닫기 + 서로 배타.
+      _setMobilePanel(_currentMobilePanel() === "pnl" ? null : "pnl");
     } else {
       // 데스크탑 — 기존 접기/펴기.
       document.body.classList.toggle("pnl-collapsed");
@@ -1247,13 +1268,37 @@ if (_btnSidebarToggle) {
 const _btnMobileSidebar = $("btn-mobile-sidebar");
 if (_btnMobileSidebar) {
   _btnMobileSidebar.onclick = () => {
-    document.body.classList.toggle("sidebar-open");
-    // 사이드바 열 때 P&L 자동 닫기.
-    if (document.body.classList.contains("sidebar-open")) {
-      document.body.classList.remove("pnl-open");
-    }
+    _setMobilePanel(_currentMobilePanel() === "sidebar" ? null : "sidebar");
   };
 }
+
+// 우하단 봇 판단 패널 fab — 모바일 가로에서만 표시 (CSS).
+// 데스크탑에서는 좌하단 판단 패널이 항상 보임 → fab 클릭 자체가 발생 X.
+const _btnJudgmentToggle = $("btn-judgment-toggle");
+if (_btnJudgmentToggle) {
+  _btnJudgmentToggle.onclick = () => {
+    _setMobilePanel(_currentMobilePanel() === "judgment" ? null : "judgment");
+  };
+}
+
+// Overlay 클릭 — 열린 패널 모두 닫음 (외부 탭 close UX).
+const _mobileOverlay = $("mobile-overlay");
+if (_mobileOverlay) {
+  _mobileOverlay.onclick = () => _setMobilePanel(null);
+}
+
+// 가로↔세로 회전 / 데스크탑↔모바일 viewport 전환 시 잔존 클래스 정리.
+// (데스크탑으로 넘어왔는데 sidebar-open 클래스 남아 있으면 사이드바 absolute 자리 X →
+//  display 는 정상이지만 시각 일관성 위해 클래스 제거.)
+function _resetMobilePanelsIfDesktop() {
+  if (!_isMobileLandscape()) {
+    document.body.classList.remove("sidebar-open", "pnl-open", "judgment-open");
+    const fab = document.getElementById("btn-judgment-toggle");
+    if (fab) fab.classList.remove("active");
+  }
+}
+window.addEventListener("resize", _resetMobilePanelsIfDesktop);
+window.addEventListener("orientationchange", () => setTimeout(_resetMobilePanelsIfDesktop, 100));
 
 // ============================================================
 // resize

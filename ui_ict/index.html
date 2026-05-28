@@ -369,7 +369,7 @@
     cursor: pointer;
     display: flex; flex-direction: column; justify-content: center;
     gap: 4px; padding: 0 7px;
-    z-index: 5;
+    z-index: 250;
   }
   .sidebar-toggle span {
     display: block; height: 2px; background: var(--text-2); border-radius: 1px;
@@ -385,13 +385,54 @@
     cursor: pointer;
     flex-direction: column; justify-content: center;
     gap: 4px; padding: 0 7px;
-    z-index: 6;
+    z-index: 250;
   }
   .mobile-sidebar-toggle span {
     display: block; height: 2px; background: var(--text-2); border-radius: 1px;
   }
   /* P&L 패널 접힘 — body 클래스로 토글 (데스크탑) */
   body.pnl-collapsed .pnl-panel { display: none; }
+
+  /* ============================================================
+     2026-05-28: 모바일 가로 전용 추가 컴포넌트
+     - overlay (햄버거로 패널 열렸을 때 차트 영역 탭하면 자동 닫힘)
+     - 우하단 fab (봇 판단 패널 토글, 데스크탑 영향 X)
+     ============================================================ */
+  /* overlay — 사이드바/P&L 열렸을 때만 보임. 외부 탭 시 닫힘 */
+  .mobile-overlay {
+    display: none;
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 150;
+  }
+  /* 우하단 봇 판단 패널 토글 fab — 모바일에서만 보임 (CSS 가 데스크탑 hidden) */
+  .judgment-fab {
+    position: absolute;
+    right: 14px;
+    bottom: 14px;
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    background: rgba(20, 20, 25, 0.92);
+    border: 1px solid var(--line-strong);
+    color: var(--text-1);
+    font-size: 18px;
+    font-family: inherit;
+    cursor: pointer;
+    z-index: 160;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+    /* 데스크탑 default 숨김 — 모바일 가로 미디어 쿼리에서만 보이게 */
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+  .judgment-fab:hover { border-color: var(--accent); color: var(--accent); }
+  .judgment-fab.active {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+  }
 
   /* 좌하단 판단 패널 — 봇이 시장 어떻게 보는지 시각화 */
   .judgment-panel {
@@ -633,7 +674,12 @@
     .mobile-rotate-notice { display: flex; }
     .wrap { display: none !important; }
   }
-  /* 가로 모드 + 모바일/태블릿 — 사이드바/P&L default hidden, 햄버거로 토글. */
+  /* 가로 모드 + 모바일/태블릿 — 사이드바/P&L default hidden, 햄버거로 토글.
+     2026-05-28 재설계: 차트 풀스크린 default + overlay 형식 슬라이드 인.
+     - 좌상단 햄버거 (≡) → 좌측 사이드바
+     - 우상단 햄버거 (≡) → 우측 P&L 패널
+     - 우하단 fab (ⓘ) → 좌하단 봇 판단 패널
+     - 셋 다 default hidden, 서로 배타적 (하나 열면 나머지 자동 닫힘) */
   @media (orientation: landscape) and (max-width: 1024px),
          (orientation: landscape) and (max-height: 600px) {
     /* 좌측 사이드바 — 기본 hidden. body.sidebar-open 일 때만 표시. */
@@ -646,25 +692,64 @@
       display: flex;
       position: absolute;
       top: 0; right: 0; bottom: 0;
-      width: min(85vw, 360px);
-      z-index: 50;
+      width: min(70vw, 360px);
+      z-index: 200;
       box-shadow: -4px 0 16px rgba(0, 0, 0, 0.5);
     }
     body.sidebar-open .sidebar {
       display: block;
       position: absolute;
       top: 0; left: 0; bottom: 0;
-      width: min(85vw, 280px);
-      z-index: 50;
+      width: min(70vw, 280px);
+      z-index: 200;
       box-shadow: 4px 0 16px rgba(0, 0, 0, 0.5);
     }
-    /* 좌상단 햄버거 (사이드바) — 모바일 가로에서만 표시. */
-    #btn-mobile-sidebar { display: flex; }
-    /* 차트는 풀폭 점유. */
+    /* 좌상단 햄버거 (사이드바) — 모바일 가로에서만 표시 + 큰 터치 타깃. */
+    #btn-mobile-sidebar {
+      display: flex;
+      width: 44px; height: 40px;
+      top: 8px; left: 8px;
+      padding: 0 11px;
+      gap: 5px;
+    }
+    /* 우상단 햄버거도 모바일에선 더 큰 터치 타깃 + 위치 살짝 조정. */
+    .sidebar-toggle {
+      width: 44px; height: 40px;
+      top: 8px; right: 8px;
+      padding: 0 11px;
+      gap: 5px;
+    }
+    /* 좌하단 봇 판단 패널 — 모바일 가로에서는 default hidden, fab 으로 토글.
+       세션 배지가 좌상단 햄버거와 겹쳐 보이므로 위치 보정. */
+    .judgment-panel { display: none; }
+    body.judgment-open .judgment-panel {
+      display: block;
+      position: absolute;
+      left: 12px; right: 12px;
+      bottom: 64px;
+      width: auto;
+      max-width: min(80vw, 360px);
+      max-height: 60vh;
+      z-index: 200;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+    }
+    /* 우하단 봇 판단 패널 토글 fab — 모바일 가로에서만 표시. */
+    .judgment-fab { display: flex; }
+    /* overlay — sidebar / pnl / judgment 중 하나라도 열렸을 때 표시. */
+    body.sidebar-open .mobile-overlay,
+    body.pnl-open .mobile-overlay,
+    body.judgment-open .mobile-overlay { display: block; }
+    /* 좌상단 세션 배지 — 햄버거와 안 겹치게 살짝 우측으로. */
+    .session-badge { left: 64px; top: 12px; }
+    /* 차트 풀스크린 — 좌/우 0, 패널들이 모두 absolute overlay. */
     .main { width: 100%; }
+    /* 차트 상단 toolbar 가 햄버거에 가리지 않도록 좌측 여백 확보. */
+    .chart-toolbar { padding-left: 60px; padding-right: 60px; }
   }
-  /* 데스크탑에서는 모바일용 사이드바 햄버거 숨김. */
+  /* 데스크탑에서는 모바일용 사이드바 햄버거 + 판단 패널 fab + overlay 숨김. */
   #btn-mobile-sidebar { display: none; }
+  .judgment-fab { display: none; }
+  .mobile-overlay { display: none; }
   .pnl-table {
     width: 100%;
     border-collapse: collapse;
@@ -1236,6 +1321,11 @@
       <button id="btn-sidebar-toggle" class="sidebar-toggle" title="우측 패널 접기/펴기">
         <span></span><span></span><span></span>
       </button>
+      <!-- 모바일 가로 — 사이드바/P&L/판단 패널 열렸을 때 외부 탭하면 닫히는 overlay
+           CSS 가 body 클래스 (sidebar-open / pnl-open / judgment-open) 보고 display 토글. -->
+      <div id="mobile-overlay" class="mobile-overlay"></div>
+      <!-- 우하단 봇 판단 패널 토글 fab (2026-05-28) — 모바일 가로에서만 보임 -->
+      <button id="btn-judgment-toggle" class="judgment-fab" title="봇 판단 패널 열기/닫기">ⓘ</button>
       <!-- 좌하단 판단 패널 (2026-05-27) — 봇이 시장을 어떻게 보는지 시각화 -->
       <div id="judgment-panel" class="judgment-panel">
         <div class="jp-header">봇의 현재 판단</div>
