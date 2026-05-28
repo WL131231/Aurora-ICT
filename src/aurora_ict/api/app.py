@@ -220,6 +220,10 @@ def _register_multi_user_routes(
         ),
     )
 
+    # 2026-05-28: 공지 router — /ict/notice (인증) + /admin/notice (admin token).
+    from aurora_ict.api.notice_router import create_notice_router
+    app.include_router(create_notice_router(db_path))
+
     @app.get("/ict/health")
     async def health_mu() -> dict[str, str]:
         # 인증 없이 응답 — 외부 모니터링/로드밸런서 probe.
