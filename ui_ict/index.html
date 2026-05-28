@@ -1463,6 +1463,24 @@
     min-height: 14px;
   }
   /* 사이드바 로그아웃 버튼 (multi-user 모드에서만 노출) */
+  .trades-link {
+    display: block;
+    text-align: center;
+    margin-top: 10px;
+    padding: 8px 0;
+    background: rgba(96, 165, 250, 0.10);
+    border: 1px solid rgba(96, 165, 250, 0.35);
+    color: #60a5fa;
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-decoration: none;
+    border-radius: 4px;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .trades-link:hover {
+    background: rgba(96, 165, 250, 0.20);
+    border-color: rgba(96, 165, 250, 0.60);
+  }
   .logout-row {
     margin-top: 10px;
     display: none;          /* JS 에서 multi-user 면 block */
@@ -1664,6 +1682,11 @@
     <h2>Control</h2>
     <button id="btn-start">START</button>
     <button id="btn-stop" class="danger">STOP</button>
+
+    <!-- 2026-05-29: 매매 기록 별도 페이지 링크. 본인 거래 표 + CSV 다운로드. -->
+    <a href="/ui/trades" class="trades-link" id="trades-link">
+      📋 매매 기록 보기
+    </a>
 
     <!-- SaaS 사용자 식별 + 로그아웃 — single-user 모드에선 hidden (.show 클래스로 토글) -->
     <div class="logout-row" id="logout-row">

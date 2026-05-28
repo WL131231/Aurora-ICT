@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, ClassVar, Protocol
 from zoneinfo import ZoneInfo
 
@@ -266,6 +267,12 @@ class BotIctInstance:
     flip_watch_ws_reconnect_max: int = 5
     # FVG 약화 임계치 — touch 누적 도달 시 mitigation 후보 / flip target 제외.
     htf_fvg_max_touch_count: int = 3
+
+    # 2026-05-29 SaaS 매매 로그 격리 — 사용자별 trades.* 디렉토리 인자.
+    # None 이면 paths.data_dir() (단일 사용자 / .exe 흐름) — backward compat.
+    # MultiUserBotManager 가 사용자별 dir (<data_dir>/users/<code>/) 을 주입해
+    # 다른 사용자 거래와 섞이지 않게 격리. JSONL/SQLite write 충돌도 자연 해소.
+    trades_data_dir: Path | None = None
 
     state: BotState = field(default=BotState.STOPPED)
     active_position: _ActivePosition | None = field(default=None)
@@ -1570,8 +1577,11 @@ class BotIctInstance:
         실패해도 봇 전체는 멈추지 않게 try/warning 처리.
         """
         if self._trades_store is None:
+            # 2026-05-29: 사용자별 격리 — trades_data_dir 가 있으면 그 디렉토리,
+            # 없으면 기본 data_dir() (단일 사용자 / .exe 흐름).
+            store_dir = self.trades_data_dir or _ict_data_dir()
             try:
-                self._trades_store = TradesStore(_ict_data_dir())
+                self._trades_store = TradesStore(store_dir)
             except Exception as e:  # noqa: BLE001
                 logger.warning("TradesStore 초기화 실패 — 매매 기록 skip: %s", e)
                 return

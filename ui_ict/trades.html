@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>매매 기록 · Aurora-ICT</title>
+  <style>
+    /* 2026-05-29: 매매 기록 별도 페이지 — 메인 UI 와 일관된 다크 톤. */
+    :root {
+      --bg: #0a0a0a;
+      --surface: #141414;
+      --surface-2: #1c1c1c;
+      --line: #2a2a2a;
+      --line-strong: #3a3a3a;
+      --text-1: #e8e8e8;
+      --text-2: #a8a8a8;
+      --text-3: #6a6a6a;
+      --accent: #34d399;
+      --warn: #fbbf24;
+      --loss: #fb7185;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text-1);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+        "Pretendard Variable", "Pretendard", sans-serif;
+      font-size: 13px;
+      letter-spacing: 0.02em;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 20px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--line);
+    }
+    header h1 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+    }
+    header .back {
+      color: var(--text-3);
+      text-decoration: none;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+    }
+    header .back:hover { color: var(--text-1); }
+    .wrap { padding: 16px 20px; max-width: 1280px; margin: 0 auto; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 10px 12px;
+    }
+    .stat-card .k {
+      font-size: 10px;
+      letter-spacing: 0.15em;
+      color: var(--text-3);
+      text-transform: uppercase;
+    }
+    .stat-card .v {
+      font-size: 18px;
+      font-weight: 600;
+      margin-top: 4px;
+    }
+    .stat-card .v.pos { color: var(--accent); }
+    .stat-card .v.neg { color: var(--loss); }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+      align-items: center;
+    }
+    .controls select,
+    .controls input {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      color: var(--text-1);
+      padding: 6px 10px;
+      font-size: 12px;
+      border-radius: 4px;
+      font-family: inherit;
+    }
+    .controls button {
+      background: var(--surface-2);
+      border: 1px solid var(--line-strong);
+      color: var(--text-1);
+      padding: 6px 14px;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      cursor: pointer;
+      border-radius: 4px;
+      font-family: inherit;
+    }
+    .controls button:hover { background: var(--line-strong); }
+    .controls button.accent {
+      background: rgba(52, 211, 153, 0.15);
+      border-color: rgba(52, 211, 153, 0.50);
+      color: var(--accent);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      overflow: hidden;
+      font-size: 12px;
+    }
+    thead {
+      background: var(--surface-2);
+    }
+    th, td {
+      padding: 8px 10px;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+    }
+    th {
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      color: var(--text-3);
+      text-transform: uppercase;
+      font-weight: 500;
+    }
+    tbody tr:hover { background: var(--surface-2); }
+    .pnl-pos { color: var(--accent); }
+    .pnl-neg { color: var(--loss); }
+    .dir-long { color: var(--accent); }
+    .dir-short { color: var(--loss); }
+    .ev {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 9px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .ev-entry { background: rgba(96, 165, 250, 0.20); color: #60a5fa; }
+    .ev-sl_hit { background: rgba(251, 113, 133, 0.20); color: var(--loss); }
+    .ev-tp_hit { background: rgba(52, 211, 153, 0.20); color: var(--accent); }
+    .ev-flip_close, .ev-flip_open { background: rgba(251, 191, 36, 0.20); color: var(--warn); }
+    .ev-sync_close, .ev-manual_close, .ev-recovered {
+      background: rgba(106, 106, 106, 0.20);
+      color: var(--text-2);
+    }
+    .empty {
+      text-align: center;
+      padding: 40px;
+      color: var(--text-3);
+      font-size: 12px;
+    }
+    .pagination {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 14px;
+      align-items: center;
+    }
+    .pagination button {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      color: var(--text-2);
+      padding: 5px 12px;
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      cursor: pointer;
+      border-radius: 3px;
+    }
+    .pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .pagination .page-info { color: var(--text-3); font-size: 11px; }
+    @media (max-width: 640px) {
+      th, td { padding: 6px 6px; font-size: 11px; }
+      th:nth-child(8), td:nth-child(8) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>매매 기록 · Aurora-ICT</h1>
+    <a href="/ui/" class="back">← 봇 화면</a>
+  </header>
+
+  <div class="wrap">
+    <div class="stats" id="stats"></div>
+
+    <div class="controls">
+      <label style="color:var(--text-3);font-size:11px">기간</label>
+      <select id="f-period">
+        <option value="86400000">24시간</option>
+        <option value="604800000" selected>최근 7일</option>
+        <option value="2592000000">최근 30일</option>
+        <option value="0">전체</option>
+      </select>
+      <label style="color:var(--text-3);font-size:11px">유형</label>
+      <select id="f-event">
+        <option value="">전체</option>
+        <option value="entry">진입 (entry)</option>
+        <option value="sl_hit">손절 (SL hit)</option>
+        <option value="tp_hit">익절 (TP hit)</option>
+        <option value="flip_close">flip 청산</option>
+        <option value="flip_open">flip 진입</option>
+        <option value="sync_close">sync 청산</option>
+        <option value="manual_close">수동 청산</option>
+        <option value="recovered">복원</option>
+      </select>
+      <label style="color:var(--text-3);font-size:11px">행 수</label>
+      <select id="f-limit">
+        <option value="50">50</option>
+        <option value="200" selected>200</option>
+        <option value="500">500</option>
+        <option value="2000">2000</option>
+      </select>
+      <button id="btn-refresh">새로고침</button>
+      <button id="btn-csv" class="accent">CSV 다운로드</button>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>시각 (KST)</th>
+          <th>유형</th>
+          <th>방향</th>
+          <th>심볼</th>
+          <th>가격</th>
+          <th>수량</th>
+          <th>PnL (USDT)</th>
+          <th>사유</th>
+        </tr>
+      </thead>
+      <tbody id="rows">
+        <tr><td colspan="8" class="empty">로딩 중…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    // 2026-05-29: 매매 기록 페이지 — /ict/trades 조회, KST 변환, CSV 다운로드.
+    const $ = (id) => document.getElementById(id);
+    const fmt = (n, d = 2) => (n == null || isNaN(n)) ? "—" : Number(n).toFixed(d);
+    const fmtTs = (ms) => {
+      if (!ms) return "—";
+      const d = new Date(ms);
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+             `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    };
+
+    async function api(path) {
+      const r = await fetch(path, { credentials: "include" });
+      if (r.status === 401) {
+        location.href = "/ui/";
+        throw new Error("unauthorized");
+      }
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    }
+
+    function renderStats(stats) {
+      const root = $("stats");
+      const cards = [
+        ["총 이벤트", stats.total_events || 0, ""],
+        ["청산 이벤트", stats.closed_events || 0, ""],
+        ["누적 PnL", `${stats.pnl_sum_usdt >= 0 ? "+" : ""}${fmt(stats.pnl_sum_usdt)}`,
+          stats.pnl_sum_usdt >= 0 ? "pos" : "neg"],
+        ["승률", `${fmt(stats.win_rate_pct, 1)}%`, ""],
+        ["승", stats.wins || 0, "pos"],
+        ["패", stats.losses || 0, "neg"],
+      ];
+      root.innerHTML = cards.map(([k, v, cls]) =>
+        `<div class="stat-card"><div class="k">${k}</div>` +
+        `<div class="v ${cls}">${v}</div></div>`,
+      ).join("");
+    }
+
+    function renderRows(rows) {
+      const tbody = $("rows");
+      if (!rows || rows.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="empty">데이터 없음</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = rows.map((r) => {
+        const pnlCls = r.pnl_usdt == null ? "" :
+          (r.pnl_usdt >= 0 ? "pnl-pos" : "pnl-neg");
+        const pnlTxt = r.pnl_usdt == null ? "—" :
+          `${r.pnl_usdt >= 0 ? "+" : ""}${fmt(r.pnl_usdt)}`;
+        const dirCls = r.direction === "long" ? "dir-long" :
+                       (r.direction === "short" ? "dir-short" : "");
+        return `<tr>
+          <td>${fmtTs(r.ts_ms)}</td>
+          <td><span class="ev ev-${r.event_type}">${r.event_type}</span></td>
+          <td class="${dirCls}">${r.direction || "—"}</td>
+          <td>${r.symbol || "—"}</td>
+          <td>${fmt(r.price, 2)}</td>
+          <td>${fmt(r.qty, 4)}</td>
+          <td class="${pnlCls}">${pnlTxt}</td>
+          <td style="color:var(--text-3);font-size:10px">${r.reason || ""}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    async function load() {
+      const period = parseInt($("f-period").value, 10);
+      const event = $("f-event").value;
+      const limit = parseInt($("f-limit").value, 10);
+      const since = period > 0 ? (Date.now() - period) : 0;
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (since > 0) params.set("since_ms", String(since));
+      if (event) params.set("event_type", event);
+      try {
+        const data = await api("/ict/trades?" + params.toString());
+        renderStats(data.stats || {});
+        renderRows(data.trades || []);
+      } catch (e) {
+        $("rows").innerHTML = `<tr><td colspan="8" class="empty">` +
+          `로딩 실패 — ${e.message}</td></tr>`;
+      }
+    }
+
+    $("btn-refresh").onclick = load;
+    $("f-period").onchange = load;
+    $("f-event").onchange = load;
+    $("f-limit").onchange = load;
+    $("btn-csv").onclick = () => {
+      const period = parseInt($("f-period").value, 10);
+      const event = $("f-event").value;
+      const since = period > 0 ? (Date.now() - period) : 0;
+      const params = new URLSearchParams();
+      if (since > 0) params.set("since_ms", String(since));
+      if (event) params.set("event_type", event);
+      const url = "/ict/trades/export?" + params.toString();
+      // a 태그 동적 생성 → Content-Disposition 헤더로 파일명 자동 적용.
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "trades.csv";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    };
+
+    load();
+  </script>
+</body>
+</html>

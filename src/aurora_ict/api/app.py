@@ -224,6 +224,13 @@ def _register_multi_user_routes(
     from aurora_ict.api.notice_router import create_notice_router
     app.include_router(create_notice_router(db_path))
 
+    # 2026-05-29: 매매 로그 router — /ict/trades (본인) + /admin/trades (admin).
+    from aurora_ict.api.trades_router import create_trades_router
+    from aurora_ict.paths import data_dir as _ict_data_dir_fn
+    app.include_router(
+        create_trades_router(_ict_data_dir_fn(), require_auth),
+    )
+
     @app.get("/ict/health")
     async def health_mu() -> dict[str, str]:
         # 인증 없이 응답 — 외부 모니터링/로드밸런서 probe.
