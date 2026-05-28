@@ -29,6 +29,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
+from aurora_ict import __version__
 from aurora_ict.auth import keystore, pin, users_db
 from aurora_ict.auth.middleware import SESSION_COOKIE_NAME, extract_session_token
 
@@ -249,12 +250,19 @@ def create_auth_router(
             return {
                 "authenticated": False,
                 "needs_pin_setup": not has_any_pin,
+                # 2026-05-28: UI 자동 버전 갱신 — 미인증 응답에도 포함해야 로그인
+                # 화면에서도 버전 drift 감지 가능.
+                "app_version": __version__,
             }
         user = users_db.get_user_by_code(db_path, user_code)
         if user is None:
             # 세션은 있는데 DB row 사라짐 (드물지만 운영 사고 대비) — 세션 무효화.
             pin.revoke_session(token)
-            return {"authenticated": False, "needs_pin_setup": False}
+            return {
+                "authenticated": False,
+                "needs_pin_setup": False,
+                "app_version": __version__,
+            }
         return {
             "authenticated": True,
             "code": user["code"],
@@ -264,6 +272,9 @@ def create_auth_router(
             "expires_at": user.get("expires_at"),
             # 가입 시각 — UI 가 잔여일 / 기간 표시에 사용. NOT NULL 컬럼.
             "created_at": user.get("created_at"),
+            # 2026-05-28: UI 자동 버전 갱신 — 부팅 시점 캡쳐된 버전과 polling 시점
+            # 버전을 비교해 다르면 location.reload() (app.js _checkVersionDrift).
+            "app_version": __version__,
         }
 
     @router.post("/api-keys")

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
 import uvicorn
 
@@ -42,6 +43,48 @@ from aurora_ict.config.settings import IctSettings
 from aurora_ict.paths import data_dir
 
 logger = logging.getLogger(__name__)
+
+
+async def auto_resume_running_bots(
+    mu: MultiUserBotManager,
+    db_path: Path | str,
+) -> dict[str, int]:
+    """Fly machine 재시작 / 재배포 후 ``bot_running=1`` 사용자 자동 재가동.
+
+    파트너 결정 2026-05-28 — 봇 인스턴스가 in-memory 라 OOM/재배포 시 사라짐.
+    이 함수가 DB 의 영속 플래그를 읽고 best-effort 로 ``mu.start`` 호출.
+    한 사용자 실패 (API 키 만료, 거래소 응답 거부 등) 가 다음 사용자 가동에
+    영향 X — ExceptionGroup 사용 X (Python 3.11 호환).
+
+    Args:
+        mu: MultiUserBotManager 인스턴스 (start 메서드 호출용).
+        db_path: users.db 경로 (list_running_codes 조회).
+
+    Returns:
+        ``{"attempted": int, "succeeded": int, "failed": int}`` 통계.
+        startup 로그 + 테스트 검증용. 한 명도 가동 안 됐으면 attempted=0.
+    """
+    stats = {"attempted": 0, "succeeded": 0, "failed": 0}
+    try:
+        codes = users_db.list_running_codes(db_path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("bot 자동 재가동 — list_running_codes 실패: %s", e)
+        return stats
+    if not codes:
+        logger.info("bot 자동 재가동 대상 없음 (bot_running=1 사용자 0명)")
+        return stats
+    stats["attempted"] = len(codes)
+    logger.info("bot 자동 재가동 시도 — %d명", len(codes))
+    for code in codes:
+        try:
+            await mu.start(code)
+            stats["succeeded"] += 1
+            logger.info("bot 자동 재가동 — %s ✓", code)
+        except Exception as e:  # noqa: BLE001
+            stats["failed"] += 1
+            # API 키 미등록 / 만료 / 거래소 응답 실패 등 — 다음 사용자에 영향 X.
+            logger.warning("bot 자동 재가동 실패 — %s: %s", code, e)
+    return stats
 
 
 def _setup_logging() -> None:
@@ -115,11 +158,36 @@ def main() -> int:
         secure_cookie=secure_cookie,
     )
 
+    # FastAPI startup 이벤트 — Fly machine 재시작 / 재배포 후 자동 복원 (2026-05-28).
+    # 실로직은 모듈 함수 ``auto_resume_running_bots`` 가 담당 (테스트 분리 용이).
+    @app.on_event("startup")
+    async def _auto_resume_hook() -> None:
+        await auto_resume_running_bots(mu, db_path)
+
     # FastAPI shutdown 이벤트 — uvicorn graceful 종료 시 모든 사용자 봇 정지.
+    #
+    # Why stop_all 이 bot_running=0 을 덮지 않는가:
+    #   shutdown 은 보통 "재배포로 새 machine 띄움" 이라 다음 부팅 때 자동 재가동
+    #   되어야 함. stop() 은 DB 의 bot_running 을 0 으로 바꾸므로 그대로 호출하면
+    #   재배포 후 자동 재가동이 끊김. 따라서 in-memory 봇만 정지하는 별도 경로 필요.
+    #   ``stop_all`` 자체는 그대로 두고, 호출 전에 in-memory 봇만 정지하는 우회
+    #   루프 사용.
     @app.on_event("shutdown")
     async def _on_shutdown() -> None:
-        logger.info("SaaS shutdown 신호 — 모든 사용자 봇 정지 시작")
-        await mu.stop_all()
+        logger.info("SaaS shutdown 신호 — 모든 사용자 봇 정지 시작 (DB 가동 플래그 보존)")
+        # DB 의 bot_running 을 덮지 않도록 stop_all 대신 in-memory 정지만.
+        # 사용자가 명시 STOP 을 누른 게 아니라 단지 프로세스 graceful 종료이므로
+        # 다음 부팅에서 다시 살아나야 정상.
+        for code in list(mu.list_users()):
+            slot = mu._slots.get(code)
+            if slot is None:
+                continue
+            try:
+                if slot.bot is not None:
+                    await slot.bot.stop()
+                await mu._close_client(slot)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("shutdown: 사용자 %s 정지 실패 — %s", code, e)
         logger.info("SaaS shutdown 완료")
 
     host = os.environ.get("AURORA_ICT_HOST", "0.0.0.0")  # noqa: S104 — 컨테이너 바인드 의도

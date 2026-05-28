@@ -508,3 +508,64 @@ async def test_ensure_bot_ready_is_idempotent(
     # 첫 task 가 아직 진행 중이면 같은 task — 재시작 X (idempotent).
     if first_task is not None and not first_task.done():
         assert bot2._prefetch_task is first_task
+
+
+# ============================================================
+# 6. 봇 가동 상태 영속화 (2026-05-28 Fly OOM/재배포 자동 복원)
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_start_persists_bot_running_flag(
+    db_path, base_settings, master_key,
+) -> None:
+    """start — 성공 시 users.bot_running=1 DB 박힘."""
+    code = "AICT-BRST-BRST-BRST"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc)
+
+    # 시작 전 — 0.
+    user_before = users_db.get_user_by_code(db_path, code)
+    assert user_before["bot_running"] == 0
+
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,
+        master_key=master_key,
+    )
+    await mu.start(code)
+
+    # 시작 후 — 1.
+    user_after = users_db.get_user_by_code(db_path, code)
+    assert user_after["bot_running"] == 1
+    assert users_db.list_running_codes(db_path) == [code]
+
+    await mu.stop(code)
+
+
+@pytest.mark.asyncio
+async def test_stop_clears_bot_running_flag(
+    db_path, base_settings, master_key,
+) -> None:
+    """stop — DB bot_running=0 + list_running_codes 에서 빠짐."""
+    code = "AICT-BRSP-BRSP-BRSP"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc)
+
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,
+        master_key=master_key,
+    )
+    await mu.start(code)
+    assert users_db.get_user_by_code(db_path, code)["bot_running"] == 1
+
+    await mu.stop(code)
+    assert users_db.get_user_by_code(db_path, code)["bot_running"] == 0
+    assert users_db.list_running_codes(db_path) == []

@@ -990,6 +990,40 @@ function renderLicenseCard(status) {
   }
 }
 
+// ============================================================
+// UI 자동 버전 갱신 — /auth/status.app_version 비교 (2026-05-28)
+// ============================================================
+// 부팅 시점에 한 번 캡쳐, 이후 polling 응답마다 비교 — 다르면 location.reload.
+// SaaS 재배포 후 사용자가 새로고침 안 해도 다음 polling 사이클 (≤ 5분) 안에
+// 새 UI 코드가 자동 로드. single-user (.exe) 모드는 /auth/status 가 404 →
+// app_version 응답 X → noop (이 함수 자체가 호출되지 않음).
+let _bootedAppVersion = null;
+// 같은 reload 가 중복 발사되지 않도록 가드 (polling 두 군데에서 동시 감지 케이스).
+let _versionReloadScheduled = false;
+
+/** /auth/status 응답에서 app_version 을 비교해 drift 있으면 자동 reload.
+ *
+ *  - 첫 호출: 부팅 버전 캡쳐만 (reload X).
+ *  - 이후 호출: 부팅 버전과 다르면 1.5s 뒤 location.reload.
+ *
+ *  reload URL 에 cache-bust 쿼리가 박혀있어 새 코드가 즉시 적용됨.
+ */
+function _checkVersionDrift(statusResponse) {
+  const v = statusResponse && statusResponse.app_version;
+  if (!v) return;  // single-user / 구버전 SaaS — 필드 없으면 skip
+  if (_bootedAppVersion === null) {
+    _bootedAppVersion = v;
+    return;
+  }
+  if (_bootedAppVersion === v) return;
+  if (_versionReloadScheduled) return;
+  _versionReloadScheduled = true;
+  try {
+    toast(`새 버전 적용 — 자동 새로고침 (${_bootedAppVersion} → ${v})`, false);
+  } catch (_) { /* noop */ }
+  setTimeout(() => location.reload(), 1500);
+}
+
 // 라이선스 카드 갱신 — 5분마다 /auth/status 재폴링 (만료일 잔여 표시 동기화).
 async function refreshLicenseCard() {
   try {
@@ -998,6 +1032,8 @@ async function refreshLicenseCard() {
     if (!resp.ok) return;
     const s = await resp.json();
     renderLicenseCard(s);
+    // 버전 drift 감지 — SaaS 재배포 직후 사용자 새로고침 없이 자동 reload.
+    _checkVersionDrift(s);
   } catch (e) { /* noop */ }
 }
 setInterval(refreshLicenseCard, 5 * 60 * 1000);
@@ -1464,6 +1500,8 @@ async function bootstrap() {
   if (lr) lr.classList.add("show");
 
   const s = r.status || {};
+  // 부팅 버전 캡쳐 — 이후 polling (refreshLicenseCard) 이 drift 감지에 사용.
+  _checkVersionDrift(s);
   if (!s.authenticated) {
     showAuthGate(s.needs_pin_setup ? "setup" : "login");
     return;
