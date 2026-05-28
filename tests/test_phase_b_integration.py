@@ -188,15 +188,24 @@ def test_phase_b_time_filter_disabled_passes_all() -> None:
     assert _phase_b_in_time_window(ts_gap, disable_time_filter=True) is True
 
 
-def test_phase_b_in_killzone_passes_with_filter_on() -> None:
-    """NY AM 안 시각은 disable_time_filter=False 여도 통과."""
+def test_phase_b_in_nyse_session_passes_with_filter_on() -> None:
+    """NYSE 시간 안 + KZ/Macro/SB 면 disable_time_filter=False 여도 통과.
+
+    2026-05-28: 파트너 결정 — sub_* 정책 "미장 안의 Killzone/Macro/SB 만".
+    이전 기대: NY 08:00 (NY_AM KZ 안) → True
+    새 기대 : 미장 전이라 False. 미장 안 + NY_AM (NY 09:35) → True.
+    """
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
     from aurora_ict.strategy.silver_bullet import _phase_b_in_time_window
     ny = ZoneInfo("America/New_York")
-    ts_am = int(datetime(2026, 5, 27, 8, 0, tzinfo=ny).timestamp() * 1000)  # NY 08:00 (NY_AM)
-    assert _phase_b_in_time_window(ts_am, disable_time_filter=False) is True
+    # 화요일 (2026-05-26) NY 09:35 — 미장 안 + NY_AM KZ + am_macro_2 → 통과
+    ts_pass = int(datetime(2026, 5, 26, 9, 35, tzinfo=ny).timestamp() * 1000)
+    assert _phase_b_in_time_window(ts_pass, disable_time_filter=False) is True
+    # NY 08:00 (KZ 안이지만 미장 전) — 새 정책에서 차단
+    ts_pre_market = int(datetime(2026, 5, 26, 8, 0, tzinfo=ny).timestamp() * 1000)
+    assert _phase_b_in_time_window(ts_pre_market, disable_time_filter=False) is False
 
 
 def test_phase_b_outside_killzone_blocked_with_filter_on() -> None:
