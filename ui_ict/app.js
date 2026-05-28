@@ -1172,8 +1172,11 @@ async function bootstrap() {
   fetchAndRender();
 }
 
-// PIN 설정 버튼
-document.addEventListener("DOMContentLoaded", () => {
+// PIN 설정 버튼 / 로그인 / 키 저장 / 로그아웃 핸들러 등록.
+// 2026-05-28 fix: cache-bust 인라인 script 가 app.js 를 동적 append 하면
+// DOMContentLoaded 이벤트는 이미 발생 후 → addEventListener 가 잡지 못함.
+// readyState 가드로 양쪽 케이스 모두 호환.
+function _bindAuthHandlers() {
   _bindPinStrengthMeter();
 
   const btnSetup = document.getElementById("btn-setup-pin");
@@ -1248,7 +1251,13 @@ document.addEventListener("DOMContentLoaded", () => {
     try { await api("/auth/logout", "POST"); } catch (_) { /* noop */ }
     location.reload();
   };
-});
+}
+// DOM 이미 준비됐으면 즉시, 아니면 DOMContentLoaded 대기.
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", _bindAuthHandlers);
+} else {
+  _bindAuthHandlers();
+}
 
 // 부팅 — DOM 준비 즉시 게이트/메인 결정.
 bootstrap();
