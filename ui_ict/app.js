@@ -601,6 +601,8 @@ function _fmt(n, digits = 2) {
 function renderPositions(pos) {
   const tbody = $("positions-tbody");
   const count = $("positions-count");
+  // 2026-05-28: 모바일 가로 positions fab badge / 강조 — 활성 포지션 유무 동기화.
+  _syncPositionsFab(!!(pos && pos.active));
 
   if (!pos || !pos.active) {
     tbody.innerHTML = '<tr><td colspan="8" class="pos-empty">포지션 없음 — 봇 가동 후 진입 시 표시됩니다</td></tr>';
@@ -1071,8 +1073,12 @@ function _updateTfButtons() {
 _updateTfButtons();
 
 // Viz 토글 — 클릭 시 vizEnabled[key] 반전 + localStorage 저장 + 즉시 재렌더
+// 2026-05-28: 모바일 가로에서 차트 toolbar viz-toggle 숨김 → 사이드바 viz-toggle-side
+// 도 같이 표시. 두 토글 묶음의 active 상태를 vizEnabled 기준으로 동기화.
 function _updateVizButtons() {
-  document.querySelectorAll("#viz-toggle button").forEach((b) => {
+  document.querySelectorAll(
+    "#viz-toggle button[data-viz], #viz-toggle-side button[data-viz]",
+  ).forEach((b) => {
     b.classList.toggle("active", !!vizEnabled[b.dataset.viz]);
   });
 }
@@ -1093,7 +1099,8 @@ $("trade-tf-toggle").addEventListener("click", async (ev) => {
   }
 });
 
-$("viz-toggle").addEventListener("click", async (ev) => {
+// 2026-05-28: viz-toggle 클릭 핸들러 — 차트 toolbar / 사이드바 양쪽에서 공유.
+async function _handleVizClick(ev) {
   const btn = ev.target.closest("button[data-viz]");
   if (!btn) return;
   const key = btn.dataset.viz;
@@ -1102,7 +1109,12 @@ $("viz-toggle").addEventListener("click", async (ev) => {
   localStorage.setItem(`aurora_ict_viz_${key}`, vizEnabled[key] ? "1" : "0");
   _updateVizButtons();
   await fetchAndRender();
-});
+}
+$("viz-toggle").addEventListener("click", _handleVizClick);
+// 사이드바 viz-toggle-side — 모바일 가로에서 차트 toolbar viz 숨겼을 때 대체 진입점.
+// 데스크탑에서도 노출되어 양쪽 어느 곳에서나 토글 가능.
+const _vizToggleSide = $("viz-toggle-side");
+if (_vizToggleSide) _vizToggleSide.addEventListener("click", _handleVizClick);
 
 $("tf-toggle").addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button[data-tf]");
@@ -1267,31 +1279,64 @@ function _isMobileLandscape() {
   ).matches;
 }
 
-/** 모바일 가로 — 지정한 패널만 열고 나머지 자동 닫음. panel: "sidebar" | "pnl" | "judgment" | null. */
+// 2026-05-28 v2 — 모바일/태블릿 세로(portrait) 모드도 풀스크린 레이아웃으로 작동.
+// CSS 미디어 쿼리 (orientation: portrait) and (max-width: 1024px) 와 매칭.
+function _isMobilePortrait() {
+  return window.matchMedia(
+    "(orientation: portrait) and (max-width: 1024px)",
+  ).matches;
+}
+
+// 가로 OR 세로 — 모바일/태블릿 (overlay 토글 UI 가 활성화되는 모든 케이스).
+// P&L 햄버거 분기 / resize 시 잔존 클래스 정리 등에서 사용.
+function _isMobile() {
+  return _isMobileLandscape() || _isMobilePortrait();
+}
+
+/** 모바일 가로 — 지정한 패널만 열고 나머지 자동 닫음.
+ *  panel: "sidebar" | "pnl" | "judgment" | "positions" | null. */
 function _setMobilePanel(panel) {
   const body = document.body;
-  body.classList.toggle("sidebar-open",  panel === "sidebar");
-  body.classList.toggle("pnl-open",      panel === "pnl");
-  body.classList.toggle("judgment-open", panel === "judgment");
-  // fab active 시각 동기화 — 봇 판단 패널 열렸을 때만 fab 강조.
+  body.classList.toggle("sidebar-open",   panel === "sidebar");
+  body.classList.toggle("pnl-open",       panel === "pnl");
+  body.classList.toggle("judgment-open",  panel === "judgment");
+  body.classList.toggle("positions-open", panel === "positions");
+  // fab active 시각 동기화 — 해당 패널 열렸을 때만 fab 강조.
   const fab = document.getElementById("btn-judgment-toggle");
   if (fab) fab.classList.toggle("active", panel === "judgment");
+  const pfab = document.getElementById("btn-positions-toggle");
+  if (pfab) pfab.classList.toggle("active", panel === "positions");
+}
+
+/** POSITIONS fab badge / 강조 갱신 — renderPositions 가 호출.
+ *  active 포지션 있으면 fab 에 녹색 glow + badge 표시 (모바일 가로에서만 시각). */
+function _syncPositionsFab(hasPosition) {
+  const pfab = document.getElementById("btn-positions-toggle");
+  if (!pfab) return;
+  pfab.classList.toggle("has-position", !!hasPosition);
+  const badge = document.getElementById("positions-fab-badge");
+  if (badge) {
+    badge.style.display = hasPosition ? "block" : "none";
+    badge.textContent = hasPosition ? "1" : "0";
+  }
 }
 
 /** 현재 어떤 패널이 열려있는지 — 가로 모드 토글 핸들러용. */
 function _currentMobilePanel() {
   const c = document.body.classList;
-  if (c.contains("sidebar-open"))  return "sidebar";
-  if (c.contains("pnl-open"))      return "pnl";
-  if (c.contains("judgment-open")) return "judgment";
+  if (c.contains("sidebar-open"))   return "sidebar";
+  if (c.contains("pnl-open"))       return "pnl";
+  if (c.contains("judgment-open"))  return "judgment";
+  if (c.contains("positions-open")) return "positions";
   return null;
 }
 
 const _btnSidebarToggle = $("btn-sidebar-toggle");
 if (_btnSidebarToggle) {
   _btnSidebarToggle.onclick = () => {
-    if (_isMobileLandscape()) {
-      // 모바일 가로 — P&L overlay 열기/닫기 + 서로 배타.
+    // 2026-05-28 v2 — 가로 OR 세로 모바일 모두 overlay 토글, 데스크탑만 접기/펴기.
+    if (_isMobile()) {
+      // 모바일 (가로/세로) — P&L overlay 열기/닫기 + 서로 배타.
       _setMobilePanel(_currentMobilePanel() === "pnl" ? null : "pnl");
     } else {
       // 데스크탑 — 기존 접기/펴기.
@@ -1317,6 +1362,15 @@ if (_btnJudgmentToggle) {
   };
 }
 
+// 2026-05-28: 우하단 POSITIONS fab — 모바일 가로에서만 표시 (CSS).
+// 데스크탑에서는 positions-panel 이 차트 아래 항상 보임 → fab 자체 hidden.
+const _btnPositionsToggle = $("btn-positions-toggle");
+if (_btnPositionsToggle) {
+  _btnPositionsToggle.onclick = () => {
+    _setMobilePanel(_currentMobilePanel() === "positions" ? null : "positions");
+  };
+}
+
 // Overlay 클릭 — 열린 패널 모두 닫음 (외부 탭 close UX).
 const _mobileOverlay = $("mobile-overlay");
 if (_mobileOverlay) {
@@ -1326,11 +1380,17 @@ if (_mobileOverlay) {
 // 가로↔세로 회전 / 데스크탑↔모바일 viewport 전환 시 잔존 클래스 정리.
 // (데스크탑으로 넘어왔는데 sidebar-open 클래스 남아 있으면 사이드바 absolute 자리 X →
 //  display 는 정상이지만 시각 일관성 위해 클래스 제거.)
+// 2026-05-28 v2 — 모바일 세로도 overlay UI 쓰므로, "모바일 자체가 아닐 때" 에만 reset.
+//   가로↔세로 전환은 어차피 같은 클래스 셋 → reset 불필요 (열린 패널 그대로 유지).
 function _resetMobilePanelsIfDesktop() {
-  if (!_isMobileLandscape()) {
-    document.body.classList.remove("sidebar-open", "pnl-open", "judgment-open");
+  if (!_isMobile()) {
+    document.body.classList.remove(
+      "sidebar-open", "pnl-open", "judgment-open", "positions-open",
+    );
     const fab = document.getElementById("btn-judgment-toggle");
     if (fab) fab.classList.remove("active");
+    const pfab = document.getElementById("btn-positions-toggle");
+    if (pfab) pfab.classList.remove("active");
   }
 }
 window.addEventListener("resize", _resetMobilePanelsIfDesktop);
