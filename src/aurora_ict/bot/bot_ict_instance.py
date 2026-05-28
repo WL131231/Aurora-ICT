@@ -62,6 +62,7 @@ from aurora_ict.strategy.multi_tf_bias import (
 )
 from aurora_ict.strategy.silver_bullet import Direction, SilverBulletSetup
 from aurora_ict.strategy.trend_state import TrendState, evaluate_trend
+from aurora_ict.timing.killzone import classify_killzone
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +297,14 @@ class BotIctInstance:
     _today_start_equity: float = field(default=0.0)
     _daily_limit_hit: bool = field(default=False)
 
+    # 2026-05-28 파트너 요청 — fly.io logs 에서 봇 의사결정 흐름 보이게.
+    # 같은 값이 매 step 반복 출력 안 되도록 "직전 값" 캐시 — 변화 시에만 1줄 INFO.
+    # 봇 동작 영향 0 (로깅 가시성 전용).
+    _last_logged_htf_ema_bias: str = field(default="")  # "bullish"/"bearish"/"neutral"/""
+    _last_logged_htf_fvg_summary: str = field(default="")  # "bull_w=10 bear_w=4 n=8" 형태
+    _last_logged_dol_draw: str = field(default="")  # "long"/"short"/"none"/""
+    _last_logged_trend_summary: str = field(default="")  # trend_cache 직렬화 핑거프린트
+
     # 2026-05-27 파트너 요청 — UI 차트 TF 토글 시 로딩 없이 즉시 응답.
     # 봇 start 시 background prefetch 로 모든 TF 채워두고, /ict/ohlcv 가
     # cache 사용. polling 시 마지막 N봉만 incremental refresh.
@@ -504,6 +513,11 @@ class BotIctInstance:
         daily_bias = await self._compute_daily_bias(df)
         bias = self._combine_with_daily(htf_bias, daily_bias)
 
+        # 2026-05-28: 봇 의사결정 가시성 — 매 step 1줄 INFO (시장 컨디션 스냅샷).
+        # fly.io logs 에서 봇이 뭘 보고 있는지 한 눈에 파악 + 추후 사용자 데이터 분석.
+        # 5s polling 기준 1줄 / 5s — 비용 적정 범위.
+        self._log_step_market_snapshot(df, bias)
+
         signal = generate_ict_signal(
             df,
             self.symbol,
@@ -529,13 +543,35 @@ class BotIctInstance:
             return signal
 
         if not signal.is_actionable or signal.setup is None:
+            # 2026-05-28: setup 미발견 / 조건 불충족 — signal.reason 에 사유 박혀있음.
+            # reason 비면 "no setup" 으로 통일. 너무 빈도 높지 않게 — 매 step 1줄 (다른 분기).
+            logger.info(
+                "setup skip | tf=%s reason=%s",
+                self.timeframe, signal.reason or "no setup",
+            )
             return signal
+
+        # setup 발견 — 핵심 필드 1줄 INFO (fly logs 에서 후속 게이트 결과와 연결 추적용).
+        logger.info(
+            "setup found | dir=%s entry=%.4f sl=%.4f tp=%.4f rr=%.2f score=%d source=%s window=%s",
+            signal.setup.direction.value, signal.setup.entry,
+            signal.setup.stop_loss, signal.setup.take_profit,
+            signal.setup.risk_reward, signal.setup.confluence_score,
+            signal.setup.source.value if hasattr(signal.setup.source, "value")
+            else str(signal.setup.source),
+            signal.setup.window,
+        )
 
         # 동일 setup으로 재진입 방지 (중복 주문 X)
         if signal.setup.ts_ms == self._last_setup_ts_ms:
+            # 2026-05-28: 중복 setup skip — 빈도 매우 낮음 (같은 봉 안에서만).
+            logger.info(
+                "setup skip | reason=duplicate_ts ts_ms=%d", signal.setup.ts_ms,
+            )
             return signal
 
         if not await self._passes_htf_ema_bias(signal.setup.direction):
+            # _passes_htf_ema_bias 내부에서 이미 INFO 로그 박힘 (line 743) — 추가 X.
             self._last_setup_ts_ms = signal.setup.ts_ms
             return signal
 
@@ -602,6 +638,9 @@ class BotIctInstance:
             return no_action
 
         current_price = float(ltf_df["close"].iloc[-1])
+
+        # 2026-05-28: multi_tf 경로도 의사결정 스냅샷 1줄 (bias=None — HTF tracker 별도).
+        self._log_step_market_snapshot(ltf_df, bias=None)
 
         # HTF tracker 갱신 — 각 HTF 별 fetch + 최신 setup 감지.
         for htf_tf in self._htf_tracker.htf_list():
@@ -733,6 +772,16 @@ class BotIctInstance:
             bias = "bearish"
         else:
             bias = "neutral"
+        # 2026-05-28: HTF EMA bias 전환 시에만 1줄 INFO (예: bullish→bearish 추세 뒤집힘).
+        # 매 step 박으면 너무 많음. 변화 감지형.
+        if bias != self._last_logged_htf_ema_bias:
+            if self._last_logged_htf_ema_bias:  # 빈 초기값은 무시
+                logger.info(
+                    "HTF EMA bias 변화 | %s → %s (tf=%s ema%d=%.4f close=%.4f)",
+                    self._last_logged_htf_ema_bias, bias,
+                    self.htf_ema_bias_tf, period, ema, last_close,
+                )
+            self._last_logged_htf_ema_bias = bias
         want_long = direction is Direction.LONG
         if bias == "bullish" and want_long:
             return True
@@ -1197,6 +1246,71 @@ class BotIctInstance:
             logger.error("비상청산 실패: %s — 수동 확인 필요", e)
         self.active_position = None
 
+    def _log_step_market_snapshot(
+        self, df: pd.DataFrame, bias: TrendDirection | None,
+    ) -> None:
+        """매 step 시작 직후 1줄 INFO — 봇이 보는 시장 컨디션 스냅샷.
+
+        2026-05-28 파트너 요청 — fly.io logs 에서 봇 의사결정 흐름이 보이도록.
+        매 step 1줄 (5s polling 기준 1줄/5s = 720줄/h ≈ fly.io 비용 적정).
+
+        Args:
+            df: 최근 LTF OHLCV DataFrame (가격 / 봉 ts 추출용).
+            bias: 결합된 HTF+Daily bias. multi_tf 경로면 None.
+
+        부수효과:
+            HTF FVG map 요약 / trend 캐시 핑거프린트가 직전과 다르면 별도 1줄 INFO.
+            (변화 감지형 — 같은 값 반복은 안 박힘.)
+        """
+        if df is None or len(df) == 0:
+            return
+        try:
+            last_ts_ms = int(df.index[-1].value // 10**6)
+            current_price = float(df["close"].iloc[-1])
+        except Exception:  # noqa: BLE001 — 로깅이 step 깨면 안 됨
+            return
+        kz = classify_killzone(last_ts_ms)
+        kz_name = kz.value if kz is not None else "none"
+        bias_str = bias.value if bias is not None else "n/a"
+        has_pos = self.active_position is not None
+        logger.info(
+            "step | tf=%s price=%.2f kz=%s bias=%s active_pos=%s",
+            self.timeframe, current_price, kz_name, bias_str, has_pos,
+        )
+
+        # HTF FVG map 요약 — 변화 시에만 1줄 (재 빌드 주기 = 5m 봉 길이).
+        # bull/bear weight 합산으로 큰 그림 (개별 FVG 가 아닌 톤).
+        # HtfFvgEntry.type 은 FVGType StrEnum ("bullish"/"bearish").
+        if self._htf_fvg_map_cache:
+            bull_w = sum(
+                e.weight for e in self._htf_fvg_map_cache
+                if str(e.type) == "bullish"
+            )
+            bear_w = sum(
+                e.weight for e in self._htf_fvg_map_cache
+                if str(e.type) == "bearish"
+            )
+            summary = f"bull_w={bull_w} bear_w={bear_w} n={len(self._htf_fvg_map_cache)}"
+            if summary != self._last_logged_htf_fvg_summary:
+                logger.info("HTF FVG map | %s", summary)
+                self._last_logged_htf_fvg_summary = summary
+
+        # Trend 캐시 핑거프린트 — TF 별 state 문자열 변화 시에만 1줄.
+        # _refresh_trend_cache 가 봉 ts 변경 시에만 재평가하므로, 캐시 변화 = 추세 변화 신호.
+        # TrendState 는 Literal["up","sideways","down"] 문자열 — 직접 사용.
+        if self._trend_cache:
+            fingerprint_parts = []
+            for tf in ("5m", "15m", "1h", "4h", "1d"):
+                tup = self._trend_cache.get(tf)
+                if tup is None:
+                    continue
+                _, state = tup
+                fingerprint_parts.append(f"{tf}={state}")
+            fingerprint = " ".join(fingerprint_parts)
+            if fingerprint and fingerprint != self._last_logged_trend_summary:
+                logger.info("trend | %s", fingerprint)
+                self._last_logged_trend_summary = fingerprint
+
     def _apply_dol_bias(self, setup: SilverBulletSetup, df: pd.DataFrame) -> None:
         """Draw on Liquidity 편향 필터 (#3 보완) — 역방향 진입은 confluence 감점.
 
@@ -1224,6 +1338,18 @@ class BotIctInstance:
             draw = Direction.SHORT
         else:
             return
+        # 2026-05-28: 지배적 DOL draw 변화 감지 — 변화 시에만 1줄 INFO.
+        # _apply_dol_bias 는 매 setup 발생 시 호출 — 매번 박으면 안 됨, 전환 시점만.
+        draw_str = draw.value
+        if draw_str != self._last_logged_dol_draw:
+            if self._last_logged_dol_draw:
+                logger.info(
+                    "DOL draw 변화 | %s → %s (bull_dist=%.4f bear_dist=%.4f)",
+                    self._last_logged_dol_draw, draw_str,
+                    bull.distance if bull is not None else -1.0,
+                    bear.distance if bear is not None else -1.0,
+                )
+            self._last_logged_dol_draw = draw_str
         if setup.direction is not draw:
             setup.confluence_score -= _DOL_COUNTER_PENALTY
             setup.confluences.append(
