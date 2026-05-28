@@ -307,3 +307,93 @@ def test_macro_priority_unknown_returns_none() -> None:
     from aurora_ict.timing.killzone import macro_priority
     assert macro_priority(None) is None
     assert macro_priority("not_a_macro") is None
+
+
+# ============================================================
+# 2026-05-28: 구독제 시간 필터 — 미장 안의 KZ/Macro/SB 만
+# (in_nyse_session + in_trade_window_sub)
+# ============================================================
+
+
+def test_in_nyse_session_open_hours() -> None:
+    """NYSE 09:30-16:00 ET 평일 안이면 True."""
+    from aurora_ict.timing.killzone import in_nyse_session
+    # 화요일 NY 10:00
+    ts = _ny_to_ms(2026, 5, 12, 10, 0)
+    assert in_nyse_session(ts) is True
+    # 화요일 NY 15:30
+    ts2 = _ny_to_ms(2026, 5, 12, 15, 30)
+    assert in_nyse_session(ts2) is True
+
+
+def test_in_nyse_session_outside_hours() -> None:
+    """NYSE 시간 밖 (09:30 전 / 16:00 후) → False."""
+    from aurora_ict.timing.killzone import in_nyse_session
+    ts_early = _ny_to_ms(2026, 5, 12, 8, 0)
+    assert in_nyse_session(ts_early) is False
+    ts_late = _ny_to_ms(2026, 5, 12, 17, 0)
+    assert in_nyse_session(ts_late) is False
+
+
+def test_in_nyse_session_weekend() -> None:
+    """주말 (토/일) → 시간 무관 False."""
+    from aurora_ict.timing.killzone import in_nyse_session
+    # 2026-05-16 = 토요일
+    ts_sat = _ny_to_ms(2026, 5, 16, 10, 0)
+    assert in_nyse_session(ts_sat) is False
+    # 2026-05-17 = 일요일
+    ts_sun = _ny_to_ms(2026, 5, 17, 10, 0)
+    assert in_nyse_session(ts_sun) is False
+
+
+def test_in_trade_window_sub_london_kz_blocked() -> None:
+    """London Killzone (NY 03:00) — KZ 안이지만 미장 밖 → False.
+
+    회귀 방지 — 2026-05-28 거래 #6 (NY 03:02 진입) 같은 새벽 노이즈 차단.
+    """
+    from aurora_ict.timing.killzone import in_trade_window_sub
+    ts = _ny_to_ms(2026, 5, 12, 3, 2)
+    # London KZ 안 + London SB 안인데 미장 밖 → False
+    assert in_trade_window_sub(ts) is False
+
+
+def test_in_trade_window_sub_ny_am_passes() -> None:
+    """NY AM KZ + NYSE 시간 겹침 (09:35) → True."""
+    from aurora_ict.timing.killzone import in_trade_window_sub
+    ts = _ny_to_ms(2026, 5, 12, 9, 35)
+    assert in_trade_window_sub(ts) is True
+
+
+def test_in_trade_window_sub_am_sb_passes() -> None:
+    """NY am_sb 10:30 — NYSE 안 + SB → True."""
+    from aurora_ict.timing.killzone import in_trade_window_sub
+    ts = _ny_to_ms(2026, 5, 12, 10, 30)
+    assert in_trade_window_sub(ts) is True
+
+
+def test_in_trade_window_sub_pm_sb_passes() -> None:
+    """NY pm_sb 14:30 — NYSE 안 + SB + PM KZ → True."""
+    from aurora_ict.timing.killzone import in_trade_window_sub
+    ts = _ny_to_ms(2026, 5, 12, 14, 30)
+    assert in_trade_window_sub(ts) is True
+
+
+def test_in_trade_window_sub_lunch_gap_blocked() -> None:
+    """NY 12:30 — NYSE 안이지만 KZ/Macro/SB 다 밖 → False (NY Lunch 휴식)."""
+    from aurora_ict.timing.killzone import in_trade_window_sub
+    ts = _ny_to_ms(2026, 5, 12, 12, 30)
+    assert in_trade_window_sub(ts) is False
+
+
+def test_in_trade_window_sub_pre_market_blocked() -> None:
+    """NY 07:00 — NY AM KZ 안 + am_macro_1 시간대지만 미장 전 → False."""
+    from aurora_ict.timing.killzone import in_trade_window_sub
+    ts = _ny_to_ms(2026, 5, 12, 7, 0)
+    assert in_trade_window_sub(ts) is False
+
+
+def test_in_trade_window_sub_weekend_blocked() -> None:
+    """주말 NY AM 시간 — 시간대 무관 False."""
+    from aurora_ict.timing.killzone import in_trade_window_sub
+    ts_sat = _ny_to_ms(2026, 5, 16, 9, 35)
+    assert in_trade_window_sub(ts_sat) is False

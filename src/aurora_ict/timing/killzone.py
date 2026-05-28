@@ -160,6 +160,53 @@ def in_macro(ts_ms: int) -> str | None:
     return None
 
 
+# NYSE 정규 거래 시간 (NY local).
+_NYSE_OPEN = time(9, 30)
+_NYSE_CLOSE = time(16, 0)
+
+
+def in_nyse_session(ts_ms: int) -> bool:
+    """NYSE 정규 거래 시간 (09:30-16:00 ET, 평일) 안 여부.
+
+    2026-05-28 추가 — 구독제(sub_*) 정책 정밀화. 파트너 결정: "미장 전체"가
+    아니라 "미장 안의 Killzone/Macro/Silver Bullet 만". 이 함수가 미장 게이트.
+    """
+    ny = _to_ny_time(ts_ms)
+    if ny.weekday() >= 5:  # 토(5) / 일(6)
+        return False
+    return _NYSE_OPEN <= ny.time() <= _NYSE_CLOSE
+
+
+def in_trade_window_sub(ts_ms: int) -> bool:
+    """구독제(sub_*) 매매 허용 시간 — ICT 정통 정합.
+
+    조건: NYSE 시간 09:30-16:00 ET 평일 **AND** (Killzone OR Macro OR
+    Silver Bullet) 동시 만족. 즉 미장 안에 있는 정밀 시간 윈도우만.
+
+    - London Killzone (02:00-05:00 NY) → 미장 전이라 제외 (#6 같은 새벽 노이즈 차단)
+    - Asian Killzone (전날 19:00-23:59 NY) → 제외
+    - NY AM 07:00-10:00 → 09:30 이후 부분만 (NY AM ∩ NYSE = 09:30-10:00)
+    - London Close 10:00-12:00 → 전부 포함
+    - PM 13:30-16:00 → 전부 포함
+    - SB am_sb (10:00-11:00), pm_sb (14:00-15:00) → 전부 포함
+    - SB london_sb (03:00-04:00) → 미장 밖 제외
+    - Macro 들 — 미장 안 사이에 있는 것만 자동 포함
+
+    Args:
+        ts_ms: epoch ms.
+
+    Returns:
+        True 면 매매 허용, False 면 차단 (시간 필터로 진입 skip).
+    """
+    if not in_nyse_session(ts_ms):
+        return False
+    return (
+        classify_killzone(ts_ms) is not None
+        or in_silver_bullet(ts_ms) is not None
+        or in_macro(ts_ms) is not None
+    )
+
+
 # Macro 우선순위 — ICT 책 + 시장 변동성 관찰 기반.
 # - high: 가장 강한 신호. 큰 변동성 + 기관 유동성 활성.
 # - medium: 정상 강도. 신호 발생률 ↑, 신뢰도 보통.

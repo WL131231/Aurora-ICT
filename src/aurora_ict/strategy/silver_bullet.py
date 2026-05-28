@@ -337,8 +337,9 @@ def detect_silver_bullet_setups(
     for fvg in fvgs:
         if fvg.type is not desired_fvg_type:
             continue
-        # 시간 윈도우 검사 — disable_time_filter 면 skip (24h 매매).
-        # 아니면 SB 윈도우 우선, 없으면 Killzone (expand 모드 시).
+        # 시간 윈도우 검사 — disable_time_filter 면 skip (24h 매매, referral).
+        # 아니면 (sub_*): 2026-05-28 파트너 결정 — "미장 전체 X, 미장 안의
+        # Killzone/Macro/Silver Bullet 만". in_trade_window_sub 가 게이트.
         if disable_time_filter:
             sb_win = in_silver_bullet(fvg.ts_ms)
             if sb_win is not None:
@@ -347,14 +348,20 @@ def detect_silver_bullet_setups(
                 kz = classify_killzone(fvg.ts_ms)
                 window = kz.value if kz is not None else "any"
         else:
-            window = in_silver_bullet(fvg.ts_ms)
-            if window is None:
-                if not expand_to_killzone:
-                    continue
+            from aurora_ict.timing.killzone import in_trade_window_sub
+            if not in_trade_window_sub(fvg.ts_ms):
+                continue
+            # window label — SB → Killzone → Macro 우선순위
+            sb_win = in_silver_bullet(fvg.ts_ms)
+            if sb_win is not None:
+                window = sb_win
+            else:
                 kz = classify_killzone(fvg.ts_ms)
-                if kz is None:
-                    continue
-                window = kz.value
+                if kz is not None:
+                    window = kz.value
+                else:
+                    mc = in_macro(fvg.ts_ms)
+                    window = mc if mc is not None else "any"
         day_ms = (fvg.ts_ms // 86_400_000) * 86_400_000
         key = (day_ms, window)
         if key in seen_windows:
@@ -794,15 +801,20 @@ def _build_rejection_setup(
 
 
 def _phase_b_in_time_window(ts_ms: int, disable_time_filter: bool) -> bool:
-    """Phase B 소스 시간 필터 — disable_time_filter=True 면 무조건 통과, 아니면 SB 또는
+    """Phase B 소스 시간 필터.
+
+    2026-05-28 변경 — sub_* 정책 (disable_time_filter=False) 일 때 Phase A 와
+    정합하게 in_trade_window_sub 사용 (미장 안의 Killzone/Macro/SB 만).
+
+    disable_time_filter=True 면 무조건 통과, 아니면 SB 또는
     Killzone 안일 때만 통과. (Phase B 소스는 ``window`` 필드를 source 이름으로 쓰므로
     별도 시간 검사 필요. 사용자 결정 2026-05-27: 시간 필터를 Phase B 에도 적용해 손실 컷.)
     """
     if disable_time_filter:
         return True
-    if in_silver_bullet(ts_ms) is not None:
-        return True
-    return classify_killzone(ts_ms) is not None
+    # 2026-05-28: sub_* 정책 — 미장 안의 Killzone/Macro/SB 만. Phase A 와 정합.
+    from aurora_ict.timing.killzone import in_trade_window_sub
+    return in_trade_window_sub(ts_ms)
 
 
 def build_extra_source_setups(
