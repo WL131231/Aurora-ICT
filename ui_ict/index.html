@@ -639,7 +639,10 @@
   .auth-bg-wordmark {
     position: fixed; inset: 0;
     display: flex; flex-direction: column;
-    align-items: center; justify-content: center;
+    align-items: center; justify-content: flex-end;
+    /* 2026-05-28 파트너 피드백 — 워드마크 위치 정중앙 → 하단으로 내림.
+       로그인 카드 (화면 상단~중앙) 와 시각 겹침 줄여 깔끔. */
+    padding-bottom: 10vh;
     pointer-events: none;
     z-index: 101;            /* auth-gate(100) 위, auth-card(자식이라 가시) 보다 아래 */
     color: rgba(219, 219, 222, 0.07);  /* 흐릿 */
