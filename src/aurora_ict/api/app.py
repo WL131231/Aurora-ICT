@@ -279,13 +279,32 @@ def _register_multi_user_routes(
         req: RunModeRequest,
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
+        """demo / live 전환 — 해당 모드 키 없으면 400 으로 차단 (2026-05-29).
+
+        Live 전환은 실거래 진입 위험 — UI 가 확인 모달을 띄우더라도 서버 단에서
+        키 등록 여부를 다시 검증해 잘못된 키로 라이브 도달하는 사고 방지.
+        """
+        from aurora_ict.auth import users_db as _users_db
         try:
             mode = RunMode(req.mode)
         except ValueError as e:
             raise HTTPException(
                 status_code=400, detail=f"invalid mode: {req.mode}",
             ) from e
+        # 안전 가드 — 전환 대상 모드의 API 키가 없으면 차단.
+        target_key = "live" if mode is RunMode.LIVE else "demo"
+        if not _users_db.has_api_keys(mu_manager.db_path, user_code, target_key):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{target_key.upper()} 거래소 API 키가 등록되지 않았습니다. "
+                    "키를 먼저 등록한 뒤 모드를 전환해 주세요."
+                ),
+            )
         # 슬롯이 있고 봇이 RUNNING 이면 stop → run_mode 변경 → start 로 재시작.
+        # 슬롯 client 는 모드별 endpoint (demo / live) 가 다르므로 새 client 가 필요 —
+        # stop 시 _close_client 가 slot.client 를 None 으로 만들고, 다음 start 의
+        # get_or_create_bot 이 새 settings 로 새 client 를 만든다.
         slot = mu_manager._slots.get(user_code)
         was_running = (
             slot is not None
@@ -294,13 +313,18 @@ def _register_multi_user_routes(
         )
         if was_running:
             await mu_manager.stop(user_code)
-        # 슬롯이 있으면 슬롯 settings, 없으면 base_settings 갱신 (다음 start 시 사용).
+        # 슬롯 자체를 비워서 다음 start 가 깨끗한 settings 로 다시 빌드하게 함.
+        # (slot.settings.run_mode 만 갈아끼면 client 객체는 이전 모드 키로 만들어진
+        # 것이라 sign 실패 가능 — 슬롯 폐기가 안전.)
         if slot is not None:
-            slot.settings.run_mode = mode
-        elif mu_manager.base_settings is not None:
+            mu_manager._slots.pop(user_code, None)
+        if mu_manager.base_settings is not None:
             mu_manager.base_settings.run_mode = mode
         if was_running:
-            await mu_manager.start(user_code)
+            try:
+                await mu_manager.start(user_code)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
         return await mu_manager.status(user_code)
 
     @app.post("/ict/enabled")

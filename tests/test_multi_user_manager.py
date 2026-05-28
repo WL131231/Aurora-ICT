@@ -569,3 +569,99 @@ async def test_stop_clears_bot_running_flag(
     await mu.stop(code)
     assert users_db.get_user_by_code(db_path, code)["bot_running"] == 0
     assert users_db.list_running_codes(db_path) == []
+
+
+# ============================================================
+# 2026-05-29: Live 모드 지원 — demo/live 키 분리 + run_mode 검증
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_build_settings_loads_both_demo_and_live_keys(
+    db_path, base_settings, master_key,
+) -> None:
+    """_build_user_settings — demo/live 모두 등록되어 있으면 양쪽 슬롯 채움."""
+    code = "AICT-DUAL-DUAL-DUAL"
+    users_db.create_user(db_path, code)
+    demo_enc = keystore.encrypt_secret("demo_plain", key=master_key)
+    live_enc = keystore.encrypt_secret("live_plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "demo_pub", demo_enc, mode="demo")
+    users_db.set_api_keys(db_path, code, "live_pub", live_enc, mode="live")
+
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,
+        master_key=master_key,
+    )
+    settings = mu._build_user_settings(code)
+    # demo / live 슬롯 모두 채워져야 — 모드 전환이 사용자별로 자유롭게 가능.
+    assert settings.demo_api_key.get_secret_value() == "demo_pub"
+    assert settings.demo_api_secret.get_secret_value() == "demo_plain"
+    assert settings.live_api_key.get_secret_value() == "live_pub"
+    assert settings.live_api_secret.get_secret_value() == "live_plain"
+
+
+@pytest.mark.asyncio
+async def test_build_settings_live_mode_requires_live_key(
+    db_path, master_key,
+) -> None:
+    """run_mode=LIVE 인데 live 키 없으면 ValueError (demo 키만 있어도 차단)."""
+    from aurora_ict.config.settings import RunMode
+    code = "AICT-LVNO-LVNO-LVNO"
+    users_db.create_user(db_path, code)
+    # demo 만 등록.
+    demo_enc = keystore.encrypt_secret("demo_plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "demo_pub", demo_enc, mode="demo")
+
+    base = IctSettings(
+        enabled=True,
+        step_interval_sec=3600,
+        run_mode=RunMode.LIVE,  # LIVE 인데 live 키 없는 상황.
+    )
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base,
+        master_key=master_key,
+    )
+    with pytest.raises(ValueError, match="LIVE"):
+        mu._build_user_settings(code)
+
+
+@pytest.mark.asyncio
+async def test_status_reports_both_credentials_flags(
+    db_path, base_settings, master_key,
+) -> None:
+    """status — has_demo_credentials / has_live_credentials 각각 노출."""
+    code = "AICT-STAT-STAT-STAT"
+    users_db.create_user(db_path, code)
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,
+        master_key=master_key,
+    )
+    # 키 미등록 — 둘 다 False.
+    st = await mu.status(code)
+    assert st["has_demo_credentials"] is False
+    assert st["has_live_credentials"] is False
+    assert st["has_credentials"] is False  # 현재 모드 (default demo) 기준
+
+    # demo 만 등록.
+    demo_enc = keystore.encrypt_secret("demo_plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "demo_pub", demo_enc, mode="demo")
+    st = await mu.status(code)
+    assert st["has_demo_credentials"] is True
+    assert st["has_live_credentials"] is False
+    assert st["has_credentials"] is True  # default demo 모드라서
+
+    # live 도 등록.
+    live_enc = keystore.encrypt_secret("live_plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "live_pub", live_enc, mode="live")
+    st = await mu.status(code)
+    assert st["has_demo_credentials"] is True
+    assert st["has_live_credentials"] is True

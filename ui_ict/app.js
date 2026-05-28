@@ -464,15 +464,29 @@ function renderStatus(s) {
   $("btn-start").classList.toggle("active", s.state === "running");
   $("btn-stop").classList.toggle("active", s.state === "stopped");
 
-  // API Credentials 폼 ↔ 등록완료 상태 전환
+  // 2026-05-29: API Credentials — 양쪽 슬롯 (DEMO/LIVE) 상태 분리 표시.
+  // 둘 중 하나라도 등록돼 있으면 saved-block 표시 (재등록 버튼 박스),
+  // 둘 다 없으면 form-block 표시 (입력 폼). 부분 등록 상태도 saved-block 에서
+  // "누락" 표시로 안내 → 사용자가 누락 슬롯 채우러 가도록.
   const credForm = $("cred-form-block");
   const credSaved = $("cred-saved-block");
-  const credOkText = $("cred-ok-text");
   if (credForm && credSaved) {
-    if (s.has_credentials) {
+    const hasDemo = !!s.has_demo_credentials;
+    const hasLive = !!s.has_live_credentials;
+    const anyKey = hasDemo || hasLive;
+    if (anyKey) {
       credForm.style.display = "none";
       credSaved.style.display = "flex";
-      if (credOkText) credOkText.textContent = `${s.run_mode.toUpperCase()} 키 등록됨`;
+      const demoStatus = $("cred-demo-status");
+      const liveStatus = $("cred-live-status");
+      if (demoStatus) {
+        demoStatus.textContent = hasDemo ? "✓ 등록됨" : "미등록";
+        demoStatus.className = "cred-slot-status " + (hasDemo ? "ok" : "missing");
+      }
+      if (liveStatus) {
+        liveStatus.textContent = hasLive ? "✓ 등록됨" : "미등록";
+        liveStatus.className = "cred-slot-status " + (hasLive ? "ok" : "missing");
+      }
     } else {
       credForm.style.display = "flex";
       credSaved.style.display = "none";
@@ -744,9 +758,28 @@ $("btn-demo").onclick = async () => {
   catch (e) { toast(e.message, true); }
 };
 $("btn-live").onclick = async () => {
-  if (!confirm("LIVE 모드로 전환하시겠습니까? (실거래)")) return;
-  try { await api("/ict/run-mode", "POST", { mode: "live" }); await fetchAndRender(); }
-  catch (e) { toast(e.message, true); }
+  // 2026-05-29: Live 전환 강화된 확인. 1단계 안내 + 2단계 "LIVE" 타이핑 검증.
+  // 서버 단도 has_api_keys("live") 가드 있지만 사용자 인지 향상 위해 한 번 더.
+  const warn = (
+    "⚠ LIVE (실거래) 모드로 전환합니다.\n\n" +
+    "• 실제 자금이 즉시 거래에 사용됩니다.\n" +
+    "• Bybit Live API 키가 등록돼 있어야 합니다 (Demo 키와 별도).\n" +
+    "• 봇이 가동 중이면 자동 재시작됩니다.\n\n" +
+    "계속하려면 OK 를 누르세요."
+  );
+  if (!confirm(warn)) return;
+  const typed = prompt('확인을 위해 대문자로 "LIVE" 라고 입력하세요:');
+  if (typed !== "LIVE") {
+    toast("LIVE 입력 확인 실패 — 전환 취소", true);
+    return;
+  }
+  try {
+    await api("/ict/run-mode", "POST", { mode: "live" });
+    toast("LIVE 모드 전환 완료");
+    await fetchAndRender();
+  } catch (e) {
+    toast(e.message, true);
+  }
 };
 $("btn-start").onclick = async () => {
   // 2026-05-27: 즉시 시각 응답 — fetchAndRender 까지 기다리지 않고 클릭 직후 active.
@@ -763,7 +796,29 @@ $("btn-stop").onclick = async () => {
   catch (e) { toast(e.message, true); }
 };
 
-// 키 저장 + Enable 토글 (온보딩)
+// 2026-05-29: 사이드바 cred-mode-toggle (DEMO/LIVE 슬롯 선택) 핸들러.
+// 클릭 시 active 클래스 토글 + hint 문구 갱신. 저장은 btn-save-cred 가 active 모드로.
+(function _bindCredModeToggle() {
+  const root = document.getElementById("cred-mode-toggle");
+  if (!root) return;
+  const hint = document.getElementById("cred-form-hint");
+  root.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-cred-mode]");
+    if (!btn) return;
+    root.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    if (hint) {
+      const mode = btn.dataset.credMode;
+      hint.innerHTML = mode === "live"
+        ? '<b style="color:#fb7185">LIVE</b> 슬롯 — 실거래 키 (api.bybit.com). 신중히 등록.'
+        : '<b>DEMO</b> 슬롯 — Bybit Demo Trading 키';
+    }
+  });
+})();
+
+// 키 저장 — cred-mode-toggle 의 active 모드 슬롯에 저장 (SaaS /auth/api-keys).
+// 단일 사용자 (.exe) 흐름은 /ict/credentials 도 받지만 SaaS 가 주 사용 경로라
+// /auth/api-keys 로 통일 호출. 단일 사용자 흐름은 401 받으면 /ict/credentials 로 fallback.
 $("btn-save-cred").onclick = async () => {
   const apiKey = $("cred-api-key").value.trim();
   const apiSecret = $("cred-api-secret").value.trim();
@@ -771,18 +826,66 @@ $("btn-save-cred").onclick = async () => {
     toast("API Key/Secret 필수", true);
     return;
   }
-  // 현재 run_mode 기준 저장 (DEMO/LIVE 버튼으로 분리)
-  const mode = $("btn-live").classList.contains("active") ? "live" : "demo";
+  const activeBtn = document.querySelector(
+    "#cred-mode-toggle button[data-cred-mode].active",
+  );
+  const mode = activeBtn ? activeBtn.dataset.credMode : "demo";
+  // LIVE 슬롯 등록 시 한 번 더 확인 — 실수로 LIVE 슬롯에 데모 키 넣는 사고 방지.
+  if (mode === "live") {
+    const ok = confirm(
+      "LIVE 슬롯에 키를 저장합니다.\n\n" +
+      "Bybit 실거래 (api.bybit.com) API 키여야 합니다.\n" +
+      "Demo 키를 LIVE 슬롯에 저장하면 모드 전환 시 인증 실패가 발생합니다.\n\n" +
+      "계속하시겠습니까?",
+    );
+    if (!ok) return;
+  }
   try {
-    await api("/ict/credentials", "POST", {
-      mode, api_key: apiKey, api_secret: apiSecret,
-    });
-    toast(`${mode.toUpperCase()} 키 저장됨`);
-    $("cred-api-key").value = "";
-    $("cred-api-secret").value = "";
-    await fetchAndRender();
+    // SaaS 경로 시도 — multi-user 인증 토큰이 있으면 200, 단일 사용자면 404/401.
+    let saved = false;
+    try {
+      await api("/auth/api-keys", "POST", {
+        mode, api_key: apiKey, api_secret: apiSecret,
+      });
+      saved = true;
+    } catch (e1) {
+      // 단일 사용자 fallback — /ict/credentials.
+      await api("/ict/credentials", "POST", {
+        mode, api_key: apiKey, api_secret: apiSecret,
+      });
+      saved = true;
+    }
+    if (saved) {
+      toast(`${mode.toUpperCase()} 키 저장됨`);
+      $("cred-api-key").value = "";
+      $("cred-api-secret").value = "";
+      await fetchAndRender();
+    }
   } catch (e) { toast(e.message, true); }
 };
+
+// 2026-05-29: 슬롯별 "재등록" 버튼 — 클릭 시 form 다시 노출 + 해당 모드로 toggle.
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-cred-reenter]");
+  if (!btn) return;
+  const mode = btn.dataset.credReenter;
+  const form = document.getElementById("cred-form-block");
+  const saved = document.getElementById("cred-saved-block");
+  if (form) form.style.display = "flex";
+  if (saved) saved.style.display = "none";
+  // toggle 그쪽 모드 active 로.
+  document
+    .querySelectorAll("#cred-mode-toggle button[data-cred-mode]")
+    .forEach((b) => b.classList.toggle("active", b.dataset.credMode === mode));
+  const hint = document.getElementById("cred-form-hint");
+  if (hint) {
+    hint.innerHTML = mode === "live"
+      ? '<b style="color:#fb7185">LIVE</b> 슬롯 재등록 — 실거래 키 (api.bybit.com)'
+      : '<b>DEMO</b> 슬롯 재등록 — Bybit Demo Trading 키';
+  }
+  const inp = document.getElementById("cred-api-key");
+  if (inp) inp.focus();
+});
 
 // Close By 버튼 (이벤트 위임 — render 후 매번 다시 박은 버튼에도 동작)
 $("positions-tbody").addEventListener("click", async (ev) => {
@@ -1728,6 +1831,26 @@ function _bindAuthHandlers() {
     }
   };
 
+  // 2026-05-29: 인증 게이트 키 등록 — auth-mode-toggle (DEMO/LIVE) 핸들러.
+  const authModeRoot = document.getElementById("auth-mode-toggle");
+  if (authModeRoot) {
+    const hint = document.getElementById("auth-mode-hint");
+    authModeRoot.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-auth-mode]");
+      if (!btn) return;
+      authModeRoot.querySelectorAll("button").forEach((b) =>
+        b.classList.remove("active"),
+      );
+      btn.classList.add("active");
+      if (hint) {
+        const m = btn.dataset.authMode;
+        hint.innerHTML = m === "live"
+          ? '⚠ <b style="color:#fb7185">LIVE</b> 슬롯 — 실거래 키. Demo 키와 혼동 주의.'
+          : 'Bybit <b>Demo Trading</b> 키 (api-demo.bybit.com). 처음 사용자는 데모로 시작 권장.';
+      }
+    });
+  }
+
   const btnKeys = document.getElementById("btn-save-keys");
   if (btnKeys) btnKeys.onclick = async () => {
     _hideAuthError("keys");
@@ -1736,9 +1859,23 @@ function _bindAuthHandlers() {
     if (!api_key || !api_secret) {
       return _showAuthError("keys", "API Key 와 Secret 을 모두 입력하세요.");
     }
+    const activeBtn = document.querySelector(
+      "#auth-mode-toggle button[data-auth-mode].active",
+    );
+    const mode = activeBtn ? activeBtn.dataset.authMode : "demo";
+    if (mode === "live") {
+      // 인증 게이트에서도 LIVE 슬롯 등록은 한 번 더 확인 — 첫 사용자가 실수로 LIVE 키
+      // 박는 사고 방지. (UI 흐름상 신규 가입자는 데모로 시작 권장.)
+      const ok = confirm(
+        "LIVE 슬롯에 키를 저장합니다.\n\n" +
+        "실거래 (api.bybit.com) 키여야 합니다. Demo 키와 다릅니다.\n" +
+        "계속하시겠습니까?",
+      );
+      if (!ok) return;
+    }
     btnKeys.disabled = true;
     try {
-      await api("/auth/api-keys", "POST", { api_key, api_secret });
+      await api("/auth/api-keys", "POST", { api_key, api_secret, mode });
       await bootstrap();
     } catch (e) {
       _showAuthError("keys", `저장 실패 — ${e.message}`);

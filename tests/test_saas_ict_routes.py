@@ -476,11 +476,36 @@ def test_credentials_endpoint_redirects_to_auth(client: TestClient) -> None:
 
 
 def test_run_mode_demo_to_live(client: TestClient) -> None:
+    """LIVE 전환은 live 슬롯 키가 따로 등록돼 있어야 성공 (2026-05-29).
+
+    _register_user 는 demo 키만 등록 → 바로 LIVE 전환 시 400 (해당 모드 키 없음).
+    Live 키 별도 등록 후엔 200.
+    """
     _register_user(client)
+    # demo 키만 있는 상태에서 LIVE 전환 시도 → 안전 가드로 400.
+    r = client.post("/ict/run-mode", json={"mode": "live"})
+    assert r.status_code == 400
+    assert "LIVE" in r.json()["detail"]
+
+    # live 키 등록 후 재시도 → 200.
+    r = client.post(
+        "/auth/api-keys",
+        json={"api_key": "live_pub", "api_secret": "live_sec", "mode": "live"},
+    )
+    assert r.status_code == 200, r.text
+
     r = client.post("/ict/run-mode", json={"mode": "live"})
     assert r.status_code == 200
     cfg = client.get("/ict/config").json()
     assert cfg["run_mode"] == "live"
+
+
+def test_run_mode_live_blocked_when_no_live_key(client: TestClient) -> None:
+    """LIVE 전환 안전 가드 — live 키 등록되지 않은 사용자는 400 (2026-05-29)."""
+    _register_user(client)  # demo 키만 등록
+    r = client.post("/ict/run-mode", json={"mode": "live"})
+    assert r.status_code == 400
+    assert "LIVE" in r.json()["detail"]
 
 
 def test_run_mode_invalid_400(client: TestClient) -> None:
