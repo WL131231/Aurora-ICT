@@ -66,7 +66,9 @@ class IctSettings(BaseSettings):
 
     symbol: str = Field(default="BTC/USDT:USDT")
     # 매매 timeframe — 5m 이상 허용. 1m 은 노이즈 과대로 제외.
-    timeframe: str = Field(default="1h")
+    # 2026-05-28 파트너 결정 — default 1h → 5m. ICT 정통 정합 (Silver Bullet
+    # / Macro 등 사소한 setup 까지 잡기 위해 짧은 TF 가 자연스러움).
+    timeframe: str = Field(default="5m")
 
     @field_validator("timeframe")
     @classmethod

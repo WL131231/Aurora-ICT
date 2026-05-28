@@ -520,13 +520,16 @@
   .license-card .lc-days-warn { color: #fbbf24; }
   .license-card .lc-days-crit { color: #fb7185; }
 
-  /* (3) 하단 — P&L 누적 그래프 + 토글 */
+  /* (3) 하단 — P&L 누적 그래프 + 토글.
+     2026-05-28 파트너 피드백 — 우하단 빈 공간. flex: 1 로 부모 잔여 영역 다 흡수.
+     #pnl-chart 도 부모 채우게 height auto + min-height. */
   .pnl-chart-section {
     padding: 10px 12px 12px;
     display: flex;
     flex-direction: column;
     gap: 8px;
-    flex: 0 0 auto;
+    flex: 1;
+    min-height: 0;
   }
   .pnl-chart-header {
     display: flex;
@@ -548,7 +551,8 @@
   .pnl-chart-cum.neg { color: #fb7185; }
   #pnl-chart {
     width: 100%;
-    height: 160px;
+    flex: 1;
+    min-height: 160px;
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: 4px;
