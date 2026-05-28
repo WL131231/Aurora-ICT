@@ -521,15 +521,16 @@
   .license-card .lc-days-crit { color: #fb7185; }
 
   /* (3) 하단 — P&L 누적 그래프 + 토글.
-     2026-05-28 파트너 피드백 — 우하단 빈 공간. flex: 1 로 부모 잔여 영역 다 흡수.
-     #pnl-chart 도 부모 채우게 height auto + min-height. */
+     2026-05-28 (2회차 fix) — flex:1 이 너무 늘어나 아래 잘림 보고.
+     max-height 가드 추가 (35vh) + pnl-panel overflow auto. */
   .pnl-chart-section {
     padding: 10px 12px 12px;
     display: flex;
     flex-direction: column;
     gap: 8px;
     flex: 1;
-    min-height: 0;
+    min-height: 220px;
+    max-height: 35vh;
   }
   .pnl-chart-header {
     display: flex;

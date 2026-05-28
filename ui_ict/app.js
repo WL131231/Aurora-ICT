@@ -1342,6 +1342,16 @@ function showMainScreen() {
   if (gate) gate.style.display = "none";
   if (main) main.style.display = "flex";
   AUTH.state = "main";
+  // 2026-05-28 fix — auth-gate 가 화면 가린 동안 차트 영역 0x0 박혀있어서
+  // 그 size 로 차트 초기화됨. F12 (DevTools) 열면 viewport 변화로 resize → 봉
+  // 보이게 된 게 그 증상. main-screen 표시 직후 layout 끝나면 명시 resize.
+  requestAnimationFrame(() => {
+    try { fit(); } catch (e) { /* noop */ }
+    try { chart.timeScale().fitContent(); } catch (e) { /* noop */ }
+    if (typeof _pnlChart !== "undefined" && _pnlChart) {
+      try { _pnlChart.timeScale().fitContent(); } catch (e) { /* noop */ }
+    }
+  });
 }
 
 // PIN 강도 평가 — server-side validate_pin_strength 와 가벼운 일관 (UX hint).
