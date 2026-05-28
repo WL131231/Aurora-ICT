@@ -1066,8 +1066,15 @@ function _showAuthError(prefix, msg) {
   e.style.display = "block";
 }
 
-function showAuthGate(panel = "login") {
+function showAuthGate(panel) {
+  // 2026-05-28 파트너 피드백 — PIN 설정 입력 중에 polling 401 핸들러가
+  // 자동으로 login 패널로 전환시키는 버그. 가드:
+  // panel 인자 명시 안 됐고 이미 인증 게이트 표시 중이면 noop (현재 패널 유지).
   const gate = document.getElementById("auth-gate");
+  if (panel === undefined && gate && gate.style.display !== "none") {
+    return;
+  }
+  panel = panel || "login";
   const main = document.getElementById("main-screen");
   if (gate) gate.style.display = "flex";
   if (main) main.style.display = "none";
