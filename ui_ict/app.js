@@ -8,9 +8,10 @@
 const API = "";  // same-origin — fetch("/auth/status") 처럼 동작
 
 // 현재 선택된 차트 timeframe (localStorage 영속화)
-let currentTimeframe = localStorage.getItem("aurora_ict_tf") || "1h";
+// 2026-05-28: 파트너 결정 — default 1h → 5m (settings.timeframe 정합)
+let currentTimeframe = localStorage.getItem("aurora_ict_tf") || "5m";
 const VALID_TFS = ["1m", "5m", "15m", "1h", "2h", "4h", "1d", "1w"];
-if (!VALID_TFS.includes(currentTimeframe)) currentTimeframe = "1h";
+if (!VALID_TFS.includes(currentTimeframe)) currentTimeframe = "5m";
 
 // 시각화 토글 (BOS / EQH-EQL / PD Zones) — localStorage 영속화
 const VIZ_KEYS = ["bos", "eql", "zones"];
