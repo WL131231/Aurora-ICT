@@ -1,0 +1,56 @@
+# Aurora-ICT SaaS — Fly.io 배포 설정
+#
+# 첫 배포:
+#   fly launch --copy-config --no-deploy   # 앱 이름/리전 확정
+#   fly volumes create aurora_data --region nrt --size 1
+#   fly secrets set AURORA_ICT_MASTER_KEY="$(python -c 'from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())')"
+#   fly deploy
+#
+# 도메인 + HTTPS 는 Fly 가 LetsEncrypt 로 자동 발급 (force_https=true).
+
+app = "aurora-ict-saas"
+primary_region = "nrt"
+
+[build]
+  # Dockerfile 사용 — 별도 builder 지정 X.
+
+[env]
+  AURORA_ICT_HOST = "0.0.0.0"
+  AURORA_ICT_PORT = "8765"
+  AURORA_ICT_DATA_DIR = "/data"
+  AURORA_ICT_SECURE_COOKIE = "1"
+  AURORA_ICT_SAAS = "1"
+
+[[mounts]]
+  source = "aurora_data"
+  destination = "/data"
+
+[[services]]
+  internal_port = 8765
+  protocol = "tcp"
+  # 거래 봇 — 항상 켜져 있어야 함 (포지션 모니터링).
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 200
+    soft_limit = 150
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+    force_https = true
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  [[services.http_checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "get"
+    path = "/ict/health"
+    protocol = "http"

@@ -28,6 +28,7 @@ from pydantic import BaseModel, SecretStr
 
 from aurora_ict.api.markers import to_chart_markers
 from aurora_ict.bot.manager import BotManager
+from aurora_ict.bot.multi_user_manager import MultiUserBotManager
 from aurora_ict.config.settings import TRADE_TIMEFRAMES, IctSettings, RunMode
 from aurora_ict.strategy.silver_bullet import Direction
 
@@ -181,12 +182,114 @@ def _status_dict(manager: BotManager) -> dict[str, Any]:
     }
 
 
-def create_app(manager: BotManager) -> FastAPI:
+def _register_multi_user_routes(
+    app: FastAPI,
+    *,
+    mu_manager: MultiUserBotManager,
+    auth_db_path: str | Path | None,
+    secure_cookie: bool,
+    master_key: bytes | None,
+) -> None:
+    """multi-user 모드 라우트 등록 — /auth/* + 사용자별 /ict/* 보호.
+
+    /ict/health 는 인증 없이 응답 (health probe — 로드밸런서 용).
+    그 외 /ict/* 는 ``require_auth`` dependency 로 보호.
+
+    Args:
+        app: FastAPI 인스턴스.
+        mu_manager: 사용자별 봇 격리 관리자.
+        auth_db_path: users.db 경로. None 이면 기본 위치.
+        secure_cookie: cookie Secure 속성 (HTTPS).
+        master_key: keystore Fernet 키 (테스트용 주입).
+    """
+    from fastapi import Depends
+
+    from aurora_ict.auth.middleware import require_auth
+    from aurora_ict.auth.router import create_auth_router
+    from aurora_ict.paths import data_dir
+
+    db_path = Path(auth_db_path) if auth_db_path else data_dir() / "users.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # /auth/* router — setup-pin / login / logout / status / api-keys.
+    app.include_router(
+        create_auth_router(
+            db_path,
+            secure_cookie=secure_cookie,
+            master_key=master_key,
+        ),
+    )
+
+    @app.get("/ict/health")
+    async def health_mu() -> dict[str, str]:
+        # 인증 없이 응답 — 외부 모니터링/로드밸런서 probe.
+        return {"status": "ok"}
+
+    @app.get("/ict/status")
+    async def status_mu(user_code: str = Depends(require_auth)) -> dict[str, Any]:
+        return await mu_manager.status(user_code)
+
+    @app.post("/ict/start")
+    async def start_mu(user_code: str = Depends(require_auth)) -> dict[str, Any]:
+        try:
+            await mu_manager.start(user_code)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return await mu_manager.status(user_code)
+
+    @app.post("/ict/stop")
+    async def stop_mu(user_code: str = Depends(require_auth)) -> dict[str, Any]:
+        await mu_manager.stop(user_code)
+        return await mu_manager.status(user_code)
+
+    # Static UI mount — SaaS 도 ui_ict 그대로 서빙 (브라우저 → cookie 세션 흐름).
+    # single-user 분기와 동일 패턴 (frozen 케이스는 SaaS 에서 없음 — dev / Docker layout 만).
+    candidates = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "ui_ict")
+    candidates.append(Path(__file__).resolve().parents[3] / "ui_ict")
+    for ui_dir in candidates:
+        if ui_dir.is_dir():
+            app.mount("/ui", StaticFiles(directory=str(ui_dir), html=True), name="ui")
+            logger.info("[multi-user] UI mounted from %s", ui_dir)
+            break
+
+
+def create_app(
+    manager: BotManager | None = None,
+    *,
+    multi_user: bool = False,
+    multi_user_manager: MultiUserBotManager | None = None,
+    auth_db_path: str | Path | None = None,
+    secure_cookie: bool = False,
+    master_key: bytes | None = None,
+) -> FastAPI:
     """FastAPI app 인스턴스 생성.
 
     Args:
-        manager: 라우터에서 사용할 BotManager 싱글톤.
+        manager: single-user BotManager. ``multi_user=False`` 면 필수.
+        multi_user: True 면 SaaS 모드 — 인증 router 등록 + 사용자별 bot 라우팅.
+        multi_user_manager: ``multi_user=True`` 일 때 필수. 사용자별 봇 격리 관리.
+        auth_db_path: ``multi_user=True`` 시 users.db 경로. None 이면
+            ``aurora_ict.paths.data_dir() / "users.db"`` 자동 사용.
+        secure_cookie: 세션 cookie ``Secure`` 속성 (HTTPS 운영 시 True).
+        master_key: keystore Fernet 키 (테스트용). None 이면 기본 동작.
+
+    Returns:
+        FastAPI app — multi_user 분기 따라 router/dependency 다름.
     """
+    if multi_user:
+        if multi_user_manager is None:
+            raise ValueError(
+                "multi_user=True 면 multi_user_manager 인자가 필수입니다.",
+            )
+    else:
+        if manager is None:
+            raise ValueError(
+                "multi_user=False 면 manager (BotManager) 인자가 필수입니다.",
+            )
+
     app = FastAPI(
         title="Aurora-ICT API",
         version="0.2.1",
@@ -201,6 +304,20 @@ def create_app(manager: BotManager) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # multi-user 모드 — /auth/* router + 사용자별 보호 endpoint 등록 (single 와 분리).
+    if multi_user:
+        _register_multi_user_routes(
+            app,
+            mu_manager=multi_user_manager,  # type: ignore[arg-type]
+            auth_db_path=auth_db_path,
+            secure_cookie=secure_cookie,
+            master_key=master_key,
+        )
+        return app
+
+    # 이하 single-user 흐름 — 기존 동작 그대로 (CLI/.exe 호환).
+    assert manager is not None  # 위에서 검증됨 (multi_user=False → manager 필수)
 
     @app.get("/ict/health")
     async def health() -> dict[str, str]:
