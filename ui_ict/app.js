@@ -805,9 +805,10 @@ function renderPnL(data) {
 
 // ============================================================
 // (3) 누적 P&L 그래프 — lightweight-charts LineSeries (별도 instance).
-// 토글 (전체기간/90D/60D/30D/7D) localStorage 영속.
+// 토글 (전체기간/90D/60D/30D/7D/24h) localStorage 영속.
+// 2026-05-28 파트너 요청 — 24h 추가 (가장 짧은 단위, data-range="1" 1일).
 // ============================================================
-const VALID_PNL_RANGES = ["all", "90", "60", "30", "7"];
+const VALID_PNL_RANGES = ["all", "90", "60", "30", "7", "1"];
 let pnlRange = localStorage.getItem("aurora_ict_pnl_range") || "30";
 if (!VALID_PNL_RANGES.includes(pnlRange)) pnlRange = "30";
 
