@@ -47,6 +47,11 @@ from pathlib import Path
 from typing import Any
 
 # DDL — idempotent 하게 init_db 에서 사용. CREATE TABLE IF NOT EXISTS 라 재실행 안전.
+#
+# 2026-05-28: ``bot_running`` 컬럼 추가 (봇 가동 상태 영속화) — Fly.io machine
+# OOM / 재배포로 프로세스가 죽어도 다시 살아날 때 list_running_codes 로
+# 자동 재가동. 기존 DB 는 ``_ensure_bot_running_column`` 가 ALTER TABLE
+# 마이그레이션 (idempotent, PRAGMA table_info 확인 후 없으면 추가).
 _DDL_USERS = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,7 +63,8 @@ CREATE TABLE IF NOT EXISTS users (
     expires_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    last_login_at TEXT
+    last_login_at TEXT,
+    bot_running INTEGER NOT NULL DEFAULT 0
 )
 """
 
@@ -110,6 +116,25 @@ def _connect(db_path: Path | str) -> sqlite3.Connection:
     return conn
 
 
+def _ensure_bot_running_column(conn: sqlite3.Connection) -> None:
+    """기존 users 테이블에 ``bot_running`` 컬럼 없으면 ALTER TABLE 로 추가.
+
+    2026-05-28 — 봇 가동 상태 영속화 마이그레이션. 이미 컬럼이 있으면 no-op.
+    신규 DB 는 ``_DDL_USERS`` 가 처음부터 컬럼을 포함하므로 PRAGMA 결과에
+    이미 ``bot_running`` 이 들어 있어 ALTER 가 호출되지 않는다.
+
+    Args:
+        conn: 열려있는 SQLite 연결 (호출자가 commit 책임).
+    """
+    # PRAGMA table_info 는 (cid, name, type, notnull, dflt_value, pk) 튜플 반환.
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "bot_running" not in cols:
+        # NOT NULL DEFAULT 0 — 기존 row 도 자동으로 0 (정지) 으로 채워짐.
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN bot_running INTEGER NOT NULL DEFAULT 0",
+        )
+
+
 def init_db(db_path: Path | str) -> None:
     """users.db 테이블 생성 — idempotent (이미 있으면 no-op).
 
@@ -126,6 +151,8 @@ def init_db(db_path: Path | str) -> None:
         conn.execute(_DDL_INDEX_CODE)
         conn.execute(_DDL_SESSIONS)
         conn.execute(_DDL_INDEX_SESSIONS_EXPIRES)
+        # 기존 DB 마이그레이션 — bot_running 컬럼 없으면 추가.
+        _ensure_bot_running_column(conn)
         conn.commit()
 
 
@@ -275,6 +302,59 @@ def update_last_login(db_path: Path | str, code: str) -> bool:
         )
         conn.commit()
         return cur.rowcount > 0
+
+
+# ============================================================
+# 봇 가동 상태 영속화 — Fly.io machine OOM/재배포 후 자동 복원 (2026-05-28)
+# ============================================================
+
+
+def set_bot_running(db_path: Path | str, code: str, running: bool) -> bool:
+    """봇 가동 상태 플래그 박기 — START 시 True, STOP 시 False.
+
+    Why: ``MultiUserBotManager._slots`` 는 in-memory dict 라 Fly machine
+    OOM / 재배포 시 사라짐. 이 컬럼을 영속화해 둬야 startup hook
+    (``saas.py``) 이 ``list_running_codes`` 로 자동 재가동 가능.
+
+    Args:
+        db_path: users.db 경로.
+        code: 대상 사용자 라이선스 코드.
+        running: True 면 1, False 면 0 으로 박음.
+
+    Returns:
+        True 면 UPDATE 1건 성공, False 면 해당 code 가 DB 에 없음 (no-op).
+    """
+    now = _utcnow_iso()
+    # SQLite 는 BOOLEAN 타입이 없어 INTEGER 0/1 로 저장.
+    flag = 1 if running else 0
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE users
+            SET bot_running = ?, updated_at = ?
+            WHERE code = ?
+            """,
+            (flag, now, code),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def list_running_codes(db_path: Path | str) -> list[str]:
+    """``bot_running = 1`` 인 사용자 code 목록 — startup 자동 재가동용.
+
+    Args:
+        db_path: users.db 경로.
+
+    Returns:
+        가동 중으로 마킹된 사용자 라이선스 코드 list. 결과 없으면 빈 list.
+        순서 보장은 없음 — startup hook 이 best-effort 로 순차 호출하므로 OK.
+    """
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT code FROM users WHERE bot_running = 1",
+        ).fetchall()
+        return [str(row["code"]) for row in rows]
 
 
 # ============================================================
@@ -465,7 +545,9 @@ __all__ = [
     "get_session",
     "get_user_by_code",
     "init_db",
+    "list_running_codes",
     "set_api_keys",
+    "set_bot_running",
     "set_pin",
     "update_last_login",
 ]

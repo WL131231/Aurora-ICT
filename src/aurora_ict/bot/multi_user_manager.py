@@ -222,6 +222,10 @@ class MultiUserBotManager:
 
         같은 사용자 동시 호출 race 방지를 위해 per-user lock 사용.
 
+        2026-05-28: 봇 가동 상태 영속화 — 성공 시 ``users_db.set_bot_running``
+        으로 DB 에 ``bot_running=1`` 박음. Fly machine OOM / 재배포 시 startup
+        hook 이 이 플래그 본 뒤 자동 재가동.
+
         Raises:
             ValueError: 사용자 미존재 / API 키 미등록 등 (build_user_settings 단계).
         """
@@ -229,6 +233,14 @@ class MultiUserBotManager:
             bot = await self.get_or_create_bot(user_code)
             if bot.state is BotState.RUNNING:
                 logger.info("사용자 %s 봇 이미 실행 중 — re-start 무시", user_code)
+                # 이미 가동 중이어도 DB 플래그는 보장 (운영 중 마이그레이션 직후 안전망).
+                try:
+                    users_db.set_bot_running(self.db_path, user_code, True)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "사용자 %s bot_running=1 영속화 실패 (무시): %s",
+                        user_code, e,
+                    )
                 return
             slot = self._slots[user_code]
             # 거래소 측 leverage 셋업 — 실패해도 봇 자체는 진행 (warning).
@@ -239,6 +251,14 @@ class MultiUserBotManager:
             except Exception as e:  # noqa: BLE001
                 logger.warning("사용자 %s set_leverage 실패: %s", user_code, e)
             await bot.start()
+            # 봇 실제 가동 성공 직후에만 DB 영속화 — start() 가 예외 던지면 이 줄 도달 X
+            # → DB 는 stale 한 0 유지 (보수적 안전).
+            try:
+                users_db.set_bot_running(self.db_path, user_code, True)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "사용자 %s bot_running=1 영속화 실패 (무시): %s", user_code, e,
+                )
             logger.info(
                 "MultiUserBotManager: 사용자 %s 봇 시작 (symbol=%s)",
                 user_code, slot.settings.symbol,
@@ -248,8 +268,21 @@ class MultiUserBotManager:
         """사용자 봇 정지 + client close.
 
         존재하지 않는 user_code 도 멱등 (no-op).
+
+        2026-05-28: 봇 가동 상태 영속화 — ``users_db.set_bot_running`` 으로 DB 의
+        ``bot_running`` 을 0 으로 박아 startup hook 이 다음 부팅 때 자동 재가동
+        대상에서 빼도록.
         """
         slot = self._slots.get(user_code)
+        # slot 유무와 무관하게 사용자가 명시 STOP 을 눌렀다면 DB 는 0 으로 — 사용자가
+        # 다른 fly machine 에서 가동했더라도 명시 정지 의도가 우선. DB 에 user row
+        # 자체가 없으면 set_bot_running 이 False 반환 (no-op).
+        try:
+            users_db.set_bot_running(self.db_path, user_code, False)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "사용자 %s bot_running=0 영속화 실패 (무시): %s", user_code, e,
+            )
         if slot is None:
             return
         if slot.bot is not None:

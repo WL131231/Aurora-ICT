@@ -469,3 +469,42 @@ def test_session_cookie_is_httponly(client: TestClient) -> None:
     assert "HttpOnly" in set_cookie
     # SameSite=Lax
     assert "SameSite=Lax".lower() in set_cookie.lower()
+
+
+# ============================================================
+# 7. /auth/status app_version 필드 (2026-05-28 UI 자동 갱신)
+# ============================================================
+
+
+def test_status_unauth_includes_app_version(client: TestClient) -> None:
+    """미인증 응답에도 app_version 포함 — 로그인 화면에서도 drift 감지 필요."""
+    from aurora_ict import __version__
+
+    resp = client.get("/auth/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["authenticated"] is False
+    assert "app_version" in body
+    assert body["app_version"] == __version__
+
+
+def test_status_authed_includes_app_version(client: TestClient) -> None:
+    """인증 응답에도 app_version 포함 — polling 으로 재배포 후 자동 reload 트리거."""
+    from aurora_ict import __version__
+
+    client.post(
+        "/auth/setup-pin",
+        json={
+            "code": "AICT-VRSN-VRSN-VRSN",
+            "pin": "Aa1!aaaa",
+            "pin_confirm": "Aa1!aaaa",
+        },
+    )
+    resp = client.get("/auth/status")
+    body = resp.json()
+    assert body["authenticated"] is True
+    assert "app_version" in body
+    assert body["app_version"] == __version__
+    # 빈 문자열 / None 이면 UI drift 비교 불가 — 비어있지 않은 string 임을 확인.
+    assert isinstance(body["app_version"], str)
+    assert body["app_version"]

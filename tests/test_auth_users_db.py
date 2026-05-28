@@ -397,3 +397,113 @@ def test_cleanup_expired_sessions_removes_only_expired(db_path):
 def test_cleanup_expired_sessions_empty_table_returns_zero(db_path):
     """cleanup_expired_sessions — 빈 테이블에선 0."""
     assert users_db.cleanup_expired_sessions(db_path) == 0
+
+
+# ============================================================
+# 봇 가동 상태 영속화 (Fly machine OOM/재배포 자동 복원, 2026-05-28)
+# ============================================================
+
+
+def test_init_db_creates_bot_running_column_with_default_zero(tmp_path):
+    """init_db — 신규 DB 에 bot_running 컬럼이 NOT NULL DEFAULT 0 로 생김."""
+    path = tmp_path / "br_fresh.db"
+    users_db.init_db(path)
+
+    with sqlite3.connect(str(path)) as conn:
+        cols = {row[1]: row for row in conn.execute(
+            "PRAGMA table_info(users)",
+        ).fetchall()}
+        assert "bot_running" in cols
+        # tuple: (cid, name, type, notnull, dflt_value, pk)
+        col = cols["bot_running"]
+        assert col[2].upper() == "INTEGER"
+        assert col[3] == 1  # NOT NULL
+        assert str(col[4]) == "0"  # DEFAULT 0
+
+
+def test_init_db_migrates_old_db_adds_bot_running(tmp_path):
+    """init_db — bot_running 컬럼 없는 구버전 DB 도 ALTER TABLE 마이그레이션.
+
+    구버전 스키마를 직접 만든 뒤 init_db 재호출 → 컬럼 추가 + 기존 row 보존 + 기본값 0.
+    """
+    path = tmp_path / "br_legacy.db"
+    # 구버전 스키마 (bot_running 컬럼 없음) — 운영 DB 시뮬레이션.
+    with sqlite3.connect(str(path)) as conn:
+        conn.execute("""
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE NOT NULL,
+                pin_hash TEXT,
+                api_key TEXT,
+                api_secret_enc TEXT,
+                license_type TEXT NOT NULL DEFAULT 'referral',
+                expires_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_login_at TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO users (code, created_at, updated_at) VALUES (?, ?, ?)",
+            ("AICT-LEGCY-LEG-LEG", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
+        )
+        conn.commit()
+
+    # 신버전 init_db 호출 — ALTER TABLE 가 컬럼 추가해야 함.
+    users_db.init_db(path)
+
+    user = users_db.get_user_by_code(path, "AICT-LEGCY-LEG-LEG")
+    assert user is not None
+    # 기존 row 보존.
+    assert user["code"] == "AICT-LEGCY-LEG-LEG"
+    # 신규 컬럼 — 기본값 0.
+    assert user["bot_running"] == 0
+
+    # 재실행 idempotent — 두 번째 호출도 예외 없음.
+    users_db.init_db(path)
+    user2 = users_db.get_user_by_code(path, "AICT-LEGCY-LEG-LEG")
+    assert user2["bot_running"] == 0
+
+
+def test_set_bot_running_toggles_flag(db_path):
+    """set_bot_running — True/False 박은 뒤 get_user_by_code 로 확인."""
+    users_db.create_user(db_path, "AICT-BR01-BR01-BR01")
+    user = users_db.get_user_by_code(db_path, "AICT-BR01-BR01-BR01")
+    assert user is not None
+    assert user["bot_running"] == 0  # 신규 사용자 기본값
+
+    ok = users_db.set_bot_running(db_path, "AICT-BR01-BR01-BR01", True)
+    assert ok is True
+    user = users_db.get_user_by_code(db_path, "AICT-BR01-BR01-BR01")
+    assert user["bot_running"] == 1
+
+    ok = users_db.set_bot_running(db_path, "AICT-BR01-BR01-BR01", False)
+    assert ok is True
+    user = users_db.get_user_by_code(db_path, "AICT-BR01-BR01-BR01")
+    assert user["bot_running"] == 0
+
+
+def test_set_bot_running_missing_code_returns_false(db_path):
+    """set_bot_running — 미존재 code 면 False (예외 X)."""
+    assert users_db.set_bot_running(db_path, "AICT-NONE-NONE-NONE", True) is False
+
+
+def test_list_running_codes_filters_by_flag(db_path):
+    """list_running_codes — bot_running=1 사용자만 반환."""
+    # 3명 등록, 그 중 2명만 가동 마킹.
+    users_db.create_user(db_path, "AICT-RUN1-RUN1-RUN1")
+    users_db.create_user(db_path, "AICT-RUN2-RUN2-RUN2")
+    users_db.create_user(db_path, "AICT-STOP-STOP-STOP")
+    users_db.set_bot_running(db_path, "AICT-RUN1-RUN1-RUN1", True)
+    users_db.set_bot_running(db_path, "AICT-RUN2-RUN2-RUN2", True)
+    # STOP 사용자는 그대로 0.
+
+    codes = users_db.list_running_codes(db_path)
+    assert sorted(codes) == ["AICT-RUN1-RUN1-RUN1", "AICT-RUN2-RUN2-RUN2"]
+
+
+def test_list_running_codes_empty_when_none_running(db_path):
+    """list_running_codes — 가동 중 사용자 없으면 빈 list."""
+    users_db.create_user(db_path, "AICT-ZRO1-ZRO1-ZRO1")
+    users_db.create_user(db_path, "AICT-ZRO2-ZRO2-ZRO2")
+    assert users_db.list_running_codes(db_path) == []
