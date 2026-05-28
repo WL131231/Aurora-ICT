@@ -242,6 +242,720 @@ def _register_multi_user_routes(
         await mu_manager.stop(user_code)
         return await mu_manager.status(user_code)
 
+    # ------------------------------------------------------------------
+    # 2026-05-28: SaaS 1차 출시 — UI 가 호출하는 /ict/* 전체를 multi-user 분기에도
+    # 등록 (이전엔 health/status/start/stop 4개만 → 그 외 endpoint 가 SaaS 에서 404).
+    #
+    # 핵심 단순화 결정:
+    #   - 사용자별 settings 분리는 추후. 현재는 mu_manager.base_settings 공유.
+    #   - settings 갱신 (timeframe / daily_loss_limit / run_mode 등) 은 슬롯이 있으면
+    #     슬롯 settings 갱신, 슬롯 없으면 base_settings 갱신 (다음 start 시 반영).
+    #   - api_key/secret 은 사용자별 (/auth/api-keys 가 DB 에 별도 저장 — 이쪽은 손 안 댐).
+    # ------------------------------------------------------------------
+
+    def _user_settings(user_code: str) -> IctSettings:
+        """사용자 슬롯의 settings — 없으면 base_settings (없으면 신규 기본).
+
+        get_or_create_bot 이 안 호출된 시점(예: 봇 미가동 시 /ict/config 조회) 에서도
+        뭔가 반환해야 함. 슬롯이 없으면 mu_manager.base_settings 사용.
+        """
+        slot = mu_manager._slots.get(user_code)
+        if slot is not None:
+            return slot.settings
+        return mu_manager.base_settings or IctSettings()
+
+    @app.get("/ict/config")
+    async def get_config_mu(
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        return _settings_safe_dict(_user_settings(user_code))
+
+    @app.post("/ict/run-mode")
+    async def set_run_mode_mu(
+        req: RunModeRequest,
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        try:
+            mode = RunMode(req.mode)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400, detail=f"invalid mode: {req.mode}",
+            ) from e
+        # 슬롯이 있고 봇이 RUNNING 이면 stop → run_mode 변경 → start 로 재시작.
+        slot = mu_manager._slots.get(user_code)
+        was_running = (
+            slot is not None
+            and slot.bot is not None
+            and slot.bot.state.value == "running"
+        )
+        if was_running:
+            await mu_manager.stop(user_code)
+        # 슬롯이 있으면 슬롯 settings, 없으면 base_settings 갱신 (다음 start 시 사용).
+        if slot is not None:
+            slot.settings.run_mode = mode
+        elif mu_manager.base_settings is not None:
+            mu_manager.base_settings.run_mode = mode
+        if was_running:
+            await mu_manager.start(user_code)
+        return await mu_manager.status(user_code)
+
+    @app.post("/ict/enabled")
+    async def set_enabled_mu(
+        req: EnabledRequest,
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        # multi-user 에서는 enabled 토글 = base_settings.enabled 갱신 + start/stop 분기.
+        # (BotManager.set_enabled 와 의미 동일하게 — False 면 stop, True 면 start.)
+        slot = mu_manager._slots.get(user_code)
+        was_running = (
+            slot is not None
+            and slot.bot is not None
+            and slot.bot.state.value == "running"
+        )
+        if slot is not None:
+            slot.settings.enabled = req.enabled
+        elif mu_manager.base_settings is not None:
+            mu_manager.base_settings.enabled = req.enabled
+        try:
+            if not req.enabled and was_running:
+                await mu_manager.stop(user_code)
+            elif req.enabled and not was_running:
+                await mu_manager.start(user_code)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return await mu_manager.status(user_code)
+
+    @app.post("/ict/test-connection")
+    async def test_connection_mu(
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """현재 mode 의 API 키로 거래소 연결 테스트 — multi-user 사용자별 settings 기준.
+
+        슬롯이 없으면 DB 에서 사용자 키를 가져와 settings 구성 (봇은 만들지 않음).
+        """
+        slot = mu_manager._slots.get(user_code)
+        if slot is not None:
+            settings = slot.settings
+        else:
+            try:
+                settings = mu_manager._build_user_settings(user_code)
+            except ValueError as e:
+                # API 키 미등록 → 사용자에게 안내.
+                return {
+                    "ok": False,
+                    "mode": (mu_manager.base_settings or IctSettings()).run_mode.value,
+                    "error": str(e),
+                }
+        mode = settings.run_mode.value
+        if not settings.has_credentials():
+            return {
+                "ok": False,
+                "mode": mode,
+                "error": f"{mode.upper()} API 키가 등록되어 있지 않음",
+            }
+        try:
+            client = await mu_manager.client_factory(settings)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("test-connection client 생성 실패: %s", e)
+            return {"ok": False, "mode": mode, "error": f"client 생성 실패: {e}"}
+        try:
+            bal = await client.fetch_balance()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("test-connection fetch_balance 실패: %s", e)
+            return {"ok": False, "mode": mode, "error": f"fetch_balance 실패: {e}"}
+        usdt_total: float | None = None
+        if isinstance(bal, dict):
+            usdt = bal.get("USDT")
+            if isinstance(usdt, dict):
+                v = usdt.get("total")
+                if isinstance(v, (int, float)):
+                    usdt_total = float(v)
+            if usdt_total is None:
+                v = bal.get("total")
+                if isinstance(v, (int, float)):
+                    usdt_total = float(v)
+        return {"ok": True, "mode": mode, "balance_usdt": usdt_total}
+
+    @app.post("/ict/timeframe")
+    async def set_trade_timeframe_mu(
+        req: TimeframeRequest,
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """매매 timeframe 변경 — multi-user 사용자별 settings + 가동 중이면 재시작."""
+        if req.timeframe not in TRADE_TIMEFRAMES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"timeframe '{req.timeframe}' 미지원 — "
+                    f"허용 목록: {list(TRADE_TIMEFRAMES)}"
+                ),
+            )
+        slot = mu_manager._slots.get(user_code)
+        was_running = (
+            slot is not None
+            and slot.bot is not None
+            and slot.bot.state.value == "running"
+        )
+        if was_running:
+            await mu_manager.stop(user_code)
+        if slot is not None:
+            slot.settings.timeframe = req.timeframe
+        elif mu_manager.base_settings is not None:
+            mu_manager.base_settings.timeframe = req.timeframe
+        logger.info(
+            "[multi-user] %s trade timeframe 변경 → %s", user_code, req.timeframe,
+        )
+        if was_running:
+            await mu_manager.start(user_code)
+        settings = _user_settings(user_code)
+        return {
+            "timeframe": settings.timeframe,
+            "allowed": list(TRADE_TIMEFRAMES),
+            "restarted": was_running,
+        }
+
+    @app.get("/ict/daily_loss_limit")
+    async def get_daily_loss_limit_mu(
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """#SAFETY-1 한도 + 오늘 누적 손익 상태 — 사용자 봇이 있으면 그 값, 없으면 settings."""
+        slot = mu_manager._slots.get(user_code)
+        settings = _user_settings(user_code)
+        if slot is not None and slot.bot is not None:
+            return slot.bot.daily_loss_status()
+        return {
+            "limit_pct": settings.daily_loss_limit_pct,
+            "today_pnl_usdt": 0.0,
+            "today_pct": 0.0,
+            "start_equity": 0.0,
+            "hit": False,
+            "date_ny": "",
+        }
+
+    @app.post("/ict/daily_loss_limit")
+    async def set_daily_loss_limit_mu(
+        req: DailyLossLimitRequest,
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """#SAFETY-1 한도 설정 — 사용자 slot.settings + 가동 중 bot in-memory 갱신."""
+        if req.pct < 0 or req.pct > 50:
+            raise HTTPException(
+                status_code=400,
+                detail="daily_loss_limit_pct 는 0~50 범위 (0 = 비활성).",
+            )
+        slot = mu_manager._slots.get(user_code)
+        if slot is not None:
+            slot.settings.daily_loss_limit_pct = req.pct
+            if slot.bot is not None:
+                slot.bot.daily_loss_limit_pct = req.pct
+                if (
+                    slot.bot._daily_limit_hit
+                    and not slot.bot._is_daily_loss_limit_hit()
+                ):
+                    slot.bot._daily_limit_hit = False
+                    logger.info(
+                        "[multi-user] %s daily loss limit 한도 ↑ — hit flag 해제",
+                        user_code,
+                    )
+        elif mu_manager.base_settings is not None:
+            mu_manager.base_settings.daily_loss_limit_pct = req.pct
+        logger.info(
+            "[multi-user] %s daily loss limit 설정 → %.2f%%", user_code, req.pct,
+        )
+        return {"limit_pct": req.pct}
+
+    @app.post("/ict/credentials")
+    async def set_credentials_mu(
+        req: CredentialsRequest,
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """API 키 등록 — multi-user 에서는 /auth/api-keys 가 정식 경로.
+
+        호환을 위해 이 endpoint 도 노출하지만, /auth/api-keys 로 안내.
+        """
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "multi-user 모드에서는 /auth/api-keys 를 사용해 주세요 "
+                "(.env 직접 기록 X — DB 암호화 저장)."
+            ),
+        )
+
+    @app.post("/ict/position/close")
+    async def close_position_mu(
+        req: PositionCloseRequest,
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Close By 수동 청산 — multi-user 사용자별 봇 기준."""
+        if not (0.0 < req.fraction <= 1.0):
+            raise HTTPException(
+                status_code=400,
+                detail=f"fraction은 (0, 1] 범위 — 받은 값: {req.fraction}",
+            )
+        slot = mu_manager._slots.get(user_code)
+        bot = slot.bot if slot is not None else None
+        if bot is None or bot.active_position is None:
+            raise HTTPException(status_code=404, detail="active position 없음")
+        ap = bot.active_position
+        close_qty = ap.qty * req.fraction
+        close_side = "sell" if ap.direction is Direction.LONG else "buy"
+        try:
+            await bot.client.place_order(
+                symbol=bot.symbol,
+                side=close_side,
+                qty=close_qty,
+                price=None,
+                stop_loss=None,
+                take_profit=None,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception(
+                "[multi-user] %s close_position place_order 실패: %s",
+                user_code, e,
+            )
+            raise HTTPException(
+                status_code=502, detail=f"청산 주문 실패: {e}",
+            ) from e
+        remaining = ap.qty - close_qty
+        if req.fraction >= 1.0 or remaining <= 1e-9:
+            bot.active_position = None
+            logger.info(
+                "[multi-user] %s 전체 청산 완료 — qty=%.6f", user_code, close_qty,
+            )
+            return {
+                "closed_qty": close_qty, "remaining_qty": 0.0, "active": False,
+            }
+        ap.qty = remaining
+        logger.info(
+            "[multi-user] %s 부분 청산 — closed=%.6f remaining=%.6f",
+            user_code, close_qty, remaining,
+        )
+        return {
+            "closed_qty": close_qty, "remaining_qty": remaining, "active": True,
+        }
+
+    @app.get("/ict/position")
+    async def get_position_mu(
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """현재 active position 상세 — multi-user 사용자별."""
+        slot = mu_manager._slots.get(user_code)
+        bot = slot.bot if slot is not None else None
+        pending: dict[str, Any] | None = None
+        if bot is not None and bot._pending_entry is not None:
+            pe = bot._pending_entry
+            pending = {
+                "direction": pe.direction.value,
+                "entry": pe.entry,
+                "stop_loss": pe.stop_loss,
+                "take_profit": pe.take_profit,
+                "qty": pe.qty,
+                "placed_ts_ms": pe.placed_ts_ms,
+            }
+        if bot is None or bot.active_position is None:
+            return {"active": False, "pending": pending}
+
+        ap = bot.active_position
+        ex_unrealized: float | None = None
+        ex_entry = ap.entry
+        try:
+            ex_pos = await bot.client.fetch_position(bot.symbol)
+            if ex_pos:
+                up = ex_pos.get("unrealized_pnl")
+                if up is None:
+                    up = ex_pos.get("unrealizedPnl")
+                if isinstance(up, (int, float)):
+                    ex_unrealized = float(up)
+                ep = (
+                    ex_pos.get("entry_price")
+                    or ex_pos.get("entryPrice")
+                    or ex_pos.get("avgPrice")
+                )
+                if isinstance(ep, (int, float)) and float(ep) > 0:
+                    ex_entry = float(ep)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                "[multi-user] %s 거래소 포지션 PnL fetch 실패: %s", user_code, e,
+            )
+
+        mark_price = ex_entry
+        try:
+            rows = await bot.client.fetch_ohlcv(bot.symbol, bot.timeframe, 2)
+            if rows:
+                mark_price = float(rows[-1][4])
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[multi-user] %s mark_price fetch 실패: %s", user_code, e)
+
+        if ex_unrealized is not None:
+            unrealized = ex_unrealized
+        elif ap.direction is Direction.LONG:
+            unrealized = (mark_price - ex_entry) * ap.qty
+        else:
+            unrealized = (ex_entry - mark_price) * ap.qty
+
+        settings = _user_settings(user_code)
+        lev = settings.leverage
+        notional = ex_entry * ap.qty
+        margin = notional / lev
+        if ap.direction is Direction.LONG:
+            liq_price = ex_entry * (1.0 - (1.0 / lev) * 0.95)
+        else:
+            liq_price = ex_entry * (1.0 + (1.0 / lev) * 0.95)
+        roi_pct = (unrealized / margin * 100.0) if margin > 0 else 0.0
+        return {
+            "active": True,
+            "symbol": bot.symbol,
+            "direction": ap.direction.value,
+            "entry": ex_entry,
+            "stop_loss": ap.stop_loss,
+            "take_profit": ap.take_profit,
+            "qty": ap.qty,
+            "setup_ts_ms": ap.setup_ts_ms,
+            "mark_price": mark_price,
+            "unrealized_pnl": unrealized,
+            "roi_pct": roi_pct,
+            "margin": margin,
+            "notional": notional,
+            "liquidation_price": liq_price,
+            "leverage": lev,
+            "pending": pending,
+        }
+
+    @app.get("/ict/judgment")
+    async def get_judgment_mu(
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """봇 현재 판단 — multi-user 사용자별 (FVG/구조/Sweep + 세션 + entry condition)."""
+        slot = mu_manager._slots.get(user_code)
+        bot = slot.bot if slot is not None else None
+        if bot is None:
+            return {
+                "direction": {
+                    "long_pct": 50, "short_pct": 50, "label": "봇 미가동",
+                },
+                "reasons": [],
+                "entry_condition": {
+                    "title": "봇 미가동", "detail": "START 눌러 가동",
+                },
+            }
+        settings = _user_settings(user_code)
+        htf_map = bot._htf_fvg_map_cache or []
+        bull_w = sum(int(e.weight) for e in htf_map if e.type.value == "bullish")
+        bear_w = sum(int(e.weight) for e in htf_map if e.type.value == "bearish")
+        tot = bull_w + bear_w
+        if tot > 0:
+            long_pct = round(bull_w / tot * 100, 1)
+            short_pct = round(100 - long_pct, 1)
+        else:
+            long_pct = short_pct = 50.0
+        if long_pct >= 60:
+            dir_label = "롱(상승) 우세"
+        elif short_pct >= 60:
+            dir_label = "숏(하락) 우세"
+        else:
+            dir_label = "방향 불확실 (혼조)"
+        cur_price = 0.0
+        try:
+            rows = await bot.client.fetch_ohlcv(bot.symbol, bot.timeframe, 2)
+            if rows:
+                cur_price = float(rows[-1][4])
+        except Exception:  # noqa: BLE001
+            pass
+        reasons: list[dict[str, Any]] = []
+        if cur_price > 0 and htf_map:
+            bulls = [
+                e for e in htf_map
+                if e.type.value == "bullish" and e.high < cur_price
+            ]
+            bears = [
+                e for e in htf_map
+                if e.type.value == "bearish" and e.low > cur_price
+            ]
+            bulls.sort(key=lambda e: cur_price - e.high)
+            bears.sort(key=lambda e: e.low - cur_price)
+            for e in bulls[:2]:
+                reasons.append({
+                    "color": "green",
+                    "term": f"FVG {e.tf}",
+                    "range": f"{e.high:,.0f} ~ {e.low:,.0f}",
+                    "interpretation": "롱 지지 가능성 (가격이 끌릴 빈 공간)",
+                })
+            for e in bears[:2]:
+                reasons.append({
+                    "color": "red",
+                    "term": f"FVG {e.tf}",
+                    "range": f"{e.high:,.0f} ~ {e.low:,.0f}",
+                    "interpretation": "위쪽 저항 (가격 도달 시 막힐 위험)",
+                })
+        try:
+            use_tf = bot.timeframe
+            ohlcv_rows = await bot.client.fetch_ohlcv(bot.symbol, use_tf, 200)
+            if ohlcv_rows:
+                df = pd.DataFrame(
+                    ohlcv_rows,
+                    columns=["ts_ms", "open", "high", "low", "close", "volume"],
+                )
+                df.index = pd.DatetimeIndex(
+                    pd.to_datetime(df["ts_ms"], unit="ms", utc=True),
+                )
+                df = df[["open", "high", "low", "close", "volume"]]
+                _mk = to_chart_markers(
+                    df,
+                    min_rr=settings.min_rr,
+                    fvg_min_size_pct=settings.fvg_min_size_pct,
+                )
+                struct_src = _mk.large_structure or _mk.structure
+                if struct_src:
+                    s = struct_src[-1]
+                    struct_meta = {
+                        "bos_bullish":   ("green",  "BOS↑",    "상승 추세 지속 (이전 고점 돌파)"),
+                        "bos_bearish":   ("red",    "BOS↓",    "하락 추세 지속 (이전 저점 돌파)"),
+                        "choch_bullish": ("green",  "CHoCH↑",  "추세 전환 — 상승 우세 (전환 신호)"),
+                        "choch_bearish": ("red",    "CHoCH↓",  "추세 전환 — 하락 우세 (전환 신호)"),
+                    }
+                    color, term, interp = struct_meta.get(
+                        s.type, ("yellow", s.type, "구조 변화"),
+                    )
+                    reasons.append({
+                        "color": color, "term": term,
+                        "range": f"{s.broken_level:,.0f}",
+                        "interpretation": interp,
+                    })
+                ob_src = _mk.large_order_blocks or _mk.order_blocks
+                obs = [o for o in ob_src if not o.mitigated]
+                if cur_price > 0 and obs:
+                    bull_obs = [
+                        o for o in obs
+                        if o.type == "bullish" and o.high < cur_price
+                    ]
+                    bear_obs = [
+                        o for o in obs
+                        if o.type == "bearish" and o.low > cur_price
+                    ]
+                    bull_obs.sort(key=lambda o: cur_price - o.high)
+                    bear_obs.sort(key=lambda o: o.low - cur_price)
+                    for o in bull_obs[:1]:
+                        reasons.append({
+                            "color": "green", "term": "OB",
+                            "range": f"{o.high:,.0f} ~ {o.low:,.0f}",
+                            "interpretation": "롱 지지 가능성 (기관 매수 흔적)",
+                        })
+                    for o in bear_obs[:1]:
+                        reasons.append({
+                            "color": "red", "term": "OB",
+                            "range": f"{o.high:,.0f} ~ {o.low:,.0f}",
+                            "interpretation": "위쪽 저항 (기관 매도 흔적)",
+                        })
+                sweep_src = _mk.large_sweeps or _mk.sweeps
+                if sweep_src:
+                    sw = sweep_src[-1]
+                    if sw.type == "bullish":
+                        reasons.append({
+                            "color": "yellow", "term": "SSL Sweep",
+                            "range": f"{sw.wick_price:,.0f}",
+                            "interpretation": "하단 유동성 흡수 — 반등 가능성 (롱 손절 청산)",
+                        })
+                    elif sw.type == "bearish":
+                        reasons.append({
+                            "color": "yellow", "term": "BSL Sweep",
+                            "range": f"{sw.wick_price:,.0f}",
+                            "interpretation": "상단 유동성 흡수 — 하락 가능성 (숏 손절 청산)",
+                        })
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                "[multi-user] %s judgment markers 추출 실패: %s", user_code, e,
+            )
+        session = _compute_session_status()
+        if session["kind"] == "killzone":
+            reasons.append({
+                "color": "green", "term": "Killzone",
+                "range": session["label"].replace("Kill zone : ", ""),
+                "interpretation": "활발한 매매 시간대 (진입 윈도우)",
+            })
+        elif session["kind"] == "us_open":
+            reasons.append({
+                "color": "green", "term": "US Session",
+                "range": "09:30-16:00 ET",
+                "interpretation": "미장 개장 — 변동성 ↑",
+            })
+        else:
+            reasons.append({
+                "color": "yellow", "term": "Session", "range": "Off-hours",
+                "interpretation": "킬존 밖 — 진입 자제 권장 (referral 은 24h 허용)",
+            })
+        min_cf = settings.min_confluence
+        min_rr = settings.min_rr
+        if bot.active_position is not None:
+            ec_title = "진입 중 — 신규 진입 차단 (페어당 1포지션)"
+            ec_detail = f"방향 {bot.active_position.direction.value}, SL/TP 진행"
+        elif bot._pending_entry is not None:
+            pe = bot._pending_entry
+            ec_title = f"지정가 미체결 대기 ({pe.entry:,.2f})"
+            ec_detail = "10분 안 체결 안 되면 자동 취소"
+        else:
+            ec_title = f"등급 {min_cf} 이상 & RR {min_rr} 이상 setup 대기"
+            ec_detail = "현재 활성 setup 없음 (혹은 게이트 미달로 skip)"
+        return {
+            "direction": {
+                "long_pct": long_pct, "short_pct": short_pct,
+                "label": dir_label, "bull_weight": bull_w, "bear_weight": bear_w,
+            },
+            "reasons": reasons,
+            "entry_condition": {"title": ec_title, "detail": ec_detail},
+        }
+
+    @app.get("/ict/equity")
+    async def get_equity_mu(
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """현재 잔고(USDT) + 세션 상태 — multi-user 사용자별."""
+        slot = mu_manager._slots.get(user_code)
+        bot = slot.bot if slot is not None else None
+        session = _compute_session_status()
+        if bot is None:
+            return {"equity": 0.0, "active": False, "session_status": session}
+        try:
+            eq = await bot._fetch_equity()
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                "[multi-user] %s equity fetch 실패: %s", user_code, e,
+            )
+            return {
+                "equity": 0.0, "active": True, "error": "fetch_failed",
+                "session_status": session,
+            }
+        return {"equity": float(eq), "active": True, "session_status": session}
+
+    @app.get("/ict/closed_pnl")
+    async def get_closed_pnl_mu(
+        limit: int = 50,
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """최근 청산 거래 내역 — multi-user 사용자별 (30일 윈도우)."""
+        slot = mu_manager._slots.get(user_code)
+        bot = slot.bot if slot is not None else None
+        if bot is None:
+            return {"trades": []}
+        import time as _time
+        since_ms = int(_time.time() * 1000) - 30 * 24 * 60 * 60 * 1000
+        try:
+            closed = await bot.client.fetch_closed_positions(
+                since_ms=since_ms, limit=max(1, min(int(limit), 200)),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[multi-user] %s closed_pnl fetch 실패: %s", user_code, e,
+            )
+            return {"trades": []}
+        trades: list[dict[str, Any]] = []
+        for cp in closed[: max(1, min(int(limit), 200))]:
+            trades.append({
+                "symbol": getattr(cp, "symbol", None),
+                "direction": getattr(cp, "direction", None),
+                "entry_price": getattr(cp, "entry_price", None),
+                "exit_price": getattr(cp, "exit_price", None),
+                "qty": getattr(cp, "qty", None),
+                "pnl_usd": getattr(cp, "pnl_usd", None),
+                "roi_pct": getattr(cp, "roi_pct", None),
+                "leverage": getattr(cp, "leverage", None),
+                "closed_at_ts": getattr(cp, "closed_at_ts", None),
+                "opened_at_ts": getattr(cp, "opened_at_ts", None),
+            })
+        return {"trades": trades}
+
+    @app.get("/ict/markers")
+    async def get_markers_mu(
+        symbol: str | None = None,
+        timeframe: str | None = None,
+        limit: int = 1500,
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """OHLCV 기반 chart markers — multi-user 사용자별."""
+        slot = mu_manager._slots.get(user_code)
+        bot = slot.bot if slot is not None else None
+        if bot is None:
+            raise HTTPException(
+                status_code=404,
+                detail="봇이 실행 중이 아닙니다 — /ict/start 먼저 호출하세요",
+            )
+        use_symbol = symbol or bot.symbol
+        use_tf = timeframe or bot.timeframe
+        try:
+            rows = await bot.client.fetch_ohlcv(use_symbol, use_tf, limit)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[multi-user] %s fetch_ohlcv 실패: %s", user_code, e,
+            )
+            raise HTTPException(status_code=502, detail=f"fetch_ohlcv: {e}") from e
+        df = pd.DataFrame(
+            rows,
+            columns=["ts_ms", "open", "high", "low", "close", "volume"],
+        )
+        df.index = pd.DatetimeIndex(pd.to_datetime(df["ts_ms"], unit="ms", utc=True))
+        df = df[["open", "high", "low", "close", "volume"]]
+        settings = _user_settings(user_code)
+        markers = to_chart_markers(
+            df,
+            min_rr=settings.min_rr,
+            fvg_min_size_pct=settings.fvg_min_size_pct,
+        )
+        return {
+            "symbol": use_symbol,
+            "timeframe": use_tf,
+            "count": {
+                "fvgs": len(markers.fvgs),
+                "sweeps": len(markers.sweeps),
+                "structure": len(markers.structure),
+                "swings": len(markers.swings),
+                "killzones": len(markers.killzones),
+                "setups": len(markers.setups),
+                "order_blocks": len(markers.order_blocks),
+                "macros": len(markers.macros),
+                "trailing": 1 if markers.trailing else 0,
+                "internal_swings": len(markers.internal_swings),
+                "internal_structure": len(markers.internal_structure),
+                "large_swings": len(markers.large_swings),
+                "large_structure": len(markers.large_structure),
+                "equal_levels": len(markers.equal_levels),
+            },
+            "markers": markers.to_dict(),
+        }
+
+    @app.get("/ict/ohlcv")
+    async def get_ohlcv_mu(
+        symbol: str | None = None,
+        timeframe: str | None = None,
+        limit: int = 1500,
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """OHLCV 봉 — multi-user 사용자별 (bot prefetch cache 활용)."""
+        slot = mu_manager._slots.get(user_code)
+        bot = slot.bot if slot is not None else None
+        if bot is None:
+            raise HTTPException(
+                status_code=404, detail="봇이 실행 중이 아닙니다",
+            )
+        use_symbol = symbol or bot.symbol
+        use_tf = timeframe or bot.timeframe
+        try:
+            if use_symbol == bot.symbol:
+                rows = await bot.get_ohlcv_cached(use_tf, limit)
+            else:
+                rows = await bot.client.fetch_ohlcv(use_symbol, use_tf, limit)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"fetch_ohlcv: {e}") from e
+        candles = [
+            {
+                "time": int(r[0] // 1000),
+                "open": float(r[1]),
+                "high": float(r[2]),
+                "low": float(r[3]),
+                "close": float(r[4]),
+            }
+            for r in rows
+        ]
+        return {"symbol": use_symbol, "timeframe": use_tf, "candles": candles}
+
     # Static UI mount — SaaS 도 ui_ict 그대로 서빙 (브라우저 → cookie 세션 흐름).
     # single-user 분기와 동일 패턴 (frozen 케이스는 SaaS 에서 없음 — dev / Docker layout 만).
     candidates = []
