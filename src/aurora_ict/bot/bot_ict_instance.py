@@ -145,6 +145,11 @@ class _ActivePosition:
     htf_flip_target: HtfFvgEntry | None = None
     # LTF setup 가중치 (5m=1 등). flip 판정 시 가중치 비교에 사용.
     ltf_weight: int = 1
+    # 2026-05-28: 학습/복기용 trade dataset 위해 진입 컨텍스트 보존
+    # (_PendingEntry → _ActivePosition 승격 시 같이 박힘).
+    entry_ts_ms: int = 0           # 체결 시각 (close 시점에 duration 계산)
+    context_json: str | None = None  # 진입 setup confluences/source/window/HTF FVG snapshot
+    equity_at_entry: float = 0.0   # 진입 시점 equity (참고용; close 시 dataset 에 박음)
 
 
 @dataclass(slots=True)
@@ -912,6 +917,13 @@ class BotIctInstance:
             return
 
         # 즉시 체결 (시장가 or 계획가==현재가) → active_position 확정 + SL/TP conditional 박기.
+        # 2026-05-28: 학습/복기 dataset 위해 진입 context + equity snapshot 같이 박음.
+        _market_entry_equity = 0.0
+        try:
+            _market_entry_equity = float(await self._fetch_equity())
+        except Exception:  # noqa: BLE001
+            pass
+        _market_entry_ctx = self._build_entry_context_json(setup, fill_price, qty, htf_flip_target)
         self.active_position = _ActivePosition(
             direction=setup.direction,
             entry=fill_price,
@@ -921,6 +933,9 @@ class BotIctInstance:
             setup_ts_ms=setup.ts_ms,
             htf_flip_target=htf_flip_target,
             ltf_weight=TF_WEIGHT.get(self.timeframe, 1),
+            entry_ts_ms=int(time.time() * 1000),
+            context_json=_market_entry_ctx,
+            equity_at_entry=_market_entry_equity,
         )
         # #BUG-2 해소: ENTRY 이벤트 기록 (체결됨 — 먼저 기록).
         self._record_trade(
@@ -980,6 +995,12 @@ class BotIctInstance:
                 )
                 if isinstance(ep, (int, float)) and float(ep) > 0:
                     entry_px = float(ep)
+            # 2026-05-28: 학습/복기 dataset 위해 진입 시점 equity snapshot.
+            entry_equity = 0.0
+            try:
+                entry_equity = float(await self._fetch_equity())
+            except Exception:  # noqa: BLE001
+                pass
             self.active_position = _ActivePosition(
                 direction=pe.direction,
                 entry=entry_px,
@@ -989,6 +1010,9 @@ class BotIctInstance:
                 setup_ts_ms=pe.setup_ts_ms,
                 htf_flip_target=pe.htf_flip_target,
                 ltf_weight=pe.ltf_weight,
+                entry_ts_ms=int(time.time() * 1000),
+                context_json=pe.context_json,
+                equity_at_entry=entry_equity,
             )
             # #BUG-2: ENTRY 기록 (체결됨 — 먼저 기록).
             self._record_trade(
@@ -1519,6 +1543,13 @@ class BotIctInstance:
             reason=close_reason,
             pnl_override=pnl_usd if cp is not None else None,
         )
+        # 2026-05-28: 학습/복기 dataset JSON sidecar 저장 (best-effort, 실패해도 봇 OK)
+        try:
+            await self._write_trade_dataset(
+                last_known, close_px, pnl_usd, close_reason, cp,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("trade dataset 저장 실패: %s", e)
         self.active_position = None
 
     # ----- 변경 2: 추세 평가 캐시 ---------------------------------------
@@ -1812,6 +1843,12 @@ class BotIctInstance:
         except Exception as e:  # noqa: BLE001
             logger.warning("flip — SL 적용 실패 (%.4f): %s — 포지션은 유지", new_sl, e)
 
+        # 2026-05-28: flip 케이스도 진입 컨텍스트 박음 — 학습/복기 dataset 정합.
+        _flip_entry_equity = 0.0
+        try:
+            _flip_entry_equity = float(await self._fetch_equity())
+        except Exception:  # noqa: BLE001
+            pass
         self.active_position = _ActivePosition(
             direction=new_direction,
             entry=new_entry,
@@ -1821,6 +1858,9 @@ class BotIctInstance:
             setup_ts_ms=last_ts,
             htf_flip_target=None,  # flip 완료 — 같은 target 재발동 방지.
             ltf_weight=TF_WEIGHT.get(self.timeframe, 1),
+            entry_ts_ms=int(time.time() * 1000),
+            context_json=f'{{"source":"flip","htf_target_tf":"{target.tf}","htf_target_weight":{target.weight}}}',
+            equity_at_entry=_flip_entry_equity,
         )
         # #BUG-2: FLIP_OPEN 기록 — 반대 방향 신규 진입.
         self._record_trade(
@@ -1830,6 +1870,171 @@ class BotIctInstance:
             qty=new_qty,
             setup_ts_ms=last_ts,
             reason=f"htf flip into {target.tf} (weight={target.weight})",
+        )
+
+    # ============================================================
+    # 2026-05-28: 거래 학습/복기 dataset — per-trade JSON sidecar
+    # ============================================================
+
+    async def _write_trade_dataset(
+        self,
+        pos: _ActivePosition,
+        close_px: float,
+        pnl_usd: float,
+        classification: str,
+        closed_position: Any | None,  # ClosedPosition or None
+    ) -> None:
+        """청산 직후 학습/복기용 dataset JSON 한 건 저장.
+
+        파일: <data_dir>/trades_dataset/<exit_iso>__<direction>__<class>.json
+        내용:
+          - entry: 진입 ts/시각(UTC/KST/NY) + 가격/SL/TP/qty + context_json + equity
+          - exit:  청산 ts/시각 + close_px + pnl + duration + classification
+          - ohlcv_snapshot: 1h/5m 봉 window (entry 전후) — cache 활용 (비용 적음)
+          - settings_snapshot: 그 시점 봇 설정 (min_rr/min_confluence/leverage 등)
+          - bot_version, license_type
+
+        실패해도 봇은 안 죽음 (try/warn 처리 — 호출자가 감쌌음).
+        """
+        import json as _json
+        from datetime import UTC, datetime
+        from zoneinfo import ZoneInfo
+
+        from aurora_ict import __version__ as _ict_version
+
+        exit_ts_ms = int(time.time() * 1000)
+        entry_ts_ms = pos.entry_ts_ms or 0
+        duration_sec = (exit_ts_ms - entry_ts_ms) // 1000 if entry_ts_ms > 0 else None
+
+        def _iso(ts_ms: int, tz: Any) -> str:
+            return datetime.fromtimestamp(ts_ms / 1000.0, tz=tz).isoformat()
+
+        utc = UTC
+        kst = ZoneInfo("Asia/Seoul")
+        ny = ZoneInfo("America/New_York")
+
+        # 진입 context_json (저장된 raw string) → dict 으로 unpack (실패 시 raw 그대로)
+        entry_context: Any = None
+        if pos.context_json:
+            try:
+                entry_context = _json.loads(pos.context_json)
+            except Exception:  # noqa: BLE001
+                entry_context = pos.context_json  # raw fallback
+
+        # 청산 시점 equity (best-effort)
+        exit_equity = 0.0
+        try:
+            exit_equity = float(await self._fetch_equity())
+        except Exception:  # noqa: BLE001
+            pass
+
+        # OHLCV snapshot — prefetch cache 활용 (없으면 빈 list)
+        ohlcv_1h = self._ohlcv_cache.get("1h", [])
+        ohlcv_5m = self._ohlcv_cache.get("5m", [])
+        # window: entry 50봉 전 ~ exit + 5봉
+        def _window(rows: list[list[Any]], entry_ms: int, exit_ms: int) -> list[list[Any]]:
+            if not rows or entry_ms <= 0:
+                return []
+            # ts 오름차순. entry 봉 idx 찾기 (가장 가까운).
+            ent_idx = 0
+            for i, r in enumerate(rows):
+                if r[0] <= entry_ms:
+                    ent_idx = i
+                else:
+                    break
+            start = max(0, ent_idx - 50)
+            # exit 봉 idx 찾기
+            exit_idx = len(rows) - 1
+            for i in range(ent_idx, len(rows)):
+                if rows[i][0] <= exit_ms:
+                    exit_idx = i
+                else:
+                    break
+            end = min(len(rows), exit_idx + 6)
+            return [list(r) for r in rows[start:end]]
+
+        snap_1h = _window(ohlcv_1h, entry_ts_ms, exit_ts_ms)
+        snap_5m = _window(ohlcv_5m, entry_ts_ms, exit_ts_ms)
+
+        # PnL % 계산 (best-effort)
+        pnl_pct_on_margin = None
+        if pos.equity_at_entry > 0:
+            pnl_pct_on_margin = (pnl_usd / pos.equity_at_entry) * 100.0
+
+        # settings snapshot — 봇 인스턴스 필드 그대로 (학습 시 분류 기준)
+        settings_snap = {
+            "min_rr": self.min_rr,
+            "min_confluence": self.min_confluence,
+            "disable_time_filter": self.disable_time_filter,
+            "leverage": self.leverage,
+            "position_pct_base": self.position_pct_base,
+            "position_pct_max": self.position_pct_max,
+            "position_pct_step": self.position_pct_step,
+            "fvg_min_size_pct": self.fvg_min_size_pct,
+            "trail_buffer_ratio": self.trail_buffer_ratio,
+            "timeframe": self.timeframe,
+        }
+
+        dataset = {
+            "version": "v1",
+            "bot_version": _ict_version,
+            "symbol": self.symbol,
+            "direction": "long" if pos.direction is Direction.LONG else "short",
+            "classification": classification,
+            "entry": {
+                "ts_ms": entry_ts_ms,
+                "iso_utc": _iso(entry_ts_ms, utc) if entry_ts_ms > 0 else None,
+                "iso_kst": _iso(entry_ts_ms, kst) if entry_ts_ms > 0 else None,
+                "iso_ny": _iso(entry_ts_ms, ny) if entry_ts_ms > 0 else None,
+                "entry_px": pos.entry,
+                "sl": pos.stop_loss,
+                "tp": pos.take_profit,
+                "qty": pos.qty,
+                "setup_ts_ms": pos.setup_ts_ms,
+                "rr_target": (
+                    abs(pos.take_profit - pos.entry) / abs(pos.stop_loss - pos.entry)
+                    if pos.stop_loss != pos.entry else None
+                ),
+                "context": entry_context,
+                "equity_at_entry_usdt": pos.equity_at_entry,
+            },
+            "exit": {
+                "ts_ms": exit_ts_ms,
+                "iso_utc": _iso(exit_ts_ms, utc),
+                "iso_kst": _iso(exit_ts_ms, kst),
+                "iso_ny": _iso(exit_ts_ms, ny),
+                "close_px": close_px,
+                "classification": classification,
+                "pnl_usdt": pnl_usd,
+                "pnl_pct_on_equity_entry": pnl_pct_on_margin,
+                "duration_sec": duration_sec,
+                "equity_at_exit_usdt": exit_equity,
+                "from_closed_pnl_api": closed_position is not None,
+            },
+            "ohlcv_snapshot": {
+                "1h_entry50_to_exit5": snap_1h,
+                "5m_entry50_to_exit5": snap_5m,
+            },
+            "settings_snapshot": settings_snap,
+        }
+
+        out_dir = _ict_data_dir() / "trades_dataset"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # 파일명 — exit_iso + dir + class, 정렬 친화적 + 중복 방지
+        exit_iso = datetime.fromtimestamp(exit_ts_ms / 1000.0, tz=utc).strftime(
+            "%Y%m%dT%H%M%SZ",
+        )
+        direction_str = "long" if pos.direction is Direction.LONG else "short"
+        # classification 에 공백/특수문자 있을 수 있어 sanitize
+        class_safe = "".join(c if c.isalnum() else "_" for c in classification)[:40]
+        out_path = out_dir / f"{exit_iso}__{direction_str}__{class_safe}.json"
+        out_path.write_text(
+            _json.dumps(dataset, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        logger.info(
+            "trade dataset 저장 — %s (pnl=%.4f duration=%ss)",
+            out_path.name, pnl_usd, duration_sec,
         )
 
     # ============================================================
