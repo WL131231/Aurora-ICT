@@ -1,6 +1,11 @@
-/* Aurora-ICT UI — lightweight-charts + REST polling */
+/* Aurora-ICT UI — lightweight-charts + REST polling
 
-const API = "http://127.0.0.1:8765";
+   2026-05-28: SaaS 전환 — API base 를 same-origin 으로 변경.
+   - single-user (.exe / pywebview):  http://127.0.0.1:8765/ui/ 에서 로드 → same origin
+   - SaaS (Docker / 클라우드):       https://<도메인>/ui/ 에서 로드 → same origin
+   상대 경로 ("") 사용하면 어떤 호스트에서 서빙되든 cookie session 자동 동작. */
+
+const API = "";  // same-origin — fetch("/auth/status") 처럼 동작
 
 // 현재 선택된 차트 timeframe (localStorage 영속화)
 let currentTimeframe = localStorage.getItem("aurora_ict_tf") || "1h";
@@ -417,11 +422,21 @@ function toast(msg, error = false) {
 }
 
 async function api(path, method = "GET", body = null) {
-  const opts = { method, headers: { "Content-Type": "application/json" } };
+  // credentials: "include" — SaaS 세션 cookie (aurora_ict_session) 자동 포함.
+  // single-user (.exe) 흐름에서도 cookie 가 없으면 server 가 무시하므로 안전.
+  const opts = {
+    method,
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+  };
   if (body) opts.body = JSON.stringify(body);
   const resp = await fetch(`${API}${path}`, opts);
   if (!resp.ok) {
     const detail = await resp.text();
+    // 401 — SaaS 세션 만료 시 게이트 자동 표시 (있을 때만 — single-user 흐름에선 게이트 자체가 hidden).
+    if (resp.status === 401 && typeof showAuthGate === "function") {
+      try { await showAuthGate(); } catch (_) { /* noop */ }
+    }
     throw new Error(`${resp.status}: ${detail}`);
   }
   return await resp.json();
@@ -1016,8 +1031,217 @@ async function fetchVersion() {
     if (el && cfg && cfg.version) el.textContent = `v${cfg.version}`;
   } catch (e) { /* noop */ }
 }
-fetchVersion();
 
-// 초기 fetch + polling (10s 주기)
-fetchAndRender();
+// 초기 fetch + polling (10s 주기) — bootstrap 이 시작 결정.
 setInterval(fetchAndRender, 10_000);
+
+// ============================================================
+// SaaS 인증 게이트 — bootstrap()
+// 2026-05-28: 다중 사용자 모드 (FastAPI /auth/*) 가 켜져 있으면 게이트 표시.
+// single-user (.exe / pywebview) 모드에서는 /auth/status 가 404 → 게이트 hide.
+// ============================================================
+const AUTH = {
+  state: "boot",         // boot | setup | login | keys | main
+  userCode: null,
+  multiUser: false,      // /auth/status 가 200 응답하면 true
+};
+
+function _showOnly(...ids) {
+  ["auth-setup", "auth-login", "auth-keys"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.style.display = ids.includes(id) ? "block" : "none";
+  });
+}
+
+function _hideAuthError(prefix) {
+  const e = document.getElementById(`${prefix}-error`);
+  if (e) { e.style.display = "none"; e.textContent = ""; }
+}
+
+function _showAuthError(prefix, msg) {
+  const e = document.getElementById(`${prefix}-error`);
+  if (!e) return;
+  e.textContent = msg;
+  e.style.display = "block";
+}
+
+function showAuthGate(panel = "login") {
+  const gate = document.getElementById("auth-gate");
+  const main = document.getElementById("main-screen");
+  if (gate) gate.style.display = "flex";
+  if (main) main.style.display = "none";
+  if (panel === "setup") _showOnly("auth-setup");
+  else if (panel === "keys") _showOnly("auth-keys");
+  else _showOnly("auth-login");
+  AUTH.state = panel;
+}
+
+function showMainScreen() {
+  const gate = document.getElementById("auth-gate");
+  const main = document.getElementById("main-screen");
+  if (gate) gate.style.display = "none";
+  if (main) main.style.display = "flex";
+  AUTH.state = "main";
+}
+
+// PIN 강도 평가 — server-side validate_pin_strength 와 가벼운 일관 (UX hint).
+// 실제 검증은 백엔드가 단일 진실. 여기선 UI feedback 용.
+function _evalPinStrength(pin) {
+  if (!pin) return { score: 0, label: "" };
+  let score = 0;
+  if (pin.length >= 8) score++;
+  if (/[A-Za-z]/.test(pin)) score++;
+  if (/\d/.test(pin)) score++;
+  if (/[^A-Za-z0-9]/.test(pin)) score++;
+  const labels = ["너무 짧음", "약함", "보통", "양호", "강함"];
+  return { score, label: labels[score] || "" };
+}
+
+function _bindPinStrengthMeter() {
+  const input = document.getElementById("setup-pin");
+  const meter = document.getElementById("setup-pin-strength");
+  const lbl = document.getElementById("setup-pin-strength-label");
+  if (!input || !meter || !lbl) return;
+  input.addEventListener("input", () => {
+    const r = _evalPinStrength(input.value);
+    meter.className = "pin-strength " +
+      (r.score >= 4 ? "s-strong"
+        : r.score === 3 ? "s-good"
+        : r.score === 2 ? "s-fair"
+        : r.score >= 1 ? "s-weak" : "");
+    lbl.textContent = input.value ? `강도: ${r.label}` : "8자 이상, 영문/숫자/특수문자 혼합";
+  });
+}
+
+async function _checkAuthStatus() {
+  // SaaS 모드면 /auth/status 가 200 + {authenticated, ...} 반환.
+  // single-user 모드면 404 — fetch error 던짐 → multiUser=false 로 판단.
+  try {
+    const opts = { credentials: "include" };
+    const resp = await fetch(`${API}/auth/status`, opts);
+    if (!resp.ok) {
+      if (resp.status === 404) return { multiUser: false };
+      throw new Error(`status ${resp.status}`);
+    }
+    const s = await resp.json();
+    return { multiUser: true, status: s };
+  } catch (e) {
+    // 네트워크 오류 — single-user 가정 + 게이트 hide.
+    return { multiUser: false };
+  }
+}
+
+async function bootstrap() {
+  const r = await _checkAuthStatus();
+  AUTH.multiUser = r.multiUser;
+  if (!r.multiUser) {
+    // single-user (.exe / pywebview) — 게이트 한 번도 표시 X, 기존 흐름 그대로.
+    showMainScreen();
+    fetchVersion();
+    fetchAndRender();
+    return;
+  }
+  // SaaS 모드 — 로그아웃 행 표시 + 상태별 패널 분기.
+  const lr = document.getElementById("logout-row");
+  if (lr) lr.classList.add("show");
+
+  const s = r.status || {};
+  if (!s.authenticated) {
+    showAuthGate(s.needs_pin_setup ? "setup" : "login");
+    return;
+  }
+  AUTH.userCode = s.code || null;
+  const codeEl = document.getElementById("user-code-display");
+  if (codeEl && AUTH.userCode) codeEl.textContent = AUTH.userCode;
+
+  if (!s.has_api_keys) {
+    showAuthGate("keys");
+    return;
+  }
+  // 인증 + 키 등록 완료 — 메인 봇 UI.
+  showMainScreen();
+  fetchVersion();
+  fetchAndRender();
+}
+
+// PIN 설정 버튼
+document.addEventListener("DOMContentLoaded", () => {
+  _bindPinStrengthMeter();
+
+  const btnSetup = document.getElementById("btn-setup-pin");
+  if (btnSetup) btnSetup.onclick = async () => {
+    _hideAuthError("setup");
+    const code = (document.getElementById("setup-code").value || "").trim();
+    const pin = document.getElementById("setup-pin").value || "";
+    const pin2 = document.getElementById("setup-pin2").value || "";
+    if (!code) return _showAuthError("setup", "라이선스 코드를 입력하세요.");
+    if (!pin || !pin2) return _showAuthError("setup", "PIN 과 PIN 확인을 모두 입력하세요.");
+    if (pin !== pin2) return _showAuthError("setup", "PIN 과 PIN 확인이 일치하지 않습니다.");
+    btnSetup.disabled = true;
+    try {
+      await api("/auth/setup-pin", "POST", { code, pin, pin_confirm: pin2 });
+      // 자동 로그인 됨 — bootstrap 다시 돌려서 키 등록 화면으로 진입.
+      await bootstrap();
+    } catch (e) {
+      _showAuthError("setup", `등록 실패 — ${e.message}`);
+    } finally {
+      btnSetup.disabled = false;
+    }
+  };
+
+  const btnLogin = document.getElementById("btn-login");
+  if (btnLogin) btnLogin.onclick = async () => {
+    _hideAuthError("login");
+    const code = (document.getElementById("login-code").value || "").trim();
+    const pin = document.getElementById("login-pin").value || "";
+    if (!code || !pin) return _showAuthError("login", "코드와 PIN 을 입력하세요.");
+    btnLogin.disabled = true;
+    try {
+      await api("/auth/login", "POST", { code, pin });
+      await bootstrap();
+    } catch (e) {
+      _showAuthError("login", `로그인 실패 — ${e.message}`);
+    } finally {
+      btnLogin.disabled = false;
+    }
+  };
+
+  const btnKeys = document.getElementById("btn-save-keys");
+  if (btnKeys) btnKeys.onclick = async () => {
+    _hideAuthError("keys");
+    const api_key = (document.getElementById("keys-api-key").value || "").trim();
+    const api_secret = (document.getElementById("keys-api-secret").value || "").trim();
+    if (!api_key || !api_secret) {
+      return _showAuthError("keys", "API Key 와 Secret 을 모두 입력하세요.");
+    }
+    btnKeys.disabled = true;
+    try {
+      await api("/auth/api-keys", "POST", { api_key, api_secret });
+      await bootstrap();
+    } catch (e) {
+      _showAuthError("keys", `저장 실패 — ${e.message}`);
+    } finally {
+      btnKeys.disabled = false;
+    }
+  };
+
+  const swLogin = document.getElementById("switch-to-login");
+  if (swLogin) swLogin.onclick = () => showAuthGate("login");
+  const swSetup = document.getElementById("switch-to-setup");
+  if (swSetup) swSetup.onclick = () => showAuthGate("setup");
+
+  const btnLogout = document.getElementById("btn-logout");
+  if (btnLogout) btnLogout.onclick = async () => {
+    try { await api("/auth/logout", "POST"); } catch (_) { /* noop */ }
+    location.reload();
+  };
+  const keysLogout = document.getElementById("keys-logout");
+  if (keysLogout) keysLogout.onclick = async () => {
+    try { await api("/auth/logout", "POST"); } catch (_) { /* noop */ }
+    location.reload();
+  };
+});
+
+// 부팅 — DOM 준비 즉시 게이트/메인 결정.
+bootstrap();

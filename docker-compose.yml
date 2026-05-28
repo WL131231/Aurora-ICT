@@ -1,0 +1,33 @@
+# Aurora-ICT SaaS — 개발/테스트용 compose 구성
+#
+# 사용:
+#   # (선택) master key 미리 생성해서 .env 에 박으면 컨테이너 재생성해도 같은 키 사용 가능.
+#   echo "AURORA_ICT_MASTER_KEY=$(python -c 'from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())')" > .env
+#   docker compose up -d
+#   docker compose logs -f aurora-ict
+#
+# 운영 (HTTPS) 에서는 reverse proxy (Caddy / Nginx / Traefik) 뒤에 두고
+# AURORA_ICT_SECURE_COOKIE=1 유지. 단독 HTTP 테스트 시에는 0 으로 토글.
+
+version: "3.9"
+
+services:
+  aurora-ict:
+    build: .
+    image: aurora-ict-saas:latest
+    container_name: aurora-ict
+    ports:
+      - "8765:8765"
+    volumes:
+      - aurora_data:/data
+    environment:
+      # master key 비우면 컨테이너 첫 부팅 시 /data/master.key 자동 생성.
+      # 운영에선 외부 secrets manager 에서 주입 권장.
+      - AURORA_ICT_MASTER_KEY=${AURORA_ICT_MASTER_KEY:-}
+      # HTTPS 미사용 로컬 테스트면 0 으로 바꿔야 cookie 가 박힘.
+      - AURORA_ICT_SECURE_COOKIE=${AURORA_ICT_SECURE_COOKIE:-1}
+      - AURORA_ICT_LOG_LEVEL=${AURORA_ICT_LOG_LEVEL:-INFO}
+    restart: unless-stopped
+
+volumes:
+  aurora_data:
