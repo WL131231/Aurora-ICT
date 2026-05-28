@@ -35,7 +35,7 @@ import os
 import uvicorn
 
 from aurora_ict.api.app import create_app
-from aurora_ict.auth import users_db
+from aurora_ict.auth import pin, users_db
 from aurora_ict.bot import aurora_client_factory
 from aurora_ict.bot.multi_user_manager import MultiUserBotManager
 from aurora_ict.config.settings import IctSettings
@@ -72,6 +72,17 @@ def main() -> int:
     db_path = dd / "users.db"
     users_db.init_db(db_path)
     logger.info("users.db 경로: %s", db_path)
+
+    # 세션 토큰 영속화 — Fly.io 재배포 후에도 사용자 로그인 상태 유지 (2026-05-28).
+    # 이 호출 이전: pin 모듈은 메모리 dict 사용 (.exe 모드).
+    # 이 호출 이후: pin 모듈의 create_session/validate_session/revoke_session 등 모두
+    # users.db 의 sessions 테이블로 동작. 봇 프로세스가 죽었다 살아도 토큰 유효.
+    pin.set_session_db_path(db_path)
+    purged = users_db.cleanup_expired_sessions(db_path)
+    logger.info(
+        "세션 백엔드 = SQLite (sessions 테이블), startup cleanup 으로 %d 건 제거",
+        purged,
+    )
 
     # base_settings — 사용자별 IctSettings 가 이 값을 model_copy 후 api_key 만 덮어씀.
     # ENV 로 demo/live mode / leverage / symbol 등 운영 정책 통일 가능 (사용자별 override 추후).

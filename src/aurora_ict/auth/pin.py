@@ -16,8 +16,16 @@ PIN 정책:
 
 세션 토큰:
     - secrets.token_urlsafe(32)
-    - 봇 메모리 dict (재시작 시 사라짐 — 매번 다시 로그인)
-    - 만료 30일 (default), 갱신 시 새 토큰 발급
+    - 백엔드 2종:
+        a) ``set_session_db_path(path)`` 호출됨 — SQLite ``sessions`` 테이블 영속화
+           (SaaS / Fly.io 재배포 후에도 토큰 유효).
+        b) 미호출 (기본) — 봇 메모리 dict (``.exe`` 단일 사용자, 재시작 시 삭제).
+    - 만료 30일 (default).
+
+파트너 결정 2026-05-28 — Fly.io 가 PR 머지마다 재배포해서 봇 프로세스가 죽으면
+메모리 세션이 전부 사라져 사용자가 매번 다시 로그인해야 했음. SaaS 진입점
+(``saas.py``) 이 ``set_session_db_path`` 로 ``users.db`` 경로 박으면 모든 세션
+함수가 DB 백엔드로 동작. ``.exe`` (단일 사용자) 는 미호출 → 메모리 fallback.
 """
 
 from __future__ import annotations
@@ -29,6 +37,9 @@ import secrets
 import string
 import time
 from dataclasses import dataclass
+from pathlib import Path
+
+from aurora_ict.auth import users_db
 
 _ALGO = "pbkdf2_sha256"
 _ITERATIONS = 100_000
@@ -120,13 +131,13 @@ def verify_pin(pin: str, stored_hash: str) -> bool:
 
 
 # ============================================================
-# 세션 토큰 — 봇 메모리 dict (단일 사용자 봇 가정)
+# 세션 토큰 — DB 백엔드 (SaaS) + 메모리 fallback (.exe)
 # ============================================================
 
 
 @dataclass(slots=True)
 class _Session:
-    """발급된 세션 1건.
+    """발급된 세션 1건 (메모리 백엔드 전용).
 
     user_code:
         세션이 귀속된 사용자 라이선스 코드. SaaS 다중 사용자 전환 (2026-05-28)
@@ -140,27 +151,71 @@ class _Session:
     user_code: str = ""
 
 
-# 봇 프로세스 메모리에만 존재 — 재시작 시 모든 세션 무효 (다시 로그인 필요).
+# 봇 프로세스 메모리에만 존재 — 재시작 시 모든 세션 무효. DB 백엔드 미설정 시 fallback.
 _active_sessions: dict[str, _Session] = {}
 
+# DB 백엔드 활성화 flag — saas.py 가 set_session_db_path 로 박음. None 이면 메모리 모드.
+# Why module-level: pin 함수들이 router/middleware 에서 직접 호출되므로 의존성 주입 대신
+# 모듈 상태로 두는 게 호출자 변경 최소화 (테스트는 set_session_db_path(None) 로 reset).
+_db_path: Path | None = None
+
 _DEFAULT_TTL_SEC = 30 * 24 * 3600  # 30일 — cookie Max-Age 와 일치
+
+
+def set_session_db_path(path: Path | str | None) -> None:
+    """세션 영속화 DB 경로 설정 — saas.py 가 startup 시 호출.
+
+    Args:
+        path: ``users.db`` 경로 (sessions 테이블 포함). None 이면 메모리 모드로 복귀
+            (테스트 격리용).
+
+    Side effects:
+        모듈 전역 ``_db_path`` 변경. 이 호출 이후 모든 세션 함수는 DB 백엔드로 동작.
+    """
+    global _db_path
+    _db_path = Path(path) if path is not None else None
+
+
+def get_session_db_path() -> Path | None:
+    """현재 세션 백엔드 경로 — None 이면 메모리 모드.
+
+    Returns:
+        ``set_session_db_path`` 로 박힌 경로 또는 None.
+    """
+    return _db_path
 
 
 def create_session(
     user_code: str = "",
     ttl_sec: int = _DEFAULT_TTL_SEC,
 ) -> str:
-    """새 세션 토큰 발급 → 메모리 dict 에 저장 → 토큰 반환.
+    """새 세션 토큰 발급 → 백엔드 (DB 또는 메모리) 저장 → 토큰 반환.
 
     Args:
         user_code: 세션이 귀속될 사용자 라이선스 코드. SaaS 흐름에서는 필수.
-            레거시 (단일 사용자) 호출자는 빈 문자열로 호출 가능.
+            레거시 (단일 사용자) 호출자는 빈 문자열로 호출 가능 (메모리 백엔드 한정).
         ttl_sec: 만료까지 초 (기본 30일).
 
     Returns:
         토큰 문자열 (URL-safe base64, 32바이트).
+
+    Raises:
+        ValueError: DB 백엔드 사용 중인데 ``user_code`` 가 빈 문자열인 경우 (sessions
+            테이블의 ``user_code NOT NULL`` 제약 + 빈 코드는 무의미).
     """
     token = secrets.token_urlsafe(32)
+    if _db_path is not None:
+        # DB 백엔드 — Fly.io 재배포 후에도 토큰 유효.
+        if not user_code:
+            raise ValueError(
+                "DB 세션 백엔드는 user_code 가 필수입니다 (빈 문자열 거부).",
+            )
+        users_db.create_session_row(
+            _db_path, token=token, user_code=user_code, ttl_sec=ttl_sec,
+        )
+        return token
+
+    # 메모리 백엔드 — .exe 단일 사용자, 봇 재시작 시 사라짐.
     now_ms = int(time.time() * 1000)
     _active_sessions[token] = _Session(
         token=token,
@@ -182,6 +237,9 @@ def validate_session(token: str | None) -> bool:
     """
     if not token or not isinstance(token, str):
         return False
+    if _db_path is not None:
+        return users_db.get_session(_db_path, token) is not None
+
     sess = _active_sessions.get(token)
     if sess is None:
         return False
@@ -204,6 +262,14 @@ def get_user_from_session(token: str | None) -> str | None:
     """
     if not token or not isinstance(token, str):
         return None
+    if _db_path is not None:
+        row = users_db.get_session(_db_path, token)
+        if row is None:
+            return None
+        # DB 백엔드는 user_code NOT NULL 이지만 방어적으로 빈 문자열 거름.
+        code = row.get("user_code") or ""
+        return code or None
+
     sess = _active_sessions.get(token)
     if sess is None:
         return None
@@ -217,8 +283,12 @@ def get_user_from_session(token: str | None) -> str | None:
 
 def revoke_session(token: str | None) -> None:
     """로그아웃 — 토큰 즉시 무효화."""
-    if token:
-        _active_sessions.pop(token, None)
+    if not token:
+        return
+    if _db_path is not None:
+        users_db.delete_session(_db_path, token)
+        return
+    _active_sessions.pop(token, None)
 
 
 def revoke_all_sessions() -> int:
@@ -227,6 +297,8 @@ def revoke_all_sessions() -> int:
     Returns:
         제거된 세션 개수.
     """
+    if _db_path is not None:
+        return users_db.delete_all_sessions(_db_path)
     count = len(_active_sessions)
     _active_sessions.clear()
     return count
@@ -241,6 +313,8 @@ def revoke_sessions_for_user(user_code: str) -> int:
     Returns:
         무효화된 세션 개수.
     """
+    if _db_path is not None:
+        return users_db.delete_sessions_for_user(_db_path, user_code)
     to_remove = [
         tok for tok, sess in _active_sessions.items()
         if sess.user_code == user_code
@@ -253,11 +327,13 @@ def revoke_sessions_for_user(user_code: str) -> int:
 __all__ = [
     "PinStrengthError",
     "create_session",
+    "get_session_db_path",
     "get_user_from_session",
     "hash_pin",
     "revoke_all_sessions",
     "revoke_session",
     "revoke_sessions_for_user",
+    "set_session_db_path",
     "validate_pin_strength",
     "validate_session",
     "verify_pin",
