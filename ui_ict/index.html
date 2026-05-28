@@ -257,6 +257,20 @@
     background: rgba(96, 165, 250, 0.20);
     color: #60a5fa;
   }
+  /* 사이드바용 시각화 토글 — 3개 가로 그리드, 사이드바 trade-tf-toggle 톤 재사용.
+     2026-05-28: 모바일 가로에서 차트 toolbar viz-toggle 숨겼을 때 대체 진입점. */
+  .viz-toggle-side {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 3px;
+    margin-left: 0;
+    margin-top: 4px;
+    padding: 3px;
+  }
+  .viz-toggle-side button {
+    padding: 6px 0;
+    letter-spacing: 0.04em;
+  }
   .chart-symbol {
     font-family: 'JetBrains Mono', monospace;
     font-size: 11px;
@@ -419,7 +433,8 @@
     font-size: 18px;
     font-family: inherit;
     cursor: pointer;
-    z-index: 160;
+    /* z-index 210 — judgment-panel (200) 위에 떠야 다시 눌러 닫을 수 있음. */
+    z-index: 210;
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
     /* 데스크탑 default 숨김 — 모바일 가로 미디어 쿼리에서만 보이게 */
     display: none;
@@ -433,6 +448,60 @@
     color: var(--bg);
     border-color: var(--accent);
   }
+
+  /* 우하단 POSITIONS 토글 fab (2026-05-28) — 모바일 가로에서만 보임.
+     판단 fab 위 64px. 활성 포지션 있을 때 .has-position 으로 시각 강조 (녹색 glow).
+     데스크탑은 default hidden. */
+  .positions-fab {
+    position: absolute;
+    right: 14px;
+    bottom: 70px;
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    background: rgba(20, 20, 25, 0.92);
+    border: 1px solid var(--line-strong);
+    color: var(--text-1);
+    font-family: inherit;
+    cursor: pointer;
+    /* z-index 210 — positions-panel (200) 위에 떠야 다시 눌러 닫을 수 있음. */
+    z-index: 210;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+  .positions-fab .pf-icon {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+  }
+  .positions-fab .pf-badge {
+    position: absolute;
+    top: -4px; right: -4px;
+    min-width: 18px; height: 18px;
+    padding: 0 5px;
+    background: #34d399;
+    color: var(--bg);
+    border-radius: 9px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 18px;
+    text-align: center;
+  }
+  .positions-fab:hover { border-color: var(--accent); color: var(--accent); }
+  .positions-fab.active {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+  }
+  .positions-fab.has-position {
+    border-color: #34d399;
+    color: #34d399;
+    box-shadow: 0 0 12px rgba(52, 211, 153, 0.45);
+  }
+  /* positions-mobile-host 는 hidden — CSS 만으로 positions-panel 을 absolute 띄움. */
+  .positions-mobile-host { display: none; }
 
   /* 좌하단 판단 패널 — 봇이 시장 어떻게 보는지 시각화 */
   .judgment-panel {
@@ -669,11 +738,10 @@
     0%,40% { transform: rotate(0deg); }
     60%,100% { transform: rotate(-90deg); }
   }
-  /* 세로 모드 + 모바일/태블릿 폭 → 회전 안내 풀스크린, 본문 숨김. */
-  @media (orientation: portrait) and (max-width: 1024px) {
-    .mobile-rotate-notice { display: flex; }
-    .wrap { display: none !important; }
-  }
+  /* 2026-05-28 v2 — 세로(portrait) 모드도 정상 작동.
+     기존: 세로 = "화면을 가로로 돌려주세요" 안내 풀스크린, .wrap 숨김.
+     변경: 세로 안내 제거 → 세로 전용 풀스크린 레이아웃 (Bybit 모바일 세로 참고).
+     세로 미디어 쿼리는 아래 (가로 다음) 별도 블록으로. */
   /* 가로 모드 + 모바일/태블릿 — 사이드바/P&L default hidden, 햄버거로 토글.
      2026-05-28 재설계: 차트 풀스크린 default + overlay 형식 슬라이드 인.
      - 좌상단 햄버거 (≡) → 좌측 사이드바
@@ -735,20 +803,174 @@
     }
     /* 우하단 봇 판단 패널 토글 fab — 모바일 가로에서만 표시. */
     .judgment-fab { display: flex; }
-    /* overlay — sidebar / pnl / judgment 중 하나라도 열렸을 때 표시. */
+    /* 우하단 POSITIONS 토글 fab — 모바일 가로에서만 표시. */
+    .positions-fab { display: flex; }
+    /* overlay — sidebar / pnl / judgment / positions 중 하나라도 열렸을 때 표시. */
     body.sidebar-open .mobile-overlay,
     body.pnl-open .mobile-overlay,
-    body.judgment-open .mobile-overlay { display: block; }
+    body.judgment-open .mobile-overlay,
+    body.positions-open .mobile-overlay { display: block; }
     /* 좌상단 세션 배지 — 햄버거와 안 겹치게 살짝 우측으로. */
     .session-badge { left: 64px; top: 12px; }
-    /* 차트 풀스크린 — 좌/우 0, 패널들이 모두 absolute overlay. */
-    .main { width: 100%; }
+    /* 차트 풀스크린 — 좌/우 0, 패널들이 모두 absolute overlay.
+       .main 을 relative 로 만들어 positions-panel absolute 기준 컨테이너로 삼음. */
+    .main { width: 100%; position: relative; }
     /* 차트 상단 toolbar 가 햄버거에 가리지 않도록 좌측 여백 확보. */
     .chart-toolbar { padding-left: 60px; padding-right: 60px; }
+
+    /* ============================================================
+       2026-05-28 (Bybit 가로 모드 참고) — 모바일 가로 차트 풀스크린화.
+       POSITIONS / 레전드 / 차트 toolbar viz-toggle / 페어정보 라벨 default 숨김.
+       차트 영역이 main 의 거의 100% 차지하도록.
+       ============================================================ */
+    /* POSITIONS 패널 — default hidden, body.positions-open 시 fab 위에 absolute overlay. */
+    body:not(.positions-open) .positions-panel { display: none; }
+    body.positions-open .positions-panel {
+      display: flex;
+      position: absolute;
+      left: 12px; right: 12px;
+      bottom: 124px;
+      max-height: 55vh;
+      z-index: 200;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    /* 레전드 — 모바일 가로 default 숨김 (12개 칩 차트 공간 낭비). */
+    .legend { display: none; }
+    /* 차트 toolbar 우측 viz-toggle — 사이드바로 이동했으므로 숨김. */
+    .chart-toolbar .viz-toggle { display: none; }
+    /* 페어 정보 라벨 (BTC/USDT:USDT · chart 5m · trade 5m) — 폰트 작게 + opacity 낮춤. */
+    .chart-info-label { font-size: 9px; opacity: 0.55; letter-spacing: 0.05em; }
+    /* 차트 toolbar 자체 padding 다이어트 — 모바일 가로에선 햄버거 자리만 확보. */
+    .chart-toolbar { padding-top: 6px; padding-bottom: 6px; }
+    /* tf-toggle 폰트/패딩 살짝 조여 풀스크린화 — 1m~1w 8개 한 줄. */
+    .tf-toggle button { padding: 5px 8px; font-size: 9.5px; }
   }
-  /* 데스크탑에서는 모바일용 사이드바 햄버거 + 판단 패널 fab + overlay 숨김. */
+
+  /* ============================================================
+     2026-05-28 — 모바일/태블릿 세로(portrait) 모드 (Bybit 세로 참고)
+     기존엔 "회전 안내" 만 띄웠지만, 이제 세로도 정상 작동.
+     레이아웃 (위→아래):
+       · 헤더 (좌상단 햄버거 / 우상단 햄버거 / 세션 배지)
+       · TF 가로 스크롤 (chart-toolbar)
+       · 차트 풀스크린 (chart-wrap flex:1)
+       · 우하단 fab 2개 (판단 ⓘ / 포지션 P) — 가로와 동일 핸들러
+     사이드바/P&L/판단/포지션 모두 default hidden + overlay slide-in.
+     가로 블록과 동일한 body.*-open 클래스 + 동일 핸들러 → JS 분기 최소화.
+     ============================================================ */
+  @media (orientation: portrait) and (max-width: 1024px) {
+    /* 안내 화면 제거 — 세로도 정상 작동. */
+    .mobile-rotate-notice { display: none; }
+    /* 본문 표시 + 세로 흐름 (.wrap 은 default flex row 라 column 으로 강제). */
+    .wrap { display: flex; flex-direction: column; height: 100vh; }
+
+    /* 좌측 사이드바 — default hidden, body.sidebar-open 일 때만 슬라이드 인. */
+    body:not(.sidebar-open) .sidebar { display: none; }
+    body.sidebar-open .sidebar {
+      display: block;
+      position: fixed; top: 0; left: 0; bottom: 0;
+      width: min(80vw, 300px);
+      z-index: 200;
+      overflow-y: auto;
+      box-shadow: 4px 0 16px rgba(0, 0, 0, 0.5);
+    }
+
+    /* 우측 P&L 패널 — default hidden, body.pnl-open 일 때만 슬라이드 인.
+       pnl-collapsed (데스크탑 클래스) 는 모바일에선 의미 X (open 우선). */
+    body:not(.pnl-open) .pnl-panel { display: none; }
+    body.pnl-collapsed .pnl-panel { display: none; }
+    body.pnl-open .pnl-panel {
+      display: flex;
+      position: fixed; top: 0; right: 0; bottom: 0;
+      width: min(88vw, 360px);
+      z-index: 200;
+      box-shadow: -4px 0 16px rgba(0, 0, 0, 0.5);
+    }
+
+    /* 햄버거 2개 — 좌상단(사이드바) / 우상단(P&L). 가로와 동일 크기. */
+    #btn-mobile-sidebar {
+      display: flex;
+      width: 44px; height: 40px;
+      top: 8px; left: 8px;
+      padding: 0 11px;
+      gap: 5px;
+    }
+    .sidebar-toggle {
+      width: 44px; height: 40px;
+      top: 8px; right: 8px;
+      padding: 0 11px;
+      gap: 5px;
+    }
+
+    /* 세션 배지 — 햄버거와 안 겹치게 우측으로 (가로와 동일). */
+    .session-badge { left: 64px; top: 12px; }
+
+    /* main(차트 컨테이너) — 풀 너비 + relative (fab/판단/포지션 absolute 기준). */
+    .main { width: 100%; position: relative; }
+
+    /* 차트 풀스크린 — flex:1 로 가로/세로 화면 잔여 공간 모두 흡수. */
+    .chart-wrap { flex: 1; min-height: 0; }
+
+    /* 차트 toolbar — 햄버거 자리 확보 + 가로 스크롤 (TF/Viz 한 줄). */
+    .chart-toolbar {
+      padding: 6px 60px;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      gap: 8px;
+    }
+    .tf-toggle { flex-shrink: 0; }
+    .tf-toggle button { padding: 5px 8px; font-size: 9.5px; }
+
+    /* 차트 toolbar 우측 viz-toggle — 사이드바로 이동 (가로와 동일). */
+    .chart-toolbar .viz-toggle { display: none; }
+    /* 페어 정보 라벨 — 폰트 작게 + 흐릿 (가로와 동일). */
+    .chart-info-label { font-size: 9px; opacity: 0.55; letter-spacing: 0.05em; }
+    /* 레전드 12칩 — 세로에서도 공간 낭비 → 숨김 (가로와 동일). */
+    .legend { display: none; }
+
+    /* 판단 패널 — default hidden, fab 으로 토글. 세로에선 fab 위 띄움. */
+    .judgment-panel { display: none; }
+    body.judgment-open .judgment-panel {
+      display: block;
+      position: fixed;
+      left: 12px; right: 12px;
+      bottom: 124px;          /* 판단 fab(70) + 여백 */
+      width: auto;
+      max-width: none;
+      max-height: 50vh;
+      z-index: 200;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+    }
+
+    /* POSITIONS 패널 — default hidden, fab 으로 토글. 세로에선 fab 위. */
+    body:not(.positions-open) .positions-panel { display: none; }
+    body.positions-open .positions-panel {
+      display: flex;
+      position: fixed;
+      left: 12px; right: 12px;
+      bottom: 124px;          /* 판단 fab(70) + 여백 — POSITIONS 가 위 우선 */
+      max-height: 55vh;
+      z-index: 200;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+      border-radius: 5px;
+      overflow: hidden;
+    }
+
+    /* 우하단 fab 2개 — 판단(ⓘ) / 포지션(P). 가로와 동일 위치. */
+    .judgment-fab { display: flex; }
+    .positions-fab { display: flex; }
+
+    /* Overlay — 어느 패널이든 열리면 표시. */
+    body.sidebar-open .mobile-overlay,
+    body.pnl-open .mobile-overlay,
+    body.judgment-open .mobile-overlay,
+    body.positions-open .mobile-overlay { display: block; }
+  }
+  /* 데스크탑에서는 모바일용 사이드바 햄버거 + 판단 패널 fab + positions fab + overlay 숨김. */
   #btn-mobile-sidebar { display: none; }
   .judgment-fab { display: none; }
+  .positions-fab { display: none; }
   .mobile-overlay { display: none; }
   .pnl-table {
     width: 100%;
@@ -1218,6 +1440,16 @@
     <button id="btn-demo" class="active">DEMO</button>
     <button id="btn-live" class="danger">LIVE</button>
 
+    <!-- 시각화 토글 (BOS / EQH-EQL / PD Zones)
+         2026-05-28: 모바일 가로에서 차트 toolbar 우측 viz-toggle 숨김 → 사이드바로 이동.
+         데스크탑에선 toolbar / 사이드바 양쪽에서 토글 가능, 상태는 vizEnabled 공유. -->
+    <h2>Visualization</h2>
+    <div class="viz-toggle viz-toggle-side" id="viz-toggle-side">
+      <button data-viz="bos">BOS</button>
+      <button data-viz="eql">EQH/EQL</button>
+      <button data-viz="zones">PD Zones</button>
+    </div>
+
     <h2>Trade Timeframe</h2>
     <div class="trade-tf-toggle" id="trade-tf-toggle">
       <button data-trade-tf="5m">5m</button>
@@ -1307,7 +1539,7 @@
         <button data-viz="eql">EQH/EQL</button>
         <button data-viz="zones">PD Zones</button>
       </div>
-      <span class="chart-symbol" id="chart-symbol-label">—</span>
+      <span class="chart-symbol chart-info-label" id="chart-symbol-label">—</span>
     </div>
     <div class="chart-wrap">
       <div id="chart"></div>
@@ -1326,6 +1558,14 @@
       <div id="mobile-overlay" class="mobile-overlay"></div>
       <!-- 우하단 봇 판단 패널 토글 fab (2026-05-28) — 모바일 가로에서만 보임 -->
       <button id="btn-judgment-toggle" class="judgment-fab" title="봇 판단 패널 열기/닫기">ⓘ</button>
+      <!-- 우하단 POSITIONS 토글 fab (2026-05-28) — 모바일 가로에서만 보임.
+           판단 fab 위에 64px 띄움. 활성 포지션 있으면 .has-position 으로 강조. -->
+      <button id="btn-positions-toggle" class="positions-fab" title="포지션 열기/닫기">
+        <span class="pf-icon">P</span>
+        <span class="pf-badge" id="positions-fab-badge" style="display:none">0</span>
+      </button>
+      <!-- 모바일 가로 POSITIONS overlay — body.positions-open 일 때 fab 위로 슬라이드 -->
+      <div id="positions-mobile-host" class="positions-mobile-host"></div>
       <!-- 좌하단 판단 패널 (2026-05-27) — 봇이 시장을 어떻게 보는지 시각화 -->
       <div id="judgment-panel" class="judgment-panel">
         <div class="jp-header">봇의 현재 판단</div>
