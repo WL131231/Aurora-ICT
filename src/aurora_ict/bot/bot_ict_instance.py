@@ -278,6 +278,11 @@ class BotIctInstance:
     # 다른 사용자 거래와 섞이지 않게 격리. JSONL/SQLite write 충돌도 자연 해소.
     trades_data_dir: Path | None = None
 
+    # 2026-05-29 PR 매매기록 mode (파트너 요청): 이 봇 인스턴스가 어느 run_mode
+    # 로 가동되는지 — TradeEvent.mode 에 그대로 박혀 UI 가 DEMO/LIVE 표시.
+    # None 이면 record 시 None 박힘 (구식 흐름 호환).
+    run_mode: str | None = None
+
     state: BotState = field(default=BotState.STOPPED)
     active_position: _ActivePosition | None = field(default=None)
     # #LIVE-1 fix: marketable limit entry 미체결 대기 상태 (체결되면 active_position 으로 승격).
@@ -1766,6 +1771,8 @@ class BotIctInstance:
                 setup_ts_ms=setup_ts_ms,
                 reason=reason,
                 context_json=context_json,
+                # 2026-05-29: DEMO/LIVE 구분 — UI 가 "유형" 옆 컬럼에 표시.
+                mode=self.run_mode,
             ))
         except Exception as e:  # noqa: BLE001
             logger.warning("trades record 실패: %s", e)

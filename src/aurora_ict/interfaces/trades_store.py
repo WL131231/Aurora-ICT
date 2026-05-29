@@ -75,6 +75,9 @@ class TradeEvent:
     # 진입 사유·confluence 세부·소스·윈도우 등 풍부한 컨텍스트(JSON 문자열).
     # ENTRY 이벤트에 채워 분석/저널에 활용. 청산 이벤트는 보통 None.
     context_json: str | None = None
+    # 2026-05-29 PR 매매기록 DEMO/LIVE 구분 (파트너 요청): 이 매매가 발생한
+    # run_mode. "demo" / "live". 기존 jsonl row 는 None — UI 가 "—" 표시.
+    mode: str | None = None
 
     def to_json_line(self) -> str:
         """JSONL 1줄 직렬화 — trailing newline 포함."""
@@ -102,7 +105,8 @@ CREATE TABLE IF NOT EXISTS trades (
     pnl_usdt REAL,
     setup_ts_ms INTEGER,
     reason TEXT NOT NULL DEFAULT '',
-    context_json TEXT
+    context_json TEXT,
+    mode TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts_ms);
 CREATE INDEX IF NOT EXISTS idx_trades_setup ON trades(setup_ts_ms);
@@ -180,11 +184,16 @@ class TradesStore:
             str(self.db_path), check_same_thread=False,
         )
         self._conn.executescript(_SQLITE_SCHEMA)
-        # 마이그레이션 — 기존 DB 에 context_json 컬럼 없으면 추가 (중복 시 무시).
-        try:
-            self._conn.execute("ALTER TABLE trades ADD COLUMN context_json TEXT")
-        except sqlite3.OperationalError:
-            pass  # 이미 컬럼 있음
+        # 마이그레이션 — 기존 DB 에 누락 컬럼 추가 (중복 시 무시, idempotent).
+        for alter_sql in (
+            "ALTER TABLE trades ADD COLUMN context_json TEXT",
+            # 2026-05-29: DEMO/LIVE 구분 컬럼 (파트너 요청).
+            "ALTER TABLE trades ADD COLUMN mode TEXT",
+        ):
+            try:
+                self._conn.execute(alter_sql)
+            except sqlite3.OperationalError:
+                pass  # 이미 컬럼 있음
         self._conn.commit()
 
     def record(self, event: TradeEvent) -> None:
@@ -216,8 +225,8 @@ class TradesStore:
                     """
                     INSERT INTO trades
                     (ts_ms, event_type, symbol, direction, price, qty,
-                     pnl_usdt, setup_ts_ms, reason, context_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     pnl_usdt, setup_ts_ms, reason, context_json, mode)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         event.ts_ms,
@@ -230,6 +239,7 @@ class TradesStore:
                         event.setup_ts_ms,
                         event.reason,
                         event.context_json,
+                        event.mode,
                     ),
                 )
                 self._conn.commit()
