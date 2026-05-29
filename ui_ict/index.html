@@ -1327,6 +1327,21 @@
     letter-spacing: 0.15em;
   }
   .cred-slot-label.cred-slot-live { color: #fb7185; }
+  /* 2026-05-29 v4 파트너 손글씨 요청: 슬롯 안에 '활성화' 상태 텍스트.
+     기본 hidden — has-key (등록 완료) 일 때만 표시. */
+  .cred-slot-state {
+    flex: 1;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    color: var(--bg);
+    display: none;
+  }
+  .cred-slot-row.has-key .cred-slot-state {
+    /* 등록 슬롯은 흰 배경 + 어두운 글자 (위 has-key 규칙) → 활성화도 어둡게. */
+    display: inline;
+    color: var(--bg);
+    font-weight: 500;
+  }
   .cred-slot-status {
     flex: 1;
     color: var(--text-2);
@@ -1776,14 +1791,19 @@
          JS 에서 status.has_demo_credentials / has_live_credentials 보고
          .has-key / .no-key 클래스 토글. -->
     <!-- 2026-05-29 v3 파트너 결정: 상태 텍스트 ("등록됨"/"미등록") 제거.
-         배경색 + 버튼 라벨 (등록 시 "재등록", 미등록 시 "등록") 만으로 시각화. -->
+         배경색 + 버튼 라벨 (등록 시 "재등록", 미등록 시 "등록") 만으로 시각화.
+         2026-05-29 v4 파트너 손글씨 재요청: 슬롯 안에 "활성화" 텍스트 추가
+         ("DEMO 활성화 [재등록]" 형태). has-key 일 때만 표시 — CSS 로 가시성
+         제어 (.cred-slot-row.no-key .cred-slot-state { display:none }). -->
     <div class="cred-saved" id="cred-saved-block" style="display:none">
       <div class="cred-slot-row no-key" id="cred-slot-demo">
         <span class="cred-slot-label">DEMO</span>
+        <span class="cred-slot-state">활성화</span>
         <button data-cred-reenter="demo" id="btn-cred-demo" class="cred-reenter-mini">등록</button>
       </div>
       <div class="cred-slot-row no-key" id="cred-slot-live">
         <span class="cred-slot-label cred-slot-live">LIVE</span>
+        <span class="cred-slot-state">활성화</span>
         <button data-cred-reenter="live" id="btn-cred-live" class="cred-reenter-mini">등록</button>
       </div>
     </div>
