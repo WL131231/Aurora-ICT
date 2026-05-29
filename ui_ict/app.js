@@ -464,32 +464,38 @@ function renderStatus(s) {
   $("btn-start").classList.toggle("active", s.state === "running");
   $("btn-stop").classList.toggle("active", s.state === "stopped");
 
-  // 2026-05-29: API Credentials — 양쪽 슬롯 (DEMO/LIVE) 상태 분리 표시.
-  // 둘 중 하나라도 등록돼 있으면 saved-block 표시 (재등록 버튼 박스),
-  // 둘 다 없으면 form-block 표시 (입력 폼). 부분 등록 상태도 saved-block 에서
-  // "누락" 표시로 안내 → 사용자가 누락 슬롯 채우러 가도록.
+  // 2026-05-29 v2 파트너 결정: API Credentials 칸 배경색 — 등록 시 푸른색,
+  // 미등록 회색. 두 칸 (DEMO/LIVE) 항상 표시. 둘 다 미등록일 때만 form 도 같이.
   const credForm = $("cred-form-block");
   const credSaved = $("cred-saved-block");
   if (credForm && credSaved) {
     const hasDemo = !!s.has_demo_credentials;
     const hasLive = !!s.has_live_credentials;
     const anyKey = hasDemo || hasLive;
-    if (anyKey) {
-      credForm.style.display = "none";
-      credSaved.style.display = "flex";
-      const demoStatus = $("cred-demo-status");
-      const liveStatus = $("cred-live-status");
-      if (demoStatus) {
-        demoStatus.textContent = hasDemo ? "✓ 등록됨" : "미등록";
-        demoStatus.className = "cred-slot-status " + (hasDemo ? "ok" : "missing");
-      }
-      if (liveStatus) {
-        liveStatus.textContent = hasLive ? "✓ 등록됨" : "미등록";
-        liveStatus.className = "cred-slot-status " + (hasLive ? "ok" : "missing");
-      }
-    } else {
-      credForm.style.display = "flex";
-      credSaved.style.display = "none";
+    // 항상 slot 표시 (배경색으로 등록 상태 시각화).
+    credSaved.style.display = "flex";
+    // 둘 다 미등록일 때만 입력 폼도 같이 (신규 가입 흐름).
+    credForm.style.display = anyKey ? "none" : "flex";
+    // 칸 배경 토글.
+    const slotDemo = $("cred-slot-demo");
+    const slotLive = $("cred-slot-live");
+    if (slotDemo) {
+      slotDemo.classList.toggle("has-key", hasDemo);
+      slotDemo.classList.toggle("no-key", !hasDemo);
+    }
+    if (slotLive) {
+      slotLive.classList.toggle("has-key", hasLive);
+      slotLive.classList.toggle("no-key", !hasLive);
+    }
+    const demoStatus = $("cred-demo-status");
+    const liveStatus = $("cred-live-status");
+    if (demoStatus) {
+      demoStatus.textContent = hasDemo ? "✓ 등록됨" : "미등록";
+      demoStatus.className = "cred-slot-status " + (hasDemo ? "ok" : "missing");
+    }
+    if (liveStatus) {
+      liveStatus.textContent = hasLive ? "✓ 등록됨" : "미등록";
+      liveStatus.className = "cred-slot-status " + (hasLive ? "ok" : "missing");
     }
   }
 
@@ -550,17 +556,23 @@ function _filterMarkersByFirstBar(payload, firstTsSec) {
 
 function renderMarkers(payload) {
   const m = payload.markers;
-  $("c-fvgs").textContent = payload.count.fvgs;
-  $("c-sweeps").textContent = payload.count.sweeps;
-  $("c-struct").textContent = payload.count.structure;
-  $("c-swings").textContent = payload.count.swings;
-  $("c-kz").textContent = payload.count.killzones;
-  $("c-setups").textContent = payload.count.setups;
-  if ($("c-obs")) $("c-obs").textContent = payload.count.order_blocks ?? 0;
-  if ($("c-macros")) $("c-macros").textContent = payload.count.macros ?? 0;
-  if ($("c-int-struct")) $("c-int-struct").textContent = payload.count.internal_structure ?? 0;
-  if ($("c-lg-struct"))  $("c-lg-struct").textContent  = payload.count.large_structure ?? 0;
-  if ($("c-lg-swings"))  $("c-lg-swings").textContent  = payload.count.large_swings ?? 0;
+  // 2026-05-29 v2: Marker Counts 섹션 제거 — null-safe 가드. DOM 없으면 skip.
+  // (차트 위 시각화로 충분, 사이드바 군더더기 ↓.)
+  const setText = (id, val) => {
+    const el = $(id);
+    if (el) el.textContent = val;
+  };
+  setText("c-fvgs", payload.count.fvgs);
+  setText("c-sweeps", payload.count.sweeps);
+  setText("c-struct", payload.count.structure);
+  setText("c-swings", payload.count.swings);
+  setText("c-kz", payload.count.killzones);
+  setText("c-setups", payload.count.setups);
+  setText("c-obs", payload.count.order_blocks ?? 0);
+  setText("c-macros", payload.count.macros ?? 0);
+  setText("c-int-struct", payload.count.internal_structure ?? 0);
+  setText("c-lg-struct", payload.count.large_structure ?? 0);
+  setText("c-lg-swings", payload.count.large_swings ?? 0);
   if ($("c-trailing")) {
     const t = m.trailing;
     $("c-trailing").textContent = t
@@ -1317,8 +1329,60 @@ async function _handleVizClick(ev) {
 $("viz-toggle").addEventListener("click", _handleVizClick);
 // 사이드바 viz-toggle-side — 모바일 가로에서 차트 toolbar viz 숨겼을 때 대체 진입점.
 // 데스크탑에서도 노출되어 양쪽 어느 곳에서나 토글 가능.
+// (2026-05-29 v2: 사이드바에선 페어 선택으로 대체. viz-toggle-side DOM 자체
+// 제거됐지만 null-safe 라 동작. 차트 toolbar 의 viz-toggle 만 살아있음.)
 const _vizToggleSide = $("viz-toggle-side");
 if (_vizToggleSide) _vizToggleSide.addEventListener("click", _handleVizClick);
+
+// 2026-05-29 v2: 사이드바 페어 선택 (BTC/ETH 복수 가능).
+// 현재는 UI 상태만 — 백엔드 multi-pair 지원은 PR B (다음 라운드).
+// 적어도 1개는 active 유지 (둘 다 끄면 마지막 클릭 무시).
+const _SELECTED_PAIRS_KEY = "aurora_ict_selected_pairs";
+function _loadSelectedPairs() {
+  try {
+    const raw = localStorage.getItem(_SELECTED_PAIRS_KEY);
+    if (!raw) return ["BTCUSDT"];
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr) && arr.length > 0) return arr;
+  } catch (e) {}
+  return ["BTCUSDT"];
+}
+function _saveSelectedPairs(arr) {
+  try { localStorage.setItem(_SELECTED_PAIRS_KEY, JSON.stringify(arr)); }
+  catch (e) {}
+}
+function _updatePairButtons() {
+  const sel = new Set(_loadSelectedPairs());
+  document.querySelectorAll("#pair-toggle button[data-pair]").forEach((b) => {
+    b.classList.toggle("active", sel.has(b.dataset.pair));
+  });
+}
+const _pairToggle = $("pair-toggle");
+if (_pairToggle) {
+  _updatePairButtons();
+  _pairToggle.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-pair]");
+    if (!btn) return;
+    const sel = new Set(_loadSelectedPairs());
+    const pair = btn.dataset.pair;
+    if (sel.has(pair)) {
+      // 마지막 1개 보호 — 둘 다 끄지 못하게.
+      if (sel.size <= 1) {
+        toast("페어는 최소 1개 선택 — 다른 페어를 먼저 활성화", true);
+        return;
+      }
+      sel.delete(pair);
+    } else {
+      sel.add(pair);
+    }
+    _saveSelectedPairs([...sel]);
+    _updatePairButtons();
+    // TODO PR B: 선택된 페어로 백엔드 봇 인스턴스 매핑 호출.
+    toast(
+      `페어 선택: ${[...sel].join(", ")} (백엔드 multi-pair 는 다음 PR)`,
+    );
+  });
+}
 
 $("tf-toggle").addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button[data-tf]");

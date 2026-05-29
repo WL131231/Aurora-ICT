@@ -187,6 +187,87 @@
     line-height: 1.4;
   }
 
+  /* 2026-05-29 v2: 사이드바 페어 선택 토글 (BTC/ETH 복수 선택).
+     trade-tf-toggle 톤 재사용, 2 column 그리드. */
+  .pair-toggle {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 4px;
+    margin-top: 4px;
+  }
+  .pair-toggle button {
+    padding: 8px 0;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    color: var(--text-3);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    font-family: inherit;
+  }
+  .pair-toggle button:hover {
+    color: var(--text-1);
+    border-color: var(--line-strong);
+  }
+  .pair-toggle button.active {
+    background: rgba(96, 165, 250, 0.18);
+    border-color: rgba(96, 165, 250, 0.55);
+    color: #60a5fa;
+  }
+  .pair-hint {
+    margin: 6px 0 0 0;
+    font-size: 9px;
+    letter-spacing: 0.05em;
+    color: var(--text-3);
+    line-height: 1.4;
+  }
+
+  /* 2026-05-29 v2: Daily Loss Limit 입력 줄 — 인라인 style 제거,
+     flex 로 깔끔 정렬. */
+  .dll-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+  }
+  .dll-row .k {
+    flex: 0 0 auto;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    color: var(--text-2);
+  }
+  .dll-row input {
+    flex: 1;
+    min-width: 0;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    color: var(--text-1);
+    padding: 4px 8px;
+    font-size: 11px;
+    border-radius: 3px;
+    font-family: inherit;
+  }
+  .dll-row input:focus {
+    outline: none;
+    border-color: var(--line-strong);
+  }
+  .dll-row button {
+    flex: 0 0 auto;
+    padding: 5px 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--line-strong);
+    color: var(--text-1);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .dll-row button:hover { background: var(--line-strong); }
+
   /* 차트 상단 toolbar — TF 토글 */
   .chart-toolbar {
     display: flex;
@@ -1230,6 +1311,16 @@
     border-radius: 4px;
     font-size: 10px;
     letter-spacing: 0.05em;
+    transition: background 0.18s, border-color 0.18s;
+  }
+  /* 2026-05-29 v2: 등록 / 미등록 칸 배경색 — 파트너 요청. */
+  .cred-slot-row.has-key {
+    background: rgba(96, 165, 250, 0.12);
+    border-color: rgba(96, 165, 250, 0.40);
+  }
+  .cred-slot-row.no-key {
+    background: rgba(106, 106, 106, 0.06);
+    border-color: var(--line);
   }
   .cred-slot-label {
     flex: 0 0 38px;
@@ -1642,15 +1733,15 @@
     <button id="btn-demo" class="active">DEMO</button>
     <button id="btn-live" class="danger">LIVE</button>
 
-    <!-- 시각화 토글 (BOS / EQH-EQL / PD Zones)
-         2026-05-28: 모바일 가로에서 차트 toolbar 우측 viz-toggle 숨김 → 사이드바로 이동.
-         데스크탑에선 toolbar / 사이드바 양쪽에서 토글 가능, 상태는 vizEnabled 공유. -->
-    <h2>Visualization</h2>
-    <div class="viz-toggle viz-toggle-side" id="viz-toggle-side">
-      <button data-viz="bos">BOS</button>
-      <button data-viz="eql">EQH/EQL</button>
-      <button data-viz="zones">PD Zones</button>
+    <!-- 2026-05-29 파트너 결정: Visualization 토글은 차트 toolbar 에 살아있고
+         사이드바 에선 페어 선택으로 대체. BTC + ETH 복수 선택 가능 (백엔드 multi
+         pair 지원은 다음 PR). 한 번에 1개 또는 양쪽 동시 = 동시 진입 옵션. -->
+    <h2>Trading Pair</h2>
+    <div class="pair-toggle" id="pair-toggle">
+      <button type="button" data-pair="BTCUSDT" class="active">BTC</button>
+      <button type="button" data-pair="ETHUSDT">ETH</button>
     </div>
+    <p class="pair-hint">선택한 페어만 매매 — 복수 선택 시 동시 진입 가능</p>
 
     <h2>Trade Timeframe</h2>
     <div class="trade-tf-toggle" id="trade-tf-toggle">
@@ -1680,14 +1771,17 @@
         <b>DEMO</b> 슬롯 — Bybit Demo Trading 키
       </p>
     </div>
-    <!-- 등록 완료 상태 — 두 모드 슬롯 각각 표시 (2026-05-29 분리). -->
+    <!-- 등록 완료 상태 — 두 모드 슬롯 각각 표시 (2026-05-29 분리).
+         2026-05-29 v2 파트너 결정: 칸 배경색 — 등록 시 푸른색, 미등록 회색.
+         JS 에서 status.has_demo_credentials / has_live_credentials 보고
+         .has-key / .no-key 클래스 토글. -->
     <div class="cred-saved" id="cred-saved-block" style="display:none">
-      <div class="cred-slot-row">
+      <div class="cred-slot-row no-key" id="cred-slot-demo">
         <span class="cred-slot-label">DEMO</span>
         <span id="cred-demo-status" class="cred-slot-status">—</span>
         <button data-cred-reenter="demo" class="cred-reenter-mini">재등록</button>
       </div>
-      <div class="cred-slot-row">
+      <div class="cred-slot-row no-key" id="cred-slot-live">
         <span class="cred-slot-label cred-slot-live">LIVE</span>
         <span id="cred-live-status" class="cred-slot-status">—</span>
         <button data-cred-reenter="live" class="cred-reenter-mini">재등록</button>
@@ -1701,11 +1795,13 @@
     </div>
 
     <h2>Daily Loss Limit</h2>
-    <div class="row" style="margin-top:4px">
+    <!-- 2026-05-29 v2: 인라인 style 제거, .dll-row flex 로 통일. 한 줄에
+         Limit % label + input + SET 깔끔하게. -->
+    <div class="dll-row">
       <span class="k">Limit %</span>
-      <input id="dll-input" type="number" step="0.1" min="0" max="50" placeholder="0 = off"
-             style="width:78px;background:#1a1a1a;border:1px solid #333;color:#ddd;padding:3px 6px;border-radius:3px"/>
-      <button id="btn-dll-set" style="margin-left:4px;padding:3px 10px">SET</button>
+      <input id="dll-input" type="number" step="0.1" min="0" max="50"
+             placeholder="0 = off" />
+      <button id="btn-dll-set">SET</button>
     </div>
     <div class="row"><span class="k">Today PnL</span><span id="dll-today" class="v">—</span></div>
     <div class="row"><span class="k">Status</span><span id="dll-status" class="v">—</span></div>
@@ -1728,19 +1824,10 @@
       <button id="btn-logout" class="danger">로그아웃</button>
     </div>
 
-    <h2>Marker Counts</h2>
-    <div class="row"><span class="k">FVG</span><span id="c-fvgs" class="v">0</span></div>
-    <div class="row"><span class="k">Sweep</span><span id="c-sweeps" class="v">0</span></div>
-    <div class="row"><span class="k">MSS / BOS</span><span id="c-struct" class="v">0</span></div>
-    <div class="row"><span class="k">↳ Internal</span><span id="c-int-struct" class="v">0</span></div>
-    <div class="row"><span class="k">↳ Large</span><span id="c-lg-struct" class="v">0</span></div>
-    <div class="row"><span class="k">Swing</span><span id="c-swings" class="v">0</span></div>
-    <div class="row"><span class="k">↳ Large</span><span id="c-lg-swings" class="v">0</span></div>
-    <div class="row"><span class="k">Killzone</span><span id="c-kz" class="v">0</span></div>
-    <div class="row"><span class="k">Order Block</span><span id="c-obs" class="v">0</span></div>
-    <div class="row"><span class="k">Macro</span><span id="c-macros" class="v">0</span></div>
-    <div class="row"><span class="k">Trailing HL</span><span id="c-trailing" class="v">—</span></div>
-    <div class="row"><span class="k">Setup</span><span id="c-setups" class="v">0</span></div>
+    <!-- 2026-05-29 v2 파트너 결정: Marker Counts 섹션 제거. 차트 위 시각화
+         만으로 충분. 카운트 숫자 보고 의사결정 거의 없음. 사이드바 군더더기 ↓.
+         (이전 ID c-fvgs / c-sweeps / c-struct 등은 app.js renderMarkers 가
+         optional 체크 후 텍스트 박는 식 — null safe 라 ID 제거해도 동작) -->
   </aside>
 
   <main class="main">
