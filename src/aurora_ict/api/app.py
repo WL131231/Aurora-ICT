@@ -262,10 +262,29 @@ def _register_multi_user_routes(
     ) -> dict[str, Any]:
         # 2026-05-29 PR C: ?symbol= 쿼리 — 사용자가 BTC + ETH 등 여러 페어를
         # 각각 가동할 수 있게. 한 사용자가 BTC 가동 중에도 ETH 별도 가동 가능.
+        # 2026-05-29 진단 로그: ETH 가동 즉시 꺼짐 보고 추적 — symbol 별로 어느
+        # 단계에서 실패하는지 정확히 찾기 위해 시도/성공/실패 모두 로깅.
+        logger.info("/ict/start 호출 — code=%s symbol=%s", user_code, symbol)
         try:
             await mu_manager.start(user_code, symbol)
         except ValueError as e:
+            logger.warning(
+                "/ict/start ValueError — code=%s symbol=%s detail=%s",
+                user_code, symbol, e,
+            )
             raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:  # noqa: BLE001 — 모든 예외 로깅 후 500 변환.
+            logger.exception(
+                "/ict/start 예기치 못한 예외 — code=%s symbol=%s",
+                user_code, symbol,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"{symbol} 가동 중 내부 오류: {e}",
+            ) from e
+        logger.info(
+            "/ict/start 성공 — code=%s symbol=%s", user_code, symbol,
+        )
         return await mu_manager.status(user_code, symbol)
 
     @app.post("/ict/stop")

@@ -113,9 +113,20 @@
     border-color: var(--line-strong);
   }
   button.active {
-    background: var(--accent);
+    /* 2026-05-29 파트너 요청: 파란 톤 active → 명확한 흰색.
+       var(--accent) 가 #DBDBDE (살짝 푸른 회색) 라 푸르게 보였음 → --accent-2
+       (순백) 로 변경. LIVE active 빨강 / START·STOP 의 녹·빨강은 별도
+       selector 라 영향 없음. */
+    background: var(--accent-2);
     color: var(--bg);
-    border-color: var(--accent);
+    border-color: var(--accent-2);
+  }
+  /* 사이드바 MODE 토글의 LIVE — active 시 빨간 identity 색 유지 (파트너
+     정정: 빨간 active 그대로). DEMO 와 시각 구분 명확히. */
+  button#btn-live.active {
+    background: rgba(251, 113, 133, 0.18);
+    border-color: rgba(251, 113, 133, 0.55);
+    color: #fb7185;
   }
   button.danger {
     background: var(--surface);
@@ -213,9 +224,10 @@
     border-color: var(--line-strong);
   }
   .pair-toggle button.active {
-    background: rgba(96, 165, 250, 0.18);
-    border-color: rgba(96, 165, 250, 0.55);
-    color: #60a5fa;
+    /* 2026-05-29 파트너 요청: 파란 → 흰 통일. */
+    background: rgba(255, 255, 255, 0.10);
+    border-color: rgba(255, 255, 255, 0.45);
+    color: var(--text-1);
   }
   .pair-hint {
     margin: 6px 0 0 0;
@@ -1278,10 +1290,11 @@
     letter-spacing: 0.05em;
     transition: background 0.18s, border-color 0.18s;
   }
-  /* 2026-05-29 v2: 등록 / 미등록 칸 배경색 — 파트너 요청. */
+  /* 2026-05-29 v2: 등록 / 미등록 칸 배경색 — 파트너 요청.
+     2026-05-29 v3: 파란 → 흰 통일 (파트너 요청). LIVE 슬롯 라벨은 빨강 유지. */
   .cred-slot-row.has-key {
-    background: rgba(96, 165, 250, 0.12);
-    border-color: rgba(96, 165, 250, 0.40);
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.35);
   }
   .cred-slot-row.no-key {
     background: rgba(106, 106, 106, 0.06);
@@ -1686,13 +1699,15 @@
   <aside class="sidebar">
     <h1>AURORA · ICT<span class="version" id="app-version">—</span></h1>
 
-    <h2>Status</h2>
-    <div class="row"><span class="k">State</span><span id="s-state" class="v">—</span></div>
-    <div class="row"><span class="k">Mode</span><span id="s-mode" class="v">—</span></div>
-    <div class="row"><span class="k">Enabled</span><span id="s-enabled" class="v">—</span></div>
-    <div class="row"><span class="k">Symbol</span><span id="s-symbol" class="v">—</span></div>
-    <div class="row"><span class="k">Credentials</span><span id="s-creds" class="v">—</span></div>
-    <div class="row"><span class="k">Active Position</span><span id="s-pos" class="v">—</span></div>
+    <!-- 2026-05-29 파트너 결정: 상단 STATUS 박스 (State/Mode/Enabled/Symbol/
+         Credentials/Active Position) 제거. 정보는 사이드바 다른 섹션에 다
+         있음:
+            - Mode → MODE 토글 active
+            - Symbol → TRADING PAIR 토글 + 차트 상단 라벨
+            - Credentials → API CREDENTIALS has-key 색
+            - State → START/STOP 버튼 active 색
+            - Active Position → positions-panel (차트 하단)
+         renderStatus 의 $('s-state') 등 참조는 null-safe 로 보호. -->
 
     <h2>Mode</h2>
     <button id="btn-demo" class="active">DEMO</button>

@@ -444,14 +444,21 @@ async function api(path, method = "GET", body = null) {
 }
 
 function renderStatus(s) {
-  $("s-state").textContent = s.state;
-  $("s-state").className = "v " + s.state;
-  $("s-mode").textContent = s.run_mode.toUpperCase();
-  $("s-mode").className = "v " + s.run_mode;
-  $("s-enabled").textContent = s.enabled ? "YES" : "NO";
-  $("s-symbol").textContent = s.symbol;
-  $("s-creds").textContent = s.has_credentials ? "OK" : "MISSING";
-  $("s-pos").textContent = s.has_active_position ? "YES" : "—";
+  // 2026-05-29 파트너 결정: 상단 STATUS 박스 제거 — 6개 row 요소가 DOM 에
+  // 없을 수 있어 null-safe 로 보호. 정보는 다른 섹션 (MODE 토글, PAIR 토글,
+  // CREDENTIALS, START/STOP, positions-panel) 에 분산 표시됨.
+  const _eS = $("s-state");
+  if (_eS) { _eS.textContent = s.state; _eS.className = "v " + s.state; }
+  const _eM = $("s-mode");
+  if (_eM) { _eM.textContent = s.run_mode.toUpperCase(); _eM.className = "v " + s.run_mode; }
+  const _eE = $("s-enabled");
+  if (_eE) _eE.textContent = s.enabled ? "YES" : "NO";
+  const _eY = $("s-symbol");
+  if (_eY) _eY.textContent = s.symbol;
+  const _eC = $("s-creds");
+  if (_eC) _eC.textContent = s.has_credentials ? "OK" : "MISSING";
+  const _eP = $("s-pos");
+  if (_eP) _eP.textContent = s.has_active_position ? "YES" : "—";
 
   $("btn-demo").classList.toggle("active", s.run_mode === "demo");
   $("btn-live").classList.toggle("active", s.run_mode === "live");
