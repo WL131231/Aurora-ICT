@@ -110,6 +110,7 @@ class BotManager:
             min_sl_distance_pct=self.settings.min_sl_distance_pct,
             max_sl_distance_pct=self.settings.max_sl_distance_pct,
             heartbeat_interval_sec=self.settings.heartbeat_interval_sec,
+            htf_ltf_conflict_guard_ratio=self.settings.htf_ltf_conflict_guard_ratio,
             htf_ema_bias_enabled=self.settings.htf_ema_bias_enabled,
             htf_ema_bias_tf=self.settings.htf_ema_bias_tf,
             htf_ema_bias_period=self.settings.htf_ema_bias_period,

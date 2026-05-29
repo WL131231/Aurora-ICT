@@ -194,6 +194,7 @@ class MultiUserBotManager:
             min_sl_distance_pct=settings.min_sl_distance_pct,
             max_sl_distance_pct=settings.max_sl_distance_pct,
             heartbeat_interval_sec=settings.heartbeat_interval_sec,
+            htf_ltf_conflict_guard_ratio=settings.htf_ltf_conflict_guard_ratio,
             htf_ema_bias_enabled=settings.htf_ema_bias_enabled,
             htf_ema_bias_tf=settings.htf_ema_bias_tf,
             htf_ema_bias_period=settings.htf_ema_bias_period,
