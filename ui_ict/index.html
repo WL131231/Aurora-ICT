@@ -1284,10 +1284,13 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 7px 8px;
+    /* 2026-05-29 v8: 버튼이 박스 밖으로 overflow 하던 버그 fix.
+       padding 좌우 ↑ 으로 안쪽 여유 + overflow:hidden 으로 외부 튀어나옴 방지. */
+    padding: 8px 10px;
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: 4px;
+    overflow: hidden;
     font-size: 10px;
     letter-spacing: 0.05em;
     transition: background 0.18s, border-color 0.18s;
@@ -1313,12 +1316,18 @@
     border-color: var(--line);
   }
   .cred-slot-label {
-    /* 2026-05-29 v6: flex:1 로 라벨이 충분히 넓어져 글자 세로 깨짐 방지. */
-    flex: 1;
+    /* 2026-05-29 v8: flex:1 + min-width:0 — 박스 폭 안에서 자연 shrink.
+       letter-spacing 0.15 → 0.08 (DEMO 4글자 너비 줄여 버튼이 박스 안에
+       fitting). 한 줄 유지. */
+    flex: 1 1 auto;
+    min-width: 0;
     font-weight: 600;
     color: #fbbf24;
-    letter-spacing: 0.15em;
+    letter-spacing: 0.08em;
+    font-size: 11px;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .cred-slot-label.cred-slot-live { color: #fb7185; }
   /* 2026-05-29 v6: '활성화' 텍스트 (.cred-slot-state) 제거 — 파트너 재요청.
@@ -1330,20 +1339,32 @@
   .cred-slot-status.ok { color: #34d399; }
   .cred-slot-status.missing { color: var(--text-3); }
   .cred-reenter-mini {
-    /* 2026-05-29 v6 파트너 요청: 버튼 더 작게. */
+    /* 2026-05-29 v6 파트너 요청: 버튼 작게.
+       v8: 글자 가독성 — font-size 8 → 9, padding 살짝 ↑. */
     flex: 0 0 auto;
     background: transparent;
     border: 1px dashed var(--line);
     color: var(--text-3);
-    font-size: 8px;
-    padding: 2px 6px;
-    letter-spacing: 0.08em;
+    font-size: 9px;
+    padding: 2px 7px;
+    letter-spacing: 0.1em;
     border-radius: 3px;
     cursor: pointer;
   }
   .cred-reenter-mini:hover {
     color: var(--text-1);
     border-color: var(--line-strong);
+  }
+  /* 2026-05-29 v8 파트너 요청: has-key 슬롯의 초록 fill 위에서 회색 글자가
+     안 보여 contrast 강화 — 밝은 글자 + 밝은 dashed border. */
+  .cred-slot-row.has-key .cred-reenter-mini {
+    color: var(--text-1);
+    border-color: rgba(255, 255, 255, 0.45);
+    font-weight: 500;
+  }
+  .cred-slot-row.has-key .cred-reenter-mini:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.70);
   }
   /* 로그인 후 키 등록 페이지에도 동일 토글 */
   .auth-mode-toggle {
