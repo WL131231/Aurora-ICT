@@ -464,19 +464,16 @@ function renderStatus(s) {
   $("btn-start").classList.toggle("active", s.state === "running");
   $("btn-stop").classList.toggle("active", s.state === "stopped");
 
-  // 2026-05-29 v2 파트너 결정: API Credentials 칸 배경색 — 등록 시 푸른색,
-  // 미등록 회색. 두 칸 (DEMO/LIVE) 항상 표시. 둘 다 미등록일 때만 form 도 같이.
+  // 2026-05-29 v3 파트너 결정: 상태 텍스트 ("등록됨"/"미등록") 제거.
+  // 배경색 (.has-key / .no-key) + 버튼 라벨 ("재등록" / "등록") 만으로 시각화.
   const credForm = $("cred-form-block");
   const credSaved = $("cred-saved-block");
   if (credForm && credSaved) {
     const hasDemo = !!s.has_demo_credentials;
     const hasLive = !!s.has_live_credentials;
     const anyKey = hasDemo || hasLive;
-    // 항상 slot 표시 (배경색으로 등록 상태 시각화).
     credSaved.style.display = "flex";
-    // 둘 다 미등록일 때만 입력 폼도 같이 (신규 가입 흐름).
     credForm.style.display = anyKey ? "none" : "flex";
-    // 칸 배경 토글.
     const slotDemo = $("cred-slot-demo");
     const slotLive = $("cred-slot-live");
     if (slotDemo) {
@@ -487,16 +484,10 @@ function renderStatus(s) {
       slotLive.classList.toggle("has-key", hasLive);
       slotLive.classList.toggle("no-key", !hasLive);
     }
-    const demoStatus = $("cred-demo-status");
-    const liveStatus = $("cred-live-status");
-    if (demoStatus) {
-      demoStatus.textContent = hasDemo ? "✓ 등록됨" : "미등록";
-      demoStatus.className = "cred-slot-status " + (hasDemo ? "ok" : "missing");
-    }
-    if (liveStatus) {
-      liveStatus.textContent = hasLive ? "✓ 등록됨" : "미등록";
-      liveStatus.className = "cred-slot-status " + (hasLive ? "ok" : "missing");
-    }
+    const btnDemo = $("btn-cred-demo");
+    const btnLive = $("btn-cred-live");
+    if (btnDemo) btnDemo.textContent = hasDemo ? "재등록" : "등록";
+    if (btnLive) btnLive.textContent = hasLive ? "재등록" : "등록";
   }
 
   // 2026-05-27: Bot Enable 버튼 제거됨 — Start/Stop 으로만 제어.

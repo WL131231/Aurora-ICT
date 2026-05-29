@@ -225,48 +225,7 @@
     line-height: 1.4;
   }
 
-  /* 2026-05-29 v2: Daily Loss Limit 입력 줄 — 인라인 style 제거,
-     flex 로 깔끔 정렬. */
-  .dll-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-top: 4px;
-  }
-  .dll-row .k {
-    flex: 0 0 auto;
-    font-size: 11px;
-    letter-spacing: 0.1em;
-    color: var(--text-2);
-  }
-  .dll-row input {
-    flex: 1;
-    min-width: 0;
-    background: #1a1a1a;
-    border: 1px solid #333;
-    color: var(--text-1);
-    padding: 4px 8px;
-    font-size: 11px;
-    border-radius: 3px;
-    font-family: inherit;
-  }
-  .dll-row input:focus {
-    outline: none;
-    border-color: var(--line-strong);
-  }
-  .dll-row button {
-    flex: 0 0 auto;
-    padding: 5px 12px;
-    background: var(--surface-2);
-    border: 1px solid var(--line-strong);
-    color: var(--text-1);
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    border-radius: 3px;
-    cursor: pointer;
-    font-family: inherit;
-  }
-  .dll-row button:hover { background: var(--line-strong); }
+  /* 2026-05-29 v3: .dll-row 롤백 — 인라인 style 로 복귀 (파트너 피드백). */
 
   /* 차트 상단 toolbar — TF 토글 */
   .chart-toolbar {
@@ -1775,16 +1734,16 @@
          2026-05-29 v2 파트너 결정: 칸 배경색 — 등록 시 푸른색, 미등록 회색.
          JS 에서 status.has_demo_credentials / has_live_credentials 보고
          .has-key / .no-key 클래스 토글. -->
+    <!-- 2026-05-29 v3 파트너 결정: 상태 텍스트 ("등록됨"/"미등록") 제거.
+         배경색 + 버튼 라벨 (등록 시 "재등록", 미등록 시 "등록") 만으로 시각화. -->
     <div class="cred-saved" id="cred-saved-block" style="display:none">
       <div class="cred-slot-row no-key" id="cred-slot-demo">
         <span class="cred-slot-label">DEMO</span>
-        <span id="cred-demo-status" class="cred-slot-status">—</span>
-        <button data-cred-reenter="demo" class="cred-reenter-mini">재등록</button>
+        <button data-cred-reenter="demo" id="btn-cred-demo" class="cred-reenter-mini">등록</button>
       </div>
       <div class="cred-slot-row no-key" id="cred-slot-live">
         <span class="cred-slot-label cred-slot-live">LIVE</span>
-        <span id="cred-live-status" class="cred-slot-status">—</span>
-        <button data-cred-reenter="live" class="cred-reenter-mini">재등록</button>
+        <button data-cred-reenter="live" id="btn-cred-live" class="cred-reenter-mini">등록</button>
       </div>
     </div>
 
@@ -1795,13 +1754,12 @@
     </div>
 
     <h2>Daily Loss Limit</h2>
-    <!-- 2026-05-29 v2: 인라인 style 제거, .dll-row flex 로 통일. 한 줄에
-         Limit % label + input + SET 깔끔하게. -->
-    <div class="dll-row">
+    <!-- 2026-05-29 v3: 파트너 피드백 "아까가 더 낫네" — 인라인 style 복귀. -->
+    <div class="row" style="margin-top:4px">
       <span class="k">Limit %</span>
-      <input id="dll-input" type="number" step="0.1" min="0" max="50"
-             placeholder="0 = off" />
-      <button id="btn-dll-set">SET</button>
+      <input id="dll-input" type="number" step="0.1" min="0" max="50" placeholder="0 = off"
+             style="width:78px;background:#1a1a1a;border:1px solid #333;color:#ddd;padding:3px 6px;border-radius:3px"/>
+      <button id="btn-dll-set" style="margin-left:4px;padding:3px 10px">SET</button>
     </div>
     <div class="row"><span class="k">Today PnL</span><span id="dll-today" class="v">—</span></div>
     <div class="row"><span class="k">Status</span><span id="dll-status" class="v">—</span></div>
