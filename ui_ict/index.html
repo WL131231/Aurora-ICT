@@ -224,12 +224,12 @@
     border-color: var(--line-strong);
   }
   .pair-toggle button.active {
-    /* 2026-05-29 v5 파트너 요청: START/STOP 톤 적용.
-       배경은 기존 surface 유지 + 초록 outline + 초록 글자 + glow. */
-    background: var(--surface);
+    /* 2026-05-29 v7 파트너 요청: START 버튼과 완전 동일.
+       내부 초록 fill (rgba) + 초록 outline + 초록 글자 + glow. */
+    background: rgba(52, 211, 153, 0.18);
     border-color: #34d399;
     color: #34d399;
-    box-shadow: 0 0 10px rgba(52, 211, 153, 0.35);
+    box-shadow: 0 0 12px rgba(52, 211, 153, 0.45);
   }
   .pair-hint {
     margin: 6px 0 0 0;
@@ -1292,15 +1292,14 @@
     letter-spacing: 0.05em;
     transition: background 0.18s, border-color 0.18s;
   }
-  /* 2026-05-29 v5 파트너 요청: START/STOP 톤 적용.
-     배경은 기존 surface 유지 + has-key 초록 outline + glow (START 패턴).
-     no-key 는 일반 회색 outline (STOP 비활성과 동일). LIVE 라벨은
-     identity 색 빨강 유지. */
+  /* 2026-05-29 v7 파트너 요청: START 버튼과 완전 동일 톤.
+     내부 초록 fill + 초록 outline + glow. no-key 는 일반 회색 outline.
+     LIVE 라벨은 identity 색 빨강 유지. */
   .cred-slot-row.has-key {
-    background: var(--surface);
+    background: rgba(52, 211, 153, 0.18);
     border-color: #34d399;
     color: #34d399;
-    box-shadow: 0 0 10px rgba(52, 211, 153, 0.30);
+    box-shadow: 0 0 12px rgba(52, 211, 153, 0.45);
   }
   .cred-slot-row.has-key .cred-slot-label {
     color: #34d399;
