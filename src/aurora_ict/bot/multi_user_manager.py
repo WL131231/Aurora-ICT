@@ -98,7 +98,9 @@ class MultiUserBotManager:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def _build_user_settings(self, user_code: str) -> IctSettings:
+    def _build_user_settings(
+        self, user_code: str, *, force_run_mode: RunMode | None = None,
+    ) -> IctSettings:
         """DB row → 사용자별 IctSettings (api_key/secret 복호화 포함).
 
         2026-05-29 (Live 모드 지원): 사용자가 demo / live 키를 각각 등록할 수
@@ -107,8 +109,13 @@ class MultiUserBotManager:
         있으면 settings 에 박고, 없으면 빈 SecretStr 로 둔다 (모드 전환 시
         ``/ict/run-mode`` 가드에서 다시 검증).
 
+        2026-05-29 hot-fix: ``force_run_mode`` 인자 — auto_resume 가 사용자
+        마지막 가동 run_mode 로 강제. base_settings.run_mode (DEMO 기본) 가
+        LIVE 사용자 재가동을 막던 버그 해소.
+
         Args:
             user_code: 대상 사용자 라이선스 코드.
+            force_run_mode: 명시 시 settings.run_mode override (auto_resume 용).
 
         Returns:
             base_settings 를 깊은 복사한 IctSettings 에 사용자별 demo/live
@@ -126,6 +133,11 @@ class MultiUserBotManager:
         base = self.base_settings if self.base_settings is not None else IctSettings()
         settings = base.model_copy(deep=True)
         settings.license_type = license_type
+        # 2026-05-29 hot-fix: force_run_mode 명시 시 그 값으로 강제 override.
+        # 사용자 마지막 가동 모드 복원 (auto_resume 흐름).
+        if force_run_mode is not None:
+            settings.run_mode = force_run_mode
+        effective_mode = settings.run_mode
 
         # 양쪽 모드 키 로드 — 있는 것만 박는다.
         demo_pair = users_db.get_api_keys(self.db_path, user_code, "demo")
@@ -141,12 +153,13 @@ class MultiUserBotManager:
             settings.live_api_key = SecretStr(live_key)
             settings.live_api_secret = SecretStr(live_secret)
 
-        # 현재 run_mode 의 키가 비어있으면 start 불가 — UI 가 등록 안내.
-        if base.run_mode is RunMode.LIVE and live_pair is None:
+        # 2026-05-29 hot-fix: 검사 기준을 force_run_mode 반영 후의 effective_mode 로.
+        # base.run_mode 그대로 검사하면 force_run_mode 무효화됨.
+        if effective_mode is RunMode.LIVE and live_pair is None:
             raise ValueError(
                 f"사용자 '{user_code}' 의 LIVE 거래소 API 키가 등록되지 않았습니다.",
             )
-        if base.run_mode is RunMode.DEMO and demo_pair is None:
+        if effective_mode is RunMode.DEMO and demo_pair is None:
             raise ValueError(
                 f"사용자 '{user_code}' 의 DEMO 거래소 API 키가 등록되지 않았습니다.",
             )
@@ -155,11 +168,17 @@ class MultiUserBotManager:
         settings = settings.model_validate(settings.model_dump())
         return settings
 
-    async def get_or_create_bot(self, user_code: str) -> BotIctInstance:
+    async def get_or_create_bot(
+        self, user_code: str, *, force_run_mode: RunMode | None = None,
+    ) -> BotIctInstance:
         """사용자 봇 인스턴스 가져오기 — 없으면 생성 (start 는 별도 호출).
+
+        2026-05-29 hot-fix: ``force_run_mode`` 인자 — auto_resume 가 사용자
+        마지막 가동 모드로 강제 가동할 수 있게.
 
         Args:
             user_code: 대상 사용자 라이선스 코드.
+            force_run_mode: 명시 시 IctSettings.run_mode override.
 
         Returns:
             BotIctInstance (생성만, state=STOPPED 일 수 있음).
@@ -168,7 +187,9 @@ class MultiUserBotManager:
         if slot is not None and slot.bot is not None:
             return slot.bot
         # 새 슬롯 — settings + client + bot 생성.
-        settings = self._build_user_settings(user_code)
+        settings = self._build_user_settings(
+            user_code, force_run_mode=force_run_mode,
+        )
         client = await self.client_factory(settings)
         bot = BotIctInstance(
             client=client,
@@ -236,20 +257,25 @@ class MultiUserBotManager:
             bot.ensure_prefetch_started()
             return bot
 
-    async def start(self, user_code: str) -> None:
+    async def start(
+        self, user_code: str, *, force_run_mode: RunMode | None = None,
+    ) -> None:
         """사용자 봇 기동 — get_or_create 후 BotIctInstance.start 호출.
 
         같은 사용자 동시 호출 race 방지를 위해 per-user lock 사용.
 
         2026-05-28: 봇 가동 상태 영속화 — 성공 시 ``users_db.set_bot_running``
-        으로 DB 에 ``bot_running=1`` 박음. Fly machine OOM / 재배포 시 startup
-        hook 이 이 플래그 본 뒤 자동 재가동.
+        으로 DB 에 ``bot_running=1`` 박음.
+        2026-05-29 hot-fix: ``force_run_mode`` 인자 — auto_resume 가 사용자
+        마지막 가동 모드로 정확하게 복원할 수 있게.
 
         Raises:
             ValueError: 사용자 미존재 / API 키 미등록 등 (build_user_settings 단계).
         """
         async with self._get_lock(user_code):
-            bot = await self.get_or_create_bot(user_code)
+            bot = await self.get_or_create_bot(
+                user_code, force_run_mode=force_run_mode,
+            )
             if bot.state is BotState.RUNNING:
                 logger.info("사용자 %s 봇 이미 실행 중 — re-start 무시", user_code)
                 # 이미 가동 중이어도 DB 플래그는 보장 (운영 중 마이그레이션 직후 안전망).
@@ -277,6 +303,18 @@ class MultiUserBotManager:
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "사용자 %s bot_running=1 영속화 실패 (무시): %s", user_code, e,
+                )
+            # 2026-05-29 hot-fix: 마지막 가동 run_mode 도 영속화 — fly machine
+            # 재시작 후 auto_resume 가 base_settings (DEMO) 대신 이 모드로 가동.
+            # LIVE 사용자가 재시작마다 DEMO 키 미등록 실패하던 버그 해소.
+            try:
+                users_db.set_last_run_mode(
+                    self.db_path, user_code, slot.settings.run_mode.value,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "사용자 %s last_run_mode 영속화 실패 (무시): %s",
+                    user_code, e,
                 )
             logger.info(
                 "MultiUserBotManager: 사용자 %s 봇 시작 (symbol=%s)",

@@ -128,6 +128,22 @@ def _connect(db_path: Path | str) -> sqlite3.Connection:
     return conn
 
 
+def _ensure_last_run_mode_column(conn: sqlite3.Connection) -> None:
+    """2026-05-29 hot-fix: 사용자별 마지막 run_mode (demo/live) 영속화.
+
+    배경: fly machine 재시작 시 ``auto_resume_running_bots`` 가
+    ``base_settings.run_mode = DEMO`` 기준으로 봇 재가동 시도. LIVE 모드로
+    가동 중이던 사용자도 DEMO 로 가동 시도 → DEMO 키 미등록 → 봇 죽음.
+    이 컬럼이 있으면 사용자가 마지막에 가동한 run_mode 로 정확하게 재가동.
+
+    마이그레이션: ``last_run_mode TEXT`` 컬럼 idempotent 추가. NULL 허용
+    (구식 사용자는 base_settings.run_mode fallback).
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "last_run_mode" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN last_run_mode TEXT")
+
+
 def _ensure_bot_running_symbols_column(conn: sqlite3.Connection) -> None:
     """2026-05-29 PR B: 멀티 페어 (BTC + ETH 동시 진입) 영속화 — bot_running
     boolean → bot_running_symbols JSON 배열 컬럼.
@@ -239,6 +255,8 @@ def init_db(db_path: Path | str) -> None:
         _ensure_dual_key_columns(conn)
         # 2026-05-29 PR B: 멀티 페어 영속화 컬럼 + 기존 데이터 마이그레이션.
         _ensure_bot_running_symbols_column(conn)
+        # 2026-05-29 hot-fix: LIVE 사용자 자동 재가동 버그 해소용 last_run_mode.
+        _ensure_last_run_mode_column(conn)
         conn.commit()
     # 2026-05-28: 공지사항 테이블도 같은 파일에 idempotent 생성.
     from aurora_ict.auth.notices_db import init_notices_table
@@ -650,6 +668,59 @@ def list_running_bots(db_path: Path | str) -> list[tuple[str, str]]:
     return out
 
 
+def set_last_run_mode(db_path: Path | str, code: str, mode: str) -> bool:
+    """사용자 마지막 run_mode 영속화 — 2026-05-29 hot-fix.
+
+    Why: fly machine 재시작 시 auto_resume 가 base_settings 의 default
+    run_mode (DEMO) 로 재가동 시도. LIVE 사용자도 DEMO 로 가동 시도해서
+    DEMO 키 미등록 시 봇 죽음. 이 컬럼에 마지막 가동 모드 박아 정확히 복원.
+
+    Args:
+        db_path: users.db 경로.
+        code: 대상 사용자 라이선스 코드.
+        mode: ``"demo"`` 또는 ``"live"``. 그 외 값은 ValueError.
+
+    Returns:
+        True 면 UPDATE 1건 성공, False 면 code 미존재.
+
+    Raises:
+        ValueError: ``mode`` 가 허용 외 값.
+    """
+    if mode not in ("demo", "live"):
+        raise ValueError(f"mode 는 'demo' 또는 'live' 여야 합니다: {mode!r}")
+    now = _utcnow_iso()
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE users
+            SET last_run_mode = ?, updated_at = ?
+            WHERE code = ?
+            """,
+            (mode, now, code),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_last_run_mode(db_path: Path | str, code: str) -> str | None:
+    """사용자 마지막 run_mode 조회 — 2026-05-29 hot-fix.
+
+    Returns:
+        ``"demo"`` / ``"live"`` / None (미설정 또는 사용자 미존재).
+    """
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT last_run_mode FROM users WHERE code = ?",
+            (code,),
+        ).fetchone()
+    if row is None:
+        return None
+    val = row["last_run_mode"]
+    if val in ("demo", "live"):
+        return str(val)
+    return None
+
+
 def list_running_codes(db_path: Path | str) -> list[str]:
     """[Deprecated 2026-05-29 PR B] 기존 boolean 흐름 호환용.
 
@@ -860,7 +931,9 @@ __all__ = [
     "set_api_keys",
     "set_bot_running",
     "get_bot_running_symbols",
+    "get_last_run_mode",
     "list_running_bots",
+    "set_last_run_mode",
     "set_pin",
     "update_last_login",
     "update_license",
