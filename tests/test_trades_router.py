@@ -550,11 +550,13 @@ def test_admin_update_license_success(data_dir, tmp_path, monkeypatch):
         },
     )
     assert r.status_code == 200, r.text
-    assert r.json() == {
-        "ok": True, "code": code,
-        "license_type": "sub_365d",
-        "expires_at": "2027-05-28T23:59:59Z",
-    }
+    # 2026-05-29: set_license idempotent — created 필드 추가 (False = UPDATE).
+    body = r.json()
+    assert body["ok"] is True
+    assert body["created"] is False
+    assert body["code"] == code
+    assert body["license_type"] == "sub_365d"
+    assert body["expires_at"] == "2027-05-28T23:59:59Z"
     # DB 실측.
     user = users_db.get_user_by_code(auth_db, code)
     assert user["license_type"] == "sub_365d"
@@ -583,7 +585,12 @@ def test_admin_update_license_invalid_type_400(data_dir, tmp_path, monkeypatch):
     assert r.status_code == 422
 
 
-def test_admin_update_license_missing_user_404(data_dir, tmp_path, monkeypatch):
+def test_admin_update_license_creates_when_user_missing(
+    data_dir, tmp_path, monkeypatch,
+):
+    """2026-05-29 근본 fix: 사용자 row 없으면 INSERT (라이선스 봇 pre-issue 흐름).
+    이전엔 404 였음 — 이제 created:True 로 신규 생성.
+    """
     monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
     auth_db = tmp_path / "users.db"
     users_db_init = __import__("aurora_ict.auth.users_db", fromlist=["init_db"])
@@ -599,7 +606,10 @@ def test_admin_update_license_missing_user_404(data_dir, tmp_path, monkeypatch):
             "expires_at": "2026-06-30T23:59:59Z",
         },
     )
-    assert r.status_code == 404
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["created"] is True  # 신규 INSERT
+    assert body["license_type"] == "sub_30d"
 
 
 def test_admin_update_license_no_auth_db_skipped(data_dir, tmp_path, monkeypatch):
@@ -783,3 +793,106 @@ def test_query_trades_empty_db_returns_empty_list(data_dir):
     from aurora_ict.api.trades_router import _query_trades
     rows = _query_trades(db_path, limit=100, since_ms=None, event_type=None)
     assert rows == []
+
+
+# ============================================================
+# 14. /admin/user/license — set_license idempotent (2026-05-29 근본 fix)
+# ============================================================
+
+
+def test_admin_license_creates_user_when_not_exists(
+    data_dir, tmp_path, monkeypatch,
+):
+    """라이선스 봇이 코드 발급 시 호출 — 사용자 row 없으면 INSERT.
+
+    파트너 보고: setup_pin 이 default referral 로 박는 버그. 근본 fix —
+    라이선스 봇이 미리 /admin/user/license 호출하면 pre-insert 됨.
+    """
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "tok-1")
+    auth_db = tmp_path / "users.db"
+    from aurora_ict.auth import users_db
+    users_db.init_db(auth_db)
+    app = _make_app_with_auth_db(data_dir, auth_db)
+    client = TestClient(app)
+    # 신규 코드 (DB 에 없음).
+    r = client.post(
+        "/admin/user/license",
+        json={
+            "code": "AICT-NEW-NEW-NEW",
+            "license_type": "sub_365d",
+            "expires_at": "2027-05-28T23:59:59Z",
+        },
+        headers={"X-Admin-Token": "tok-1"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["created"] is True
+    assert body["code"] == "AICT-NEW-NEW-NEW"
+    assert body["license_type"] == "sub_365d"
+
+
+def test_admin_license_updates_existing_user(
+    data_dir, tmp_path, monkeypatch,
+):
+    """기존 사용자 정정 — UPDATE 흐름."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "tok-2")
+    # 기존 사용자 (referral 로 박혀있음).
+    from aurora_ict.auth import users_db
+    auth_db = tmp_path / "users.db"
+    users_db.init_db(auth_db)
+    users_db.create_user(auth_db, "AICT-OLD-OLD-OLD", license_type="referral")
+
+    app = _make_app_with_auth_db(data_dir, auth_db)
+    client = TestClient(app)
+    r = client.post(
+        "/admin/user/license",
+        json={
+            "code": "AICT-OLD-OLD-OLD",
+            "license_type": "sub_90d",
+            "expires_at": "2026-08-28T23:59:59Z",
+        },
+        headers={"X-Admin-Token": "tok-2"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["created"] is False  # UPDATE
+    # DB 에 실제 박혀있는지 확인.
+    user = users_db.get_user_by_code(auth_db, "AICT-OLD-OLD-OLD")
+    assert user["license_type"] == "sub_90d"
+    assert user["expires_at"] == "2026-08-28T23:59:59Z"
+
+
+def test_admin_license_rejects_invalid_type(data_dir, tmp_path, monkeypatch):
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "tok-3")
+    from aurora_ict.auth import users_db
+    auth_db = tmp_path / "users.db"
+    users_db.init_db(auth_db)
+    app = _make_app_with_auth_db(data_dir, auth_db)
+    client = TestClient(app)
+    r = client.post(
+        "/admin/user/license",
+        json={
+            "code": "AICT-INV-INV-INV",
+            "license_type": "premium",  # 미지원 — Pydantic Field pattern 차단.
+            "expires_at": None,
+        },
+        headers={"X-Admin-Token": "tok-3"},
+    )
+    assert r.status_code == 422  # Pydantic validation
+
+
+def test_admin_license_requires_admin_auth(data_dir, tmp_path):
+    from aurora_ict.auth import users_db
+    auth_db = tmp_path / "users.db"
+    users_db.init_db(auth_db)
+    app = _make_app_with_auth_db(data_dir, auth_db)
+    client = TestClient(app)
+    r = client.post(
+        "/admin/user/license",
+        json={
+            "code": "AICT-XX-XX-XX",
+            "license_type": "sub_365d",
+            "expires_at": "2027-05-28T23:59:59Z",
+        },
+    )
+    assert r.status_code in (401, 503)  # 인증 실패 또는 admin 비활성

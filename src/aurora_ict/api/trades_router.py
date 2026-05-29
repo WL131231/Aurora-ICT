@@ -529,8 +529,13 @@ def create_trades_router(
 
     # ==========================================================
     # 2026-05-29: Admin 라이선스 정정 — UI 가 "레퍼럴 / 무기한" 으로 잘못 표시되는
-    # 버그 (setup_pin 시 라이선스 서버 검증 없이 기본 referral 박힘) 임시 처방.
-    # 본질 fix (setup_pin 자동 sync) 는 후속 PR. 그 전까지 admin 이 정정 가능.
+    # 버그 (setup_pin 시 라이선스 서버 검증 없이 기본 referral 박힘) 처방.
+    #
+    # 2026-05-29 근본 fix: set_license (create-or-update idempotent) 사용.
+    # - 사용자가 아직 setup_pin 안 했어도 (DB row 없어도) 라이선스 봇이 미리
+    #   호출해서 pre-insert 가능.
+    # - admin_bot.py 의 /issue_sub 시 자동 호출 → setup_pin 시 default
+    #   referral 로 덮어쓰지 않음.
     # ==========================================================
 
     if auth_db_path is not None:
@@ -540,21 +545,27 @@ def create_trades_router(
             x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
             cookie_token: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
         ) -> dict[str, Any]:
-            """사용자 라이선스 type / 만료일 정정 (admin 만).
+            """사용자 라이선스 type / 만료일 박기 (admin 만, idempotent).
+
+            기존 사용자 → UPDATE. 신규 코드 (아직 setup_pin 안 함) → INSERT.
+            라이선스 봇이 코드 발급 직후 호출하면 pre-insert 되어 setup_pin
+            때 default referral 로 덮어쓰지 않음.
 
             예 (sub_365d, 2027-05-28 만료):
                 POST /admin/user/license
                 {
-                  "code": "AICT-0Q8B-D1YU-VFRN",
+                  "code": "AICT-XXXX-XXXX-XXXX",
                   "license_type": "sub_365d",
                   "expires_at": "2027-05-28T23:59:59Z"
                 }
+
+            응답 — 신규 INSERT 면 created=True, 정정 UPDATE 면 created=False.
             """
             _check_admin_cookie_or_header(cookie_token, x_admin_token)
             # users_db 는 외부 import (순환 회피).
             from aurora_ict.auth import users_db
             try:
-                ok = users_db.update_license(
+                result = users_db.set_license(
                     auth_db_path,
                     code=req.code,
                     license_type=req.license_type,
@@ -562,16 +573,7 @@ def create_trades_router(
                 )
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e)) from e
-            if not ok:
-                raise HTTPException(
-                    status_code=404, detail=f"사용자 '{req.code}' 가 DB 에 없습니다.",
-                )
-            return {
-                "ok": True,
-                "code": req.code,
-                "license_type": req.license_type,
-                "expires_at": req.expires_at,
-            }
+            return {"ok": True, **result}
 
     return router
 
