@@ -461,7 +461,13 @@ function renderStatus(s) {
   // 이전 조건은 (stopped && enabled) 였는데 STOP 클릭 시 enabled=false 도 같이
   // 되어서 active 안 박혔음. state 만 보고 둘 중 하나 켜지게 단순화.
   // 처음 진입 (running 한 번도 안 됨, stopped) 에도 STOP active — 일관성 위해.
-  $("btn-start").classList.toggle("active", s.state === "running");
+  //
+  // 2026-05-29: state="resuming" 추가 처리. fly machine 재시작 직후 auto_resume
+  // 가 슬롯을 못 살린 상태에서 사용자가 새로고침하면 stopped 로 표시되며 STOP 에
+  // 빨간 불 들어오던 버그 (파트너 보고). resuming 일 때는 START 측 active 유지
+  // 해 사용자에게 봇이 가동 의도 상태임을 보여줌.
+  const isRunning = s.state === "running" || s.state === "resuming";
+  $("btn-start").classList.toggle("active", isRunning);
   $("btn-stop").classList.toggle("active", s.state === "stopped");
 
   // 2026-05-29 v3 파트너 결정: 상태 텍스트 ("등록됨"/"미등록") 제거.
@@ -761,8 +767,8 @@ $("btn-demo").onclick = async () => {
   catch (e) { toast(e.message, true); }
 };
 $("btn-live").onclick = async () => {
-  // 2026-05-29: Live 전환 강화된 확인. 1단계 안내 + 2단계 "LIVE" 타이핑 검증.
-  // 서버 단도 has_api_keys("live") 가드 있지만 사용자 인지 향상 위해 한 번 더.
+  // 2026-05-29: Live 전환 — confirm 1단계만 (LIVE 타이핑 prompt 제거, 파트너 요청).
+  // 서버 단 has_api_keys("live") 가드가 있어 키 미등록 시 자동 차단됨.
   const warn = (
     "⚠ LIVE (실거래) 모드로 전환합니다.\n\n" +
     "• 실제 자금이 즉시 거래에 사용됩니다.\n" +
@@ -771,11 +777,6 @@ $("btn-live").onclick = async () => {
     "계속하려면 OK 를 누르세요."
   );
   if (!confirm(warn)) return;
-  const typed = prompt('확인을 위해 대문자로 "LIVE" 라고 입력하세요:');
-  if (typed !== "LIVE") {
-    toast("LIVE 입력 확인 실패 — 전환 취소", true);
-    return;
-  }
   try {
     await api("/ict/run-mode", "POST", { mode: "live" });
     toast("LIVE 모드 전환 완료");

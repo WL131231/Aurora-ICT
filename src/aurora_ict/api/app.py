@@ -28,7 +28,10 @@ from pydantic import BaseModel, SecretStr
 
 from aurora_ict.api.markers import to_chart_markers
 from aurora_ict.bot.manager import BotManager
-from aurora_ict.bot.multi_user_manager import MultiUserBotManager
+from aurora_ict.bot.multi_user_manager import (
+    _DEFAULT_SYMBOL,
+    MultiUserBotManager,
+)
 from aurora_ict.config.settings import TRADE_TIMEFRAMES, IctSettings, RunMode
 from aurora_ict.strategy.silver_bullet import Direction
 
@@ -272,15 +275,35 @@ def _register_multi_user_routes(
     # ------------------------------------------------------------------
 
     def _user_settings(user_code: str) -> IctSettings:
-        """사용자 슬롯의 settings — 없으면 base_settings (없으면 신규 기본).
+        """사용자 슬롯의 settings — 없으면 base copy + last_run_mode 반영.
 
         get_or_create_bot 이 안 호출된 시점(예: 봇 미가동 시 /ict/config 조회) 에서도
-        뭔가 반환해야 함. 슬롯이 없으면 mu_manager.base_settings 사용.
+        뭔가 반환해야 함. 슬롯이 없으면 base_settings 를 deep copy 한 뒤
+        사용자별 last_run_mode (DB) 로 run_mode 정확히 박는다.
+
+        2026-05-29 hot-fix: 이전엔 base_settings 직접 반환했는데, base_settings
+        는 프로세스 전역 공유 객체라 사용자별 LIVE/DEMO 가 혼동되고 한 사용자가
+        모드 전환 시 다른 사용자에게도 leak. 이제 사용자별 사본을 만들고
+        last_run_mode 우선으로 run_mode 결정.
         """
-        slot = mu_manager._slots.get(user_code)
+        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
         if slot is not None:
             return slot.settings
-        return mu_manager.base_settings or IctSettings()
+        base = mu_manager.base_settings or IctSettings()
+        s = base.model_copy(deep=True)
+        # last_run_mode 로 정확히 박기 — 사용자가 LIVE 로 가동했었으면 LIVE.
+        from aurora_ict.auth import users_db as _users_db_local
+        try:
+            last_mode = _users_db_local.get_last_run_mode(
+                mu_manager.db_path, user_code,
+            )
+        except Exception:  # noqa: BLE001
+            last_mode = None
+        if last_mode == "live":
+            s.run_mode = RunMode.LIVE
+        elif last_mode == "demo":
+            s.run_mode = RunMode.DEMO
+        return s
 
     @app.get("/ict/config")
     async def get_config_mu(
@@ -315,11 +338,16 @@ def _register_multi_user_routes(
                     "키를 먼저 등록한 뒤 모드를 전환해 주세요."
                 ),
             )
-        # 슬롯이 있고 봇이 RUNNING 이면 stop → run_mode 변경 → start 로 재시작.
-        # 슬롯 client 는 모드별 endpoint (demo / live) 가 다르므로 새 client 가 필요 —
-        # stop 시 _close_client 가 slot.client 를 None 으로 만들고, 다음 start 의
-        # get_or_create_bot 이 새 settings 로 새 client 를 만든다.
-        slot = mu_manager._slots.get(user_code)
+        # 2026-05-29 hot-fix: base_settings.run_mode 를 건드리지 않는다.
+        # base_settings 는 프로세스 전역 공유 객체라 한 사용자가 LIVE 로 바꾸면
+        # 다른 사용자의 모드 표시까지 LIVE 로 leak 되고, fly 재배포 후 ENV 기본값
+        # (DEMO) 로 리셋되면 status() 가 다시 DEMO 로 떨어져 LIVE 사용자가
+        # "또 데모로 넘어가고" 보이는 버그 발생.
+        #
+        # 대신 last_run_mode 를 즉시 DB 에 박고, 슬롯 폐기 후 재가동.
+        # status() 가 slot 없을 때 last_run_mode 를 우선 본다 (모드 표시 정확).
+        # auto_resume / 다음 start 흐름이 force_run_mode 로 정확하게 복원.
+        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
         was_running = (
             slot is not None
             and slot.bot is not None
@@ -331,12 +359,17 @@ def _register_multi_user_routes(
         # (slot.settings.run_mode 만 갈아끼면 client 객체는 이전 모드 키로 만들어진
         # 것이라 sign 실패 가능 — 슬롯 폐기가 안전.)
         if slot is not None:
-            mu_manager._slots.pop(user_code, None)
-        if mu_manager.base_settings is not None:
-            mu_manager.base_settings.run_mode = mode
+            mu_manager._slots.pop((user_code, _DEFAULT_SYMBOL), None)
+        # 사용자 마지막 run_mode 즉시 영속화 — status() 가 이 값을 우선 본다.
+        try:
+            _users_db.set_last_run_mode(mu_manager.db_path, user_code, mode.value)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "사용자 %s last_run_mode 박기 실패 (무시): %s", user_code, e,
+            )
         if was_running:
             try:
-                await mu_manager.start(user_code)
+                await mu_manager.start(user_code, force_run_mode=mode)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e)) from e
         return await mu_manager.status(user_code)
@@ -348,7 +381,7 @@ def _register_multi_user_routes(
     ) -> dict[str, Any]:
         # multi-user 에서는 enabled 토글 = base_settings.enabled 갱신 + start/stop 분기.
         # (BotManager.set_enabled 와 의미 동일하게 — False 면 stop, True 면 start.)
-        slot = mu_manager._slots.get(user_code)
+        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
         was_running = (
             slot is not None
             and slot.bot is not None
@@ -375,7 +408,7 @@ def _register_multi_user_routes(
 
         슬롯이 없으면 DB 에서 사용자 키를 가져와 settings 구성 (봇은 만들지 않음).
         """
-        slot = mu_manager._slots.get(user_code)
+        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
         if slot is not None:
             settings = slot.settings
         else:
@@ -432,7 +465,7 @@ def _register_multi_user_routes(
                     f"허용 목록: {list(TRADE_TIMEFRAMES)}"
                 ),
             )
-        slot = mu_manager._slots.get(user_code)
+        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
         was_running = (
             slot is not None
             and slot.bot is not None
@@ -461,7 +494,7 @@ def _register_multi_user_routes(
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
         """#SAFETY-1 한도 + 오늘 누적 손익 상태 — 사용자 봇이 있으면 그 값, 없으면 settings."""
-        slot = mu_manager._slots.get(user_code)
+        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
         settings = _user_settings(user_code)
         if slot is not None and slot.bot is not None:
             return slot.bot.daily_loss_status()
@@ -485,7 +518,7 @@ def _register_multi_user_routes(
                 status_code=400,
                 detail="daily_loss_limit_pct 는 0~50 범위 (0 = 비활성).",
             )
-        slot = mu_manager._slots.get(user_code)
+        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
         if slot is not None:
             slot.settings.daily_loss_limit_pct = req.pct
             if slot.bot is not None:
@@ -534,7 +567,7 @@ def _register_multi_user_routes(
                 status_code=400,
                 detail=f"fraction은 (0, 1] 범위 — 받은 값: {req.fraction}",
             )
-        slot = mu_manager._slots.get(user_code)
+        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
         bot = slot.bot if slot is not None else None
         if bot is None or bot.active_position is None:
             raise HTTPException(status_code=404, detail="active position 없음")
@@ -581,7 +614,7 @@ def _register_multi_user_routes(
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
         """현재 active position 상세 — multi-user 사용자별."""
-        slot = mu_manager._slots.get(user_code)
+        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
         bot = slot.bot if slot is not None else None
         pending: dict[str, Any] | None = None
         if bot is not None and bot._pending_entry is not None:
@@ -668,7 +701,7 @@ def _register_multi_user_routes(
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
         """봇 현재 판단 — multi-user 사용자별 (FVG/구조/Sweep + 세션 + entry condition)."""
-        slot = mu_manager._slots.get(user_code)
+        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
         bot = slot.bot if slot is not None else None
         if bot is None:
             return {
@@ -881,7 +914,7 @@ def _register_multi_user_routes(
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
         """현재 잔고(USDT) + 세션 상태 — multi-user 사용자별."""
-        slot = mu_manager._slots.get(user_code)
+        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
         bot = slot.bot if slot is not None else None
         session = _compute_session_status()
         if bot is None:
@@ -904,7 +937,7 @@ def _register_multi_user_routes(
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
         """최근 청산 거래 내역 — multi-user 사용자별 (30일 윈도우)."""
-        slot = mu_manager._slots.get(user_code)
+        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
         bot = slot.bot if slot is not None else None
         if bot is None:
             return {"trades": []}

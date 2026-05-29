@@ -45,10 +45,18 @@ logger = logging.getLogger(__name__)
 ClientFactory = Callable[[IctSettings], Awaitable[ExchangeClientProtocol]]
 
 
+# 2026-05-29 PR B: 멀티 페어 (BTC + ETH 동시 진입) 백엔드. 사용자별 단일 슬롯
+# 구조 → (사용자, symbol) 복합 키 슬롯. ccxt 형식 ("BTC/USDT:USDT") 사용.
+# 옛 호출 (symbol 안 주는 단일 사용자/.exe 흐름) 호환 위해 default 박음.
+_DEFAULT_SYMBOL = "BTC/USDT:USDT"
+SlotKey = tuple[str, str]  # (user_code, symbol)
+
+
 @dataclass(slots=True)
 class _UserBotSlot:
-    """사용자 1명의 봇 슬롯 — bot/client/settings 함께 보관."""
+    """사용자 1명 × 1 symbol 의 봇 슬롯 — bot/client/settings 함께 보관."""
 
+    symbol: str
     settings: IctSettings
     bot: BotIctInstance | None = None
     client: ExchangeClientProtocol | None = None
@@ -70,21 +78,26 @@ class MultiUserBotManager:
     db_path: Path | str
     base_settings: IctSettings | None = None
     master_key: bytes | None = None
-    _slots: dict[str, _UserBotSlot] = field(default_factory=dict)
-    # 사용자별 start lock — 같은 사용자 동시 start race 방지.
-    # 다른 사용자끼리는 병렬 가능 (격리 보장).
-    _locks: dict[str, asyncio.Lock] = field(default_factory=dict)
+    # 2026-05-29 PR B: (user_code, symbol) 복합 키. 한 사용자가 BTC + ETH 등
+    # 여러 페어 동시 진입 가능.
+    _slots: dict[SlotKey, _UserBotSlot] = field(default_factory=dict)
+    # (user_code, symbol) 별 start lock — 같은 사용자×symbol 동시 start race 방지.
+    # 다른 사용자 / 다른 symbol 끼리는 병렬 가능.
+    _locks: dict[SlotKey, asyncio.Lock] = field(default_factory=dict)
 
-    def _get_lock(self, user_code: str) -> asyncio.Lock:
-        """사용자별 asyncio.Lock — 없으면 lazy create.
+    def _get_lock(
+        self, user_code: str, symbol: str = _DEFAULT_SYMBOL,
+    ) -> asyncio.Lock:
+        """(사용자, symbol) 별 asyncio.Lock — 없으면 lazy create.
 
-        Why per-user: 전역 lock 박으면 사용자 A start 가 B start 를 막아 SaaS
-        병렬성 무너짐. 사용자별 lock 으로 같은 user 더블 클릭만 차단.
+        Why per-(user, symbol): 한 사용자가 BTC + ETH 동시 가동 시 둘이 서로
+        막지 않게. 같은 (user, symbol) 더블 클릭만 차단.
         """
-        lock = self._locks.get(user_code)
+        key: SlotKey = (user_code, symbol)
+        lock = self._locks.get(key)
         if lock is None:
             lock = asyncio.Lock()
-            self._locks[user_code] = lock
+            self._locks[key] = lock
         return lock
 
     def _user_data_dir(self, user_code: str) -> Path:
@@ -99,7 +112,11 @@ class MultiUserBotManager:
         return path
 
     def _build_user_settings(
-        self, user_code: str, *, force_run_mode: RunMode | None = None,
+        self,
+        user_code: str,
+        symbol: str = _DEFAULT_SYMBOL,
+        *,
+        force_run_mode: RunMode | None = None,
     ) -> IctSettings:
         """DB row → 사용자별 IctSettings (api_key/secret 복호화 포함).
 
@@ -133,6 +150,8 @@ class MultiUserBotManager:
         base = self.base_settings if self.base_settings is not None else IctSettings()
         settings = base.model_copy(deep=True)
         settings.license_type = license_type
+        # 2026-05-29 PR B: symbol 강제 (멀티 페어 — 슬롯별 symbol 정확히 박음).
+        settings.symbol = symbol
         # 2026-05-29 hot-fix: force_run_mode 명시 시 그 값으로 강제 override.
         # 사용자 마지막 가동 모드 복원 (auto_resume 흐름).
         if force_run_mode is not None:
@@ -169,26 +188,36 @@ class MultiUserBotManager:
         return settings
 
     async def get_or_create_bot(
-        self, user_code: str, *, force_run_mode: RunMode | None = None,
+        self,
+        user_code: str,
+        symbol: str = _DEFAULT_SYMBOL,
+        *,
+        force_run_mode: RunMode | None = None,
     ) -> BotIctInstance:
-        """사용자 봇 인스턴스 가져오기 — 없으면 생성 (start 는 별도 호출).
+        """사용자 × symbol 봇 인스턴스 가져오기 — 없으면 생성 (start 는 별도).
 
         2026-05-29 hot-fix: ``force_run_mode`` 인자 — auto_resume 가 사용자
         마지막 가동 모드로 강제 가동할 수 있게.
+        2026-05-29 PR B: ``symbol`` 인자 — 한 사용자가 BTC + ETH 등 여러
+        페어를 동시 가동할 수 있도록 (user_code, symbol) 튜플 키로 슬롯 격리.
 
         Args:
             user_code: 대상 사용자 라이선스 코드.
+            symbol: ccxt 형식 페어 (예: ``"BTC/USDT:USDT"``, ``"ETH/USDT:USDT"``).
+                기본값은 backward compat 위해 BTC.
             force_run_mode: 명시 시 IctSettings.run_mode override.
 
         Returns:
             BotIctInstance (생성만, state=STOPPED 일 수 있음).
         """
-        slot = self._slots.get(user_code)
+        key: SlotKey = (user_code, symbol)
+        slot = self._slots.get(key)
         if slot is not None and slot.bot is not None:
             return slot.bot
-        # 새 슬롯 — settings + client + bot 생성.
+        # 새 슬롯 — settings + client + bot 생성. settings.symbol 은
+        # _build_user_settings 안에서 인자 symbol 로 강제 박힘.
         settings = self._build_user_settings(
-            user_code, force_run_mode=force_run_mode,
+            user_code, symbol, force_run_mode=force_run_mode,
         )
         client = await self.client_factory(settings)
         bot = BotIctInstance(
@@ -230,21 +259,25 @@ class MultiUserBotManager:
             # 시 이 디렉토리에 trades.jsonl / trades.db / trade_journal.log 생성.
             trades_data_dir=self._user_data_dir(user_code),
         )
-        self._slots[user_code] = _UserBotSlot(
-            settings=settings, bot=bot, client=client,
+        self._slots[key] = _UserBotSlot(
+            symbol=symbol, settings=settings, bot=bot, client=client,
         )
         return bot
 
-    async def ensure_bot_ready(self, user_code: str) -> BotIctInstance:
+    async def ensure_bot_ready(
+        self, user_code: str, symbol: str = _DEFAULT_SYMBOL,
+    ) -> BotIctInstance:
         """차트 lazy 로딩용 — 봇 인스턴스 생성 + prefetch 시작 (가동 X).
 
         2026-05-28: SaaS UX — 사용자가 START 누르기 전, 로그인 직후부터
         차트 봉/마커가 보이도록 OHLCV cache prefetch 만 미리 시작.
         ``start()`` 와 달리 거래소 leverage 설정 / 매매 loop 가동은 하지 않음 —
         봇 state 는 STOPPED 유지.
+        2026-05-29 PR B: ``symbol`` 인자 — UI 가 BTC/ETH 탭 전환 시 각각 prefetch.
 
         Args:
             user_code: 대상 사용자 라이선스 코드.
+            symbol: ccxt 형식 페어 (기본 BTC, backward compat).
 
         Returns:
             BotIctInstance (state=STOPPED 일 수 있음, prefetch task 진행 중).
@@ -252,61 +285,84 @@ class MultiUserBotManager:
         Raises:
             ValueError: 사용자 미존재 또는 API key 미등록 (호출자가 401/404 응답).
         """
-        async with self._get_lock(user_code):
-            bot = await self.get_or_create_bot(user_code)
+        async with self._get_lock(user_code, symbol):
+            bot = await self.get_or_create_bot(user_code, symbol)
             bot.ensure_prefetch_started()
             return bot
 
     async def start(
-        self, user_code: str, *, force_run_mode: RunMode | None = None,
+        self,
+        user_code: str,
+        symbol: str = _DEFAULT_SYMBOL,
+        *,
+        force_run_mode: RunMode | None = None,
     ) -> None:
-        """사용자 봇 기동 — get_or_create 후 BotIctInstance.start 호출.
+        """사용자 × symbol 봇 기동 — get_or_create 후 BotIctInstance.start 호출.
 
-        같은 사용자 동시 호출 race 방지를 위해 per-user lock 사용.
+        같은 (user, symbol) 동시 호출 race 방지를 위해 per-(user, symbol)
+        lock 사용. 같은 사용자가 BTC + ETH 동시 가동 시도해도 서로 막지 않음.
 
         2026-05-28: 봇 가동 상태 영속화 — 성공 시 ``users_db.set_bot_running``
-        으로 DB 에 ``bot_running=1`` 박음.
+        으로 DB 의 ``bot_running_symbols`` JSON 배열에 symbol 추가.
         2026-05-29 hot-fix: ``force_run_mode`` 인자 — auto_resume 가 사용자
         마지막 가동 모드로 정확하게 복원할 수 있게.
+        2026-05-29 PR B: ``symbol`` 인자 — 멀티 페어 가동.
+
+        Args:
+            user_code: 대상 사용자 라이선스 코드.
+            symbol: ccxt 형식 페어 (기본 BTC).
+            force_run_mode: 명시 시 IctSettings.run_mode override.
 
         Raises:
             ValueError: 사용자 미존재 / API 키 미등록 등 (build_user_settings 단계).
         """
-        async with self._get_lock(user_code):
+        async with self._get_lock(user_code, symbol):
             bot = await self.get_or_create_bot(
-                user_code, force_run_mode=force_run_mode,
+                user_code, symbol, force_run_mode=force_run_mode,
             )
             if bot.state is BotState.RUNNING:
-                logger.info("사용자 %s 봇 이미 실행 중 — re-start 무시", user_code)
+                logger.info(
+                    "사용자 %s (symbol=%s) 봇 이미 실행 중 — re-start 무시",
+                    user_code, symbol,
+                )
                 # 이미 가동 중이어도 DB 플래그는 보장 (운영 중 마이그레이션 직후 안전망).
                 try:
-                    users_db.set_bot_running(self.db_path, user_code, True)
+                    users_db.set_bot_running(
+                        self.db_path, user_code, True, symbol=symbol,
+                    )
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
-                        "사용자 %s bot_running=1 영속화 실패 (무시): %s",
-                        user_code, e,
+                        "사용자 %s/%s bot_running 영속화 실패 (무시): %s",
+                        user_code, symbol, e,
                     )
                 return
-            slot = self._slots[user_code]
+            slot = self._slots[(user_code, symbol)]
             # 거래소 측 leverage 셋업 — 실패해도 봇 자체는 진행 (warning).
             try:
                 await slot.client.set_leverage(  # type: ignore[union-attr]
                     slot.settings.symbol, slot.settings.leverage,
                 )
             except Exception as e:  # noqa: BLE001
-                logger.warning("사용자 %s set_leverage 실패: %s", user_code, e)
+                logger.warning(
+                    "사용자 %s/%s set_leverage 실패: %s", user_code, symbol, e,
+                )
             await bot.start()
             # 봇 실제 가동 성공 직후에만 DB 영속화 — start() 가 예외 던지면 이 줄 도달 X
             # → DB 는 stale 한 0 유지 (보수적 안전).
             try:
-                users_db.set_bot_running(self.db_path, user_code, True)
+                users_db.set_bot_running(
+                    self.db_path, user_code, True, symbol=symbol,
+                )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
-                    "사용자 %s bot_running=1 영속화 실패 (무시): %s", user_code, e,
+                    "사용자 %s/%s bot_running 영속화 실패 (무시): %s",
+                    user_code, symbol, e,
                 )
             # 2026-05-29 hot-fix: 마지막 가동 run_mode 도 영속화 — fly machine
             # 재시작 후 auto_resume 가 base_settings (DEMO) 대신 이 모드로 가동.
             # LIVE 사용자가 재시작마다 DEMO 키 미등록 실패하던 버그 해소.
+            # 같은 사용자 BTC/ETH 어느 페어로 가동하든 run_mode 는 사용자별 1개라
+            # 마지막으로 가동한 모드로 덮어쓰는 게 맞다.
             try:
                 users_db.set_last_run_mode(
                     self.db_path, user_code, slot.settings.run_mode.value,
@@ -321,31 +377,46 @@ class MultiUserBotManager:
                 user_code, slot.settings.symbol,
             )
 
-    async def stop(self, user_code: str) -> None:
-        """사용자 봇 정지 + client close.
+    async def stop(
+        self, user_code: str, symbol: str = _DEFAULT_SYMBOL,
+    ) -> None:
+        """사용자 × symbol 봇 정지 + client close.
 
-        존재하지 않는 user_code 도 멱등 (no-op).
+        존재하지 않는 (user_code, symbol) 도 멱등 (no-op).
 
         2026-05-28: 봇 가동 상태 영속화 — ``users_db.set_bot_running`` 으로 DB 의
-        ``bot_running`` 을 0 으로 박아 startup hook 이 다음 부팅 때 자동 재가동
-        대상에서 빼도록.
+        ``bot_running_symbols`` 에서 symbol 제거. 다음 부팅 때 자동 재가동 대상
+        에서 빠짐.
+        2026-05-29 PR B: ``symbol`` 인자 — 사용자가 BTC 만 정지하고 ETH 는 계속
+        가동 같은 부분 정지 가능.
+
+        Args:
+            user_code: 대상 사용자 라이선스 코드.
+            symbol: ccxt 형식 페어 (기본 BTC).
         """
-        slot = self._slots.get(user_code)
-        # slot 유무와 무관하게 사용자가 명시 STOP 을 눌렀다면 DB 는 0 으로 — 사용자가
-        # 다른 fly machine 에서 가동했더라도 명시 정지 의도가 우선. DB 에 user row
+        key: SlotKey = (user_code, symbol)
+        slot = self._slots.get(key)
+        # slot 유무와 무관하게 사용자가 명시 STOP 을 눌렀다면 DB 에서 해당 symbol 제거
+        # — 다른 fly machine 에서 가동했더라도 명시 정지 의도가 우선. DB 에 user row
         # 자체가 없으면 set_bot_running 이 False 반환 (no-op).
         try:
-            users_db.set_bot_running(self.db_path, user_code, False)
+            users_db.set_bot_running(
+                self.db_path, user_code, False, symbol=symbol,
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "사용자 %s bot_running=0 영속화 실패 (무시): %s", user_code, e,
+                "사용자 %s/%s bot_running 영속화 실패 (무시): %s",
+                user_code, symbol, e,
             )
         if slot is None:
             return
         if slot.bot is not None:
             await slot.bot.stop()
         await self._close_client(slot)
-        logger.info("MultiUserBotManager: 사용자 %s 봇 정지", user_code)
+        logger.info(
+            "MultiUserBotManager: 사용자 %s 봇 정지 (symbol=%s)",
+            user_code, symbol,
+        )
 
     async def _close_client(self, slot: _UserBotSlot) -> None:
         """ccxt async exchange 의 aiohttp ClientSession 명시 close.
@@ -365,33 +436,77 @@ class MultiUserBotManager:
         except Exception as e:  # noqa: BLE001
             logger.debug("ccxt exchange close 실패 (무시): %s", e)
 
-    async def status(self, user_code: str) -> dict[str, Any]:
-        """사용자 봇 상태 스냅샷 (없으면 stopped + has_credentials 만).
+    async def status(
+        self, user_code: str, symbol: str = _DEFAULT_SYMBOL,
+    ) -> dict[str, Any]:
+        """사용자 × symbol 봇 상태 스냅샷 (없으면 stopped + has_credentials).
 
         2026-05-28: UI Trade Timeframe 토글 active 표시 위해 ``timeframe`` 필드 추가.
+        2026-05-29 PR B: ``symbol`` 인자 + ``running_symbols`` 필드 — UI 가 어느
+        페어가 가동 중인지 표시할 수 있게.
+
         slot 없을 때는 base_settings.timeframe (기본 trade TF) 을 응답해
         ui_ict/app.js 의 ``b.dataset.tradeTf === s.timeframe`` 토글 매칭 가능하게.
+
+        Args:
+            user_code: 대상 사용자 라이선스 코드.
+            symbol: 조회할 ccxt 형식 페어 (기본 BTC).
+
+        Returns:
+            상태 스냅샷 dict — UI 가 그대로 표시.
         """
-        slot = self._slots.get(user_code)
+        key: SlotKey = (user_code, symbol)
+        slot = self._slots.get(key)
         # demo/live 키 등록 여부 — 슬롯 유무와 무관하게 DB 진실값 (2026-05-29).
         has_demo = users_db.has_api_keys(self.db_path, user_code, "demo")
         has_live = users_db.has_api_keys(self.db_path, user_code, "live")
+        # 사용자 가동 중 symbol list — UI 가 BTC/ETH 탭별 가동 dot 표시에 사용.
+        try:
+            running_symbols = users_db.get_bot_running_symbols(
+                self.db_path, user_code,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "사용자 %s running_symbols 조회 실패 (무시): %s", user_code, e,
+            )
+            running_symbols = []
+        # 사용자 마지막 가동 run_mode — 슬롯 없어도 DB 에서 가져와 UI 모드 표시.
+        # 이게 없으면 새로고침 후 base_settings.run_mode (DEMO) 가 잘못 표시되어
+        # LIVE 사용자가 "데모로 넘어가고 STOP 에 불 켜짐" 으로 보이는 버그 (2026-05-29).
+        try:
+            last_mode = users_db.get_last_run_mode(self.db_path, user_code)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "사용자 %s last_run_mode 조회 실패 (무시): %s", user_code, e,
+            )
+            last_mode = None
         if slot is None or slot.bot is None:
             base = self.base_settings if self.base_settings is not None else IctSettings()
-            run_mode = base.run_mode.value
+            # last_run_mode 우선 — 사용자가 LIVE 로 가동했었으면 새로고침 후에도 LIVE.
+            run_mode = last_mode if last_mode in ("demo", "live") else base.run_mode.value
             # 현재 모드 기준 등록 여부 — UI 가 "키 등록" CTA 결정에 사용.
             has_creds = has_live if run_mode == "live" else has_demo
+            # 2026-05-29: DB 에 가동 중 symbol 이 있는데 슬롯이 없으면 = fly machine
+            # 재시작 직후 auto_resume 가 아직 못 살린 상태. 이 때 state="stopped" 로
+            # 응답하면 UI 가 STOP 버튼을 active 로 표시해 "정지됨" 으로 오해. 대신
+            # "resuming" 상태로 응답해 UI 가 복원 진행 중임을 표시할 수 있게 한다.
+            # 파트너 보고 2026-05-29: "또 데모로 넘어가고 STOP 에 불들어와" 의 원인.
+            this_symbol_running = symbol in running_symbols
+            state_val = (
+                "resuming" if this_symbol_running else BotState.STOPPED.value
+            )
             return {
-                "state": BotState.STOPPED.value,
+                "state": state_val,
                 "run_mode": run_mode,
-                "enabled": False,
-                "symbol": "",
+                "enabled": this_symbol_running,
+                "symbol": symbol,
                 "timeframe": base.timeframe,
                 "has_credentials": has_creds,
                 "has_demo_credentials": has_demo,
                 "has_live_credentials": has_live,
                 "has_active_position": False,
                 "last_setup_ts_ms": 0,
+                "running_symbols": running_symbols,
             }
         bot = slot.bot
         run_mode = slot.settings.run_mode.value
@@ -406,23 +521,37 @@ class MultiUserBotManager:
             "has_live_credentials": has_live,
             "has_active_position": bot.active_position is not None,
             "last_setup_ts_ms": bot._last_setup_ts_ms,
+            "running_symbols": running_symbols,
         }
 
     async def stop_all(self) -> None:
-        """모든 사용자 봇 정지 — 서버 종료 (FastAPI shutdown hook) 시 호출.
+        """모든 사용자 × 모든 symbol 봇 정지 — 서버 종료 시 호출.
 
-        예외 발생해도 다음 사용자 정지 시도 (best-effort).
+        예외 발생해도 다음 슬롯 정지 시도 (best-effort).
+        2026-05-29 PR B: (user_code, symbol) 튜플 키 순회.
         """
-        user_codes = list(self._slots.keys())
-        for code in user_codes:
+        keys = list(self._slots.keys())
+        for code, sym in keys:
             try:
-                await self.stop(code)
+                await self.stop(code, sym)
             except Exception as e:  # noqa: BLE001
-                logger.warning("stop_all: 사용자 %s 정지 실패 — %s", code, e)
-        logger.info("MultiUserBotManager: 전체 사용자 봇 정지 완료 (%d명)", len(user_codes))
+                logger.warning(
+                    "stop_all: 사용자 %s/%s 정지 실패 — %s", code, sym, e,
+                )
+        logger.info(
+            "MultiUserBotManager: 전체 슬롯 봇 정지 완료 (%d 슬롯)", len(keys),
+        )
 
     def list_users(self) -> list[str]:
-        """현재 슬롯에 등록된 사용자 코드 목록 (디버그/관리용)."""
+        """현재 슬롯에 등록된 unique 사용자 코드 목록 (디버그/관리용).
+
+        2026-05-29 PR B: 한 사용자가 여러 symbol 슬롯을 가질 수 있어 set 으로
+        중복 제거. saas.py shutdown hook 이 이걸로 사용자별 정지 순회.
+        """
+        return sorted({k[0] for k in self._slots.keys()})
+
+    def list_slots(self) -> list[SlotKey]:
+        """현재 (user_code, symbol) 슬롯 키 전체 목록 — 멀티 페어 디버그/관리용."""
         return list(self._slots.keys())
 
 
