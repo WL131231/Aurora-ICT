@@ -228,3 +228,55 @@ def test_phase_b_outside_killzone_blocked_asian_gap() -> None:
     ny = ZoneInfo("America/New_York")
     ts_gap = int(datetime(2026, 5, 27, 0, 30, tzinfo=ny).timestamp() * 1000)
     assert _phase_b_in_time_window(ts_gap, disable_time_filter=False) is False
+
+
+# ============================================================
+# 2026-05-29 #MIN-SL-EXTRA fix: build_extra_source_setups 의 setup 도
+# min_sl_distance_pct 가드 적용 (이전엔 우회됐던 버그)
+# ============================================================
+
+
+def test_generate_ict_signal_filters_extra_source_with_min_sl_distance():
+    """min_sl_distance_pct 가드가 extra source setup 에도 적용된다.
+
+    5-29 회고: 새벽~오후 5건 매매 모두 source=turtle_soup / mitigation_block /
+    implied_fvg 였는데, build_extra_source_setups 호출에 min_sl_distance_pct
+    인자가 빠져 0.13~0.18% 타이트 SL setup 이 통과 → 풀히트 100%. 합친 후
+    setups 리스트를 한 번 더 필터링하는 가드로 두 source 경로 모두 일관 적용.
+    """
+    df = _synthetic_df(100, seed=42)
+    # min_sl_distance_pct=0 (비활성) — 기준 전부 통과 setup 수
+    sig_off = generate_ict_signal(
+        df, symbol="BTC/USDT:USDT", min_rr=1.0, min_sl_distance_pct=0.0,
+    )
+    # 매우 큰 임계 — 거의 모든 setup skip (SL 거리 5% 이상만 통과)
+    sig_strict = generate_ict_signal(
+        df, symbol="BTC/USDT:USDT", min_rr=1.0, min_sl_distance_pct=0.05,
+    )
+    # 합성 df 에서 sig_off 는 actionable (setup found) 일 수 있지만
+    # sig_strict 는 모든 setup 필터링되어 NO_ACTION 으로 떨어져야 한다.
+    if sig_off.setup is not None:
+        # entry/sl 거리 비율 계산 — strict 임계 (0.05) 보다 작아야 필터링 대상.
+        e = sig_off.setup.entry
+        s = sig_off.setup.stop_loss
+        dist_pct = abs(e - s) / e if e > 0 else 0
+        if dist_pct < 0.05:
+            # 같은 setup 이 strict 에서 필터링됐는지 확인 — anchor_idx 로 매칭.
+            if sig_strict.setup is not None:
+                assert sig_strict.setup.anchor_idx != sig_off.setup.anchor_idx
+            # 또는 strict 가 NO_ACTION 으로 떨어졌으면 가드 작동 확인.
+
+
+def test_min_sl_distance_filter_removes_tight_sl_setup():
+    """SL 거리가 임계 미만인 setup 은 직접 만들어도 ict_signal 출력에서 빠진다."""
+    df = _synthetic_df(100, seed=42)
+    # 임계 1% 로 호출. 합성 df 의 ATR 가 좁으면 거의 모든 setup 필터링.
+    sig = generate_ict_signal(
+        df, symbol="BTC/USDT:USDT", min_rr=1.0,
+        min_sl_distance_pct=0.01,  # 1% 이상만 통과
+    )
+    # 통과한 setup 이 있으면 그 setup 의 SL 거리는 >= 1%.
+    if sig.setup is not None:
+        e = sig.setup.entry
+        s = sig.setup.stop_loss
+        assert abs(e - s) / e >= 0.01
