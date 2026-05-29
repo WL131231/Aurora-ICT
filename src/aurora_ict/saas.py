@@ -75,11 +75,28 @@ async def auto_resume_running_bots(
         return stats
     stats["attempted"] = len(codes)
     logger.info("bot 자동 재가동 시도 — %d명", len(codes))
+    # 2026-05-29 hot-fix: 사용자별 last_run_mode 로 강제 가동. LIVE 사용자가
+    # base_settings.run_mode (DEMO 기본) 때문에 DEMO 키 미등록 ValueError 로
+    # 봇 죽던 버그 해소. last_run_mode 미설정 (구식 사용자) 은 base 그대로.
+    from aurora_ict.config.settings import RunMode
     for code in codes:
         try:
-            await mu.start(code)
+            last_mode_str = users_db.get_last_run_mode(db_path, code)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("last_run_mode 조회 실패 — %s: %s", code, e)
+            last_mode_str = None
+        force_mode: RunMode | None = None
+        if last_mode_str == "live":
+            force_mode = RunMode.LIVE
+        elif last_mode_str == "demo":
+            force_mode = RunMode.DEMO
+        try:
+            await mu.start(code, force_run_mode=force_mode)
             stats["succeeded"] += 1
-            logger.info("bot 자동 재가동 — %s ✓", code)
+            logger.info(
+                "bot 자동 재가동 — %s ✓ (run_mode=%s)",
+                code, force_mode.value if force_mode else "base_default",
+            )
         except Exception as e:  # noqa: BLE001
             stats["failed"] += 1
             # API 키 미등록 / 만료 / 거래소 응답 실패 등 — 다음 사용자에 영향 X.
