@@ -498,3 +498,137 @@ def test_admin_rebuild_no_jsonl(data_dir, monkeypatch):
     data = r.json()
     assert data["ok"] is False
     assert data["reason"] == "no_jsonl"
+
+
+# ============================================================
+# 2026-05-29: Admin 라이선스 정정 endpoint
+# ============================================================
+
+
+def _make_app_with_auth_db(
+    data_dir: Path, auth_db_path: Path,
+    current_user: str = "AICT-TEST-USER-0001",
+):
+    """auth_db_path 주입 — admin license endpoint 활성."""
+    from fastapi import FastAPI
+    app = FastAPI()
+
+    async def _fake_require_auth() -> str:
+        return current_user
+
+    app.include_router(
+        create_trades_router(
+            data_dir, _fake_require_auth,
+            secure_cookie=False,
+            auth_db_path=auth_db_path,
+        ),
+    )
+    return app
+
+
+def test_admin_update_license_success(data_dir, tmp_path, monkeypatch):
+    """admin 이 사용자 라이선스 type / expires_at 갱신."""
+    from aurora_ict.auth import users_db
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
+    auth_db = tmp_path / "users.db"
+    users_db.init_db(auth_db)
+    code = "AICT-LIC1-LIC1-LIC1"
+    users_db.create_user(auth_db, code)  # default referral / NULL
+    app = _make_app_with_auth_db(data_dir, auth_db)
+    client = TestClient(app)
+    r = client.post(
+        "/admin/user/license",
+        headers={"X-Admin-Token": "secret-token-xyz"},
+        json={
+            "code": code,
+            "license_type": "sub_365d",
+            "expires_at": "2027-05-28T23:59:59Z",
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {
+        "ok": True, "code": code,
+        "license_type": "sub_365d",
+        "expires_at": "2027-05-28T23:59:59Z",
+    }
+    # DB 실측.
+    user = users_db.get_user_by_code(auth_db, code)
+    assert user["license_type"] == "sub_365d"
+    assert user["expires_at"] == "2027-05-28T23:59:59Z"
+
+
+def test_admin_update_license_invalid_type_400(data_dir, tmp_path, monkeypatch):
+    """허용 외 license_type → 400."""
+    from aurora_ict.auth import users_db
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
+    auth_db = tmp_path / "users.db"
+    users_db.init_db(auth_db)
+    users_db.create_user(auth_db, "AICT-X-X-X")
+    app = _make_app_with_auth_db(data_dir, auth_db)
+    client = TestClient(app)
+    r = client.post(
+        "/admin/user/license",
+        headers={"X-Admin-Token": "secret-token-xyz"},
+        json={
+            "code": "AICT-X-X-X",
+            "license_type": "lifetime",  # 허용 외
+            "expires_at": None,
+        },
+    )
+    # Pydantic Field pattern 검증으로 422.
+    assert r.status_code == 422
+
+
+def test_admin_update_license_missing_user_404(data_dir, tmp_path, monkeypatch):
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
+    auth_db = tmp_path / "users.db"
+    users_db_init = __import__("aurora_ict.auth.users_db", fromlist=["init_db"])
+    users_db_init.init_db(auth_db)
+    app = _make_app_with_auth_db(data_dir, auth_db)
+    client = TestClient(app)
+    r = client.post(
+        "/admin/user/license",
+        headers={"X-Admin-Token": "secret-token-xyz"},
+        json={
+            "code": "AICT-MISS-MISS-MISS",
+            "license_type": "sub_30d",
+            "expires_at": "2026-06-30T23:59:59Z",
+        },
+    )
+    assert r.status_code == 404
+
+
+def test_admin_update_license_no_auth_db_skipped(data_dir, tmp_path, monkeypatch):
+    """auth_db_path=None 이면 endpoint 자체 미등록."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
+    app = _make_app(data_dir)  # auth_db_path 없이 등록
+    client = TestClient(app)
+    r = client.post(
+        "/admin/user/license",
+        headers={"X-Admin-Token": "secret-token-xyz"},
+        json={
+            "code": "AICT-X-X-X",
+            "license_type": "sub_30d",
+            "expires_at": None,
+        },
+    )
+    assert r.status_code == 404
+
+
+def test_admin_update_license_requires_admin_token(data_dir, tmp_path, monkeypatch):
+    """admin 토큰 없으면 401."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
+    auth_db = tmp_path / "users.db"
+    users_db_init = __import__("aurora_ict.auth.users_db", fromlist=["init_db"])
+    users_db_init.init_db(auth_db)
+    app = _make_app_with_auth_db(data_dir, auth_db)
+    client = TestClient(app)
+    r = client.post(
+        "/admin/user/license",
+        json={
+            "code": "AICT-X-X-X",
+            "license_type": "sub_30d",
+            "expires_at": None,
+        },
+    )
+    assert r.status_code == 401
