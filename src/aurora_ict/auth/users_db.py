@@ -433,6 +433,51 @@ def has_api_keys(db_path: Path | str, code: str, mode: str) -> bool:
     return get_api_keys(db_path, code, mode) is not None
 
 
+def update_license(
+    db_path: Path | str,
+    code: str,
+    license_type: str,
+    expires_at: str | None,
+) -> bool:
+    """라이선스 type / 만료일 갱신 — 라이선스 서버 동기화 후 호출 (2026-05-29).
+
+    배경: ``setup_pin`` 시 라이선스 서버 검증 없이 기본 ``'referral'`` 로 박혀,
+    실제 sub_30d / sub_90d / sub_365d 사용자가 UI 에서 "레퍼럴 / 무기한" 으로
+    잘못 표시되는 버그. 관리자 (또는 추후 자동 sync) 가 정정 가능하도록.
+
+    Args:
+        db_path: users.db 경로.
+        code: 대상 사용자 라이선스 코드.
+        license_type: ``referral`` / ``sub_30d`` / ``sub_90d`` / ``sub_365d``.
+            그 외 값은 ValueError.
+        expires_at: ISO 8601 UTC (예: ``"2027-05-28T23:59:59Z"``) 또는 None
+            (referral 무기한). 형식 검증은 호출자 책임.
+
+    Returns:
+        True 면 UPDATE 1건 성공, False 면 code 미존재.
+
+    Raises:
+        ValueError: ``license_type`` 이 허용 외 값.
+    """
+    allowed = {"referral", "sub_30d", "sub_90d", "sub_365d"}
+    if license_type not in allowed:
+        raise ValueError(
+            f"license_type 허용 외 값: {license_type!r} (허용: {sorted(allowed)})",
+        )
+    now = _utcnow_iso()
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE users
+            SET license_type = ?, expires_at = ?, updated_at = ?
+            WHERE code = ?
+            """,
+            (license_type, expires_at, now, code),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def update_last_login(db_path: Path | str, code: str) -> bool:
     """로그인 성공 시 ``last_login_at`` 갱신.
 
@@ -705,4 +750,5 @@ __all__ = [
     "set_bot_running",
     "set_pin",
     "update_last_login",
+    "update_license",
 ]

@@ -224,13 +224,17 @@ def _register_multi_user_routes(
     from aurora_ict.api.notice_router import create_notice_router
     app.include_router(create_notice_router(db_path))
 
-    # 2026-05-29: 매매 로그 router — /ict/trades (본인) + /admin/trades (admin).
+    # 2026-05-29: 매매 로그 router — /ict/trades (본인) + /admin/trades (admin)
+    #             + /admin/user/license (admin, 라이선스 정정용).
     # secure_cookie 는 main router 와 동일 정책 — Fly 는 HTTPS 강제라 True.
     from aurora_ict.api.trades_router import create_trades_router
     from aurora_ict.paths import data_dir as _ict_data_dir_fn
     app.include_router(
         create_trades_router(
-            _ict_data_dir_fn(), require_auth, secure_cookie=secure_cookie,
+            _ict_data_dir_fn(),
+            require_auth,
+            secure_cookie=secure_cookie,
+            auth_db_path=db_path,
         ),
     )
 

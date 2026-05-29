@@ -43,6 +43,7 @@ from fastapi import (
     Response,
 )
 from fastapi.responses import PlainTextResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -201,11 +202,21 @@ def _aggregate_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+class _LicenseUpdateRequest(BaseModel):
+    """라이선스 정보 정정 요청 — admin 만 호출 가능 (2026-05-29)."""
+
+    code: str = Field(min_length=4, max_length=64)
+    license_type: str = Field(pattern="^(referral|sub_30d|sub_90d|sub_365d)$")
+    # ISO 8601 UTC (예: "2027-05-28T23:59:59Z") 또는 None (referral 무기한).
+    expires_at: str | None = None
+
+
 def create_trades_router(
     data_dir: Path,
     require_auth_dep: Any,
     *,
     secure_cookie: bool = True,
+    auth_db_path: Path | None = None,
 ) -> APIRouter:
     """매매 로그 router — auth dep 를 주입 (SaaS / .exe 양쪽 호환).
 
@@ -216,6 +227,9 @@ def create_trades_router(
         secure_cookie: True (기본) 면 admin 쿠키에 Secure 플래그. 운영(HTTPS)
             에서 항상 True. TestClient (HTTP) 에서는 False 로 주입해야
             쿠키가 후속 요청에 자동 포함된다.
+        auth_db_path: users.db 경로. 라이선스 admin endpoint
+            (``/admin/user/license``) 가 사용. None 이면 license endpoint 등록
+            안 함 (단일 사용자 / .exe 흐름 호환).
 
     Returns:
         FastAPI APIRouter — prefix 없음 (`/ict/trades`, `/admin/trades` 등).
@@ -452,6 +466,52 @@ def create_trades_router(
                 ),
             },
         )
+
+    # ==========================================================
+    # 2026-05-29: Admin 라이선스 정정 — UI 가 "레퍼럴 / 무기한" 으로 잘못 표시되는
+    # 버그 (setup_pin 시 라이선스 서버 검증 없이 기본 referral 박힘) 임시 처방.
+    # 본질 fix (setup_pin 자동 sync) 는 후속 PR. 그 전까지 admin 이 정정 가능.
+    # ==========================================================
+
+    if auth_db_path is not None:
+        @router.post("/admin/user/license")
+        async def admin_update_license(
+            req: _LicenseUpdateRequest,
+            x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+            cookie_token: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
+        ) -> dict[str, Any]:
+            """사용자 라이선스 type / 만료일 정정 (admin 만).
+
+            예 (sub_365d, 2027-05-28 만료):
+                POST /admin/user/license
+                {
+                  "code": "AICT-0Q8B-D1YU-VFRN",
+                  "license_type": "sub_365d",
+                  "expires_at": "2027-05-28T23:59:59Z"
+                }
+            """
+            _check_admin_cookie_or_header(cookie_token, x_admin_token)
+            # users_db 는 외부 import (순환 회피).
+            from aurora_ict.auth import users_db
+            try:
+                ok = users_db.update_license(
+                    auth_db_path,
+                    code=req.code,
+                    license_type=req.license_type,
+                    expires_at=req.expires_at,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+            if not ok:
+                raise HTTPException(
+                    status_code=404, detail=f"사용자 '{req.code}' 가 DB 에 없습니다.",
+                )
+            return {
+                "ok": True,
+                "code": req.code,
+                "license_type": req.license_type,
+                "expires_at": req.expires_at,
+            }
 
     return router
 
