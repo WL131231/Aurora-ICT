@@ -1714,8 +1714,10 @@
     <button id="btn-start">START</button>
     <button id="btn-stop" class="danger">STOP</button>
 
-    <!-- 2026-05-29: 매매 기록 별도 페이지 링크. 본인 거래 표 + CSV 다운로드. -->
-    <a href="/ui/trades" class="trades-link" id="trades-link">
+    <!-- 2026-05-29: 매매 기록 별도 페이지 링크. 본인 거래 표 + CSV 다운로드.
+         확장자 명시 (.html) — StaticFiles 의 html=True 가 확장자 없는 경로를
+         자동 변환하지 않아 /ui/trades 가 404 나던 문제 해소. -->
+    <a href="/ui/trades.html" class="trades-link" id="trades-link">
       📋 매매 기록 보기
     </a>
 
