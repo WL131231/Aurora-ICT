@@ -1305,7 +1305,9 @@
     box-shadow: 0 0 12px rgba(52, 211, 153, 0.45);
   }
   .cred-slot-row.has-key .cred-slot-label {
-    color: #34d399;
+    /* 2026-05-29 v9: has-key 초록 fill 위에 초록 라벨 → 안 보였음 (파트너
+       보고). 밝은 흰 톤으로 contrast 확보. */
+    color: var(--text-1);
   }
   .cred-slot-row.has-key .cred-slot-label.cred-slot-live {
     /* LIVE 라벨은 항상 빨강 identity 유지 — 실거래 슬롯 시각 식별. */
@@ -1339,32 +1341,31 @@
   .cred-slot-status.ok { color: #34d399; }
   .cred-slot-status.missing { color: var(--text-3); }
   .cred-reenter-mini {
-    /* 2026-05-29 v6 파트너 요청: 버튼 작게.
-       v8: 글자 가독성 — font-size 8 → 9, padding 살짝 ↑. */
+    /* 2026-05-29 v9 파트너 요청: dashed → solid 박스. */
     flex: 0 0 auto;
     background: transparent;
-    border: 1px dashed var(--line);
-    color: var(--text-3);
+    border: 1px solid var(--line-strong);
+    color: var(--text-1);
     font-size: 9px;
-    padding: 2px 7px;
+    padding: 3px 8px;
     letter-spacing: 0.1em;
     border-radius: 3px;
     cursor: pointer;
+    font-weight: 500;
   }
   .cred-reenter-mini:hover {
     color: var(--text-1);
-    border-color: var(--line-strong);
+    background: rgba(255, 255, 255, 0.06);
+    border-color: var(--text-1);
   }
-  /* 2026-05-29 v8 파트너 요청: has-key 슬롯의 초록 fill 위에서 회색 글자가
-     안 보여 contrast 강화 — 밝은 글자 + 밝은 dashed border. */
+  /* has-key 슬롯 — 초록 fill 위에 잘 보이게 밝은 흰 outline. */
   .cred-slot-row.has-key .cred-reenter-mini {
     color: var(--text-1);
-    border-color: rgba(255, 255, 255, 0.45);
-    font-weight: 500;
+    border-color: rgba(255, 255, 255, 0.55);
   }
   .cred-slot-row.has-key .cred-reenter-mini:hover {
-    background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(255, 255, 255, 0.70);
+    background: rgba(255, 255, 255, 0.10);
+    border-color: rgba(255, 255, 255, 0.80);
   }
   /* 로그인 후 키 등록 페이지에도 동일 토글 */
   .auth-mode-toggle {
