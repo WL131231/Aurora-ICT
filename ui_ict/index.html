@@ -891,6 +891,10 @@
       width: min(70vw, 280px);
       z-index: 200;
       box-shadow: 4px 0 16px rgba(0, 0, 0, 0.5);
+      /* 2026-05-29 파트너 피드백 (iPad): 사이드바 위쪽이 햄버거 (≡) 에 가려
+         AURORA·ICT 헤더 + STATUS / State row 잘리는 문제. padding-top 60px
+         으로 햄버거 영역 (8+40=48px) 안전 회피. */
+      padding-top: 60px;
     }
     /* 좌상단 햄버거 (사이드바) — 모바일 가로에서만 표시 + 큰 터치 타깃. */
     #btn-mobile-sidebar {
@@ -994,6 +998,8 @@
       z-index: 200;
       overflow-y: auto;
       box-shadow: 4px 0 16px rgba(0, 0, 0, 0.5);
+      /* 2026-05-29 파트너 피드백 (iPad): 사이드바 위쪽 햄버거 가림 회피. */
+      padding-top: 60px;
     }
 
     /* 우측 P&L 패널 — default hidden, body.pnl-open 일 때만 슬라이드 인.
