@@ -428,6 +428,8 @@
         <tr>
           <th>시각 (KST)</th>
           <th>유형</th>
+          <!-- 2026-05-29 파트너 요청: DEMO/LIVE 구분 컬럼 추가. -->
+          <th>모드</th>
           <th>방향</th>
           <th>심볼</th>
           <th>가격</th>
@@ -437,7 +439,7 @@
         </tr>
       </thead>
       <tbody id="rows">
-        <tr><td colspan="8" class="empty">로딩 중…</td></tr>
+        <tr><td colspan="9" class="empty">로딩 중…</td></tr>
       </tbody>
     </table>
   </div>
@@ -656,9 +658,18 @@
         `${r.pnl_usdt >= 0 ? "+" : ""}${fmt(r.pnl_usdt)}`;
       const dirCls = r.direction === "long" ? "dir-long" :
                      (r.direction === "short" ? "dir-short" : "");
+      // 2026-05-29 파트너 요청: 모드 (DEMO/LIVE) 컬럼 — 구식 row 는 "—".
+      // LIVE 빨강 / DEMO 회색 으로 시각 구분.
+      const modeRaw = (r.mode || "").toLowerCase();
+      const modeTxt = modeRaw === "live" ? "LIVE" :
+                      (modeRaw === "demo" ? "DEMO" : "—");
+      const modeStyle = modeRaw === "live"
+        ? "color:#fb7185;font-weight:600"
+        : (modeRaw === "demo" ? "color:var(--text-2);font-weight:500" : "color:var(--text-3)");
       return `<tr class="row" data-idx="${idx}">
         <td>${fmtTs(r.ts_ms)}</td>
         <td><span class="ev ev-${escapeHtml(r.event_type)}">${escapeHtml(r.event_type)}</span></td>
+        <td style="${modeStyle};font-size:10px;letter-spacing:0.1em">${modeTxt}</td>
         <td class="${dirCls}">${escapeHtml(r.direction || "—")}</td>
         <td>${escapeHtml(r.symbol || "—")}</td>
         <td>${fmt(r.price, 2)}</td>
@@ -672,7 +683,7 @@
       lastRows = rows || [];
       const tbody = $("rows");
       if (!rows || rows.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="8" class="empty">데이터 없음</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="9" class="empty">데이터 없음</td></tr>`;
         return;
       }
       tbody.innerHTML = rows.map((r, i) => rowHtml(r, i)).join("");
@@ -700,7 +711,7 @@
       tr.classList.add("expanded");
       const detailTr = document.createElement("tr");
       detailTr.className = "detail-row";
-      detailTr.innerHTML = `<td colspan="8"><div class="detail-box">${detailHtml(r)}</div></td>`;
+      detailTr.innerHTML = `<td colspan="9"><div class="detail-box">${detailHtml(r)}</div></td>`;
       tr.parentNode.insertBefore(detailTr, tr.nextSibling);
     });
 
@@ -850,7 +861,7 @@
         renderStats(data.stats || {});
         renderRows(data.trades || []);
       } catch (e) {
-        $("rows").innerHTML = `<tr><td colspan="8" class="empty">` +
+        $("rows").innerHTML = `<tr><td colspan="9" class="empty">` +
           `로딩 실패 — ${escapeHtml(e.message)}</td></tr>`;
         toast(e.message, true);
       }

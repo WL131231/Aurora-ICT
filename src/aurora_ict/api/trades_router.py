@@ -62,8 +62,9 @@ _ADMIN_COOKIE_NAME = "aurora_admin_token"
 _ADMIN_COOKIE_TTL_SEC = 30 * 24 * 3600  # 30일
 
 # CSV 컬럼 순서 — UI / Excel 호환.
+# 2026-05-29: mode 컬럼 추가 (DEMO/LIVE 구분, 파트너 요청).
 _CSV_HEADERS = (
-    "ts_ms", "event_type", "symbol", "direction", "price", "qty",
+    "ts_ms", "event_type", "mode", "symbol", "direction", "price", "qty",
     "pnl_usdt", "setup_ts_ms", "reason",
 )
 
@@ -108,7 +109,7 @@ def _query_trades(
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     sql = (
         "SELECT ts_ms, event_type, symbol, direction, price, qty, "
-        "pnl_usdt, setup_ts_ms, reason, context_json "
+        "pnl_usdt, setup_ts_ms, reason, context_json, mode "
         f"FROM trades{where_sql} "
         "ORDER BY ts_ms DESC LIMIT ?"
     )
@@ -128,6 +129,7 @@ def _trades_to_csv(rows: list[dict[str, Any]]) -> str:
         writer.writerow([
             r.get("ts_ms", ""),
             r.get("event_type", ""),
+            r.get("mode") or "",  # DEMO/LIVE — 구식 row 는 빈값.
             r.get("symbol", ""),
             r.get("direction", ""),
             r.get("price", ""),

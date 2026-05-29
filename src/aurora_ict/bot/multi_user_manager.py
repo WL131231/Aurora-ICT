@@ -280,6 +280,9 @@ class MultiUserBotManager:
             # _user_data_dir(code) = <data_dir>/users/<code>/. TradesStore lazy init
             # 시 이 디렉토리에 trades.jsonl / trades.db / trade_journal.log 생성.
             trades_data_dir=self._user_data_dir(user_code),
+            # 2026-05-29 PR 매매기록 DEMO/LIVE 구분 (파트너 요청): 봇이 매매 시
+            # 이 run_mode 가 TradeEvent.mode 에 박힘 → UI 표에 표시.
+            run_mode=settings.run_mode.value,
         )
         self._slots[key] = _UserBotSlot(
             symbol=symbol, settings=settings, bot=bot, client=client,

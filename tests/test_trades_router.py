@@ -62,15 +62,16 @@ def _create_user_trades(
             pnl_usdt REAL,
             setup_ts_ms INTEGER,
             reason TEXT NOT NULL DEFAULT '',
-            context_json TEXT
+            context_json TEXT,
+            mode TEXT
         )
         """,
     )
     for e in events:
         conn.execute(
             "INSERT INTO trades(ts_ms, event_type, symbol, direction, price, "
-            "qty, pnl_usdt, setup_ts_ms, reason) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "qty, pnl_usdt, setup_ts_ms, reason, mode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 e["ts_ms"],
                 e["event_type"],
@@ -81,6 +82,7 @@ def _create_user_trades(
                 e.get("pnl_usdt"),
                 e.get("setup_ts_ms"),
                 e.get("reason", ""),
+                e.get("mode"),
             ),
         )
     conn.commit()
@@ -234,8 +236,10 @@ def test_export_my_trades_csv(data_dir):
     assert r.headers["content-type"].startswith("text/csv")
     assert "attachment" in r.headers["content-disposition"]
     text = r.text
-    # header
-    assert text.startswith("ts_ms,event_type,symbol,direction,price,qty,pnl_usdt")
+    # header — 2026-05-29: mode 컬럼 추가 (DEMO/LIVE 구분).
+    assert text.startswith(
+        "ts_ms,event_type,mode,symbol,direction,price,qty,pnl_usdt",
+    )
     # 두 행 모두 포함
     assert "1000" in text
     assert "2000" in text
