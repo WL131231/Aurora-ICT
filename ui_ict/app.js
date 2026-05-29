@@ -1450,11 +1450,51 @@ async function refreshJudgment() {
           <div class="jp-reason-interp">해석: ${escapeHtml(r.interpretation || '')}</div>
         </div>
       `).join("");
+    // 2026-05-29: 진단 인지 보강 — hint + recent setups + diagnostics.
+    // 파트너 의문 "long 비율 우세인데 short 만 진입" 직접 해소.
+    const hint = j.direction?.hint;
+    const recent = j.direction?.recent_setups || {};
+    let hintHtml = "";
+    if (hint) {
+      hintHtml += `<div class="jp-dir-hint">${escapeHtml(hint)}</div>`;
+    }
+    if (recent.long != null || recent.short != null) {
+      const l = recent.long || 0, s = recent.short || 0;
+      const lastDir = recent.last ? ` · 최근=${recent.last}` : "";
+      hintHtml += `<div class="jp-dir-recent">` +
+        `최근 진입 분포 — <span style="color:#34d399">롱 ${l}</span> / ` +
+        `<span style="color:#fb7185">숏 ${s}</span>${escapeHtml(lastDir)}` +
+        `</div>`;
+    }
+    const dirHintEl = $("jp-dir-hint-area");
+    if (dirHintEl) dirHintEl.innerHTML = hintHtml;
     // Entry Condition
     const ec = j.entry_condition || {};
     $("jp-entry").innerHTML =
       `<div>${escapeHtml(ec.title || '—')}</div>` +
       (ec.detail ? `<div class="jp-entry-detail">${escapeHtml(ec.detail)}</div>` : "");
+    // Diagnostics — silent failure 가시화. 정상이면 표시 안 함, 비정상이면 강조.
+    const d = j.diagnostics || {};
+    const alerts = [];
+    if (d.recovery_failed) {
+      alerts.push("⚠ 거래소 포지션 복원 실패 — 신규 진입 차단 중");
+    }
+    if ((d.sync_failure_streak || 0) >= 5) {
+      alerts.push(`⚠ fetch_position 연속 ${d.sync_failure_streak}회 실패 — API/네트워크 점검`);
+    }
+    if ((d.order_failure_count || 0) > 0) {
+      alerts.push(`⚠ 진입 주문 실패 누적 ${d.order_failure_count}건`);
+    }
+    if ((d.tpsl_failure_streak || 0) >= 3) {
+      alerts.push(`⚠ SL/TP 설정 연속 ${d.tpsl_failure_streak}회 실패`);
+    }
+    const diagEl = $("jp-diagnostics");
+    if (diagEl) {
+      diagEl.innerHTML = alerts.length === 0
+        ? ""
+        : alerts.map((a) => `<div class="jp-diag-alert">${escapeHtml(a)}</div>`).join("");
+      diagEl.style.display = alerts.length === 0 ? "none" : "block";
+    }
   } catch (e) {
     // 조용히 무시
   }
