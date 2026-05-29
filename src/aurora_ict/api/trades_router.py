@@ -50,6 +50,12 @@ logger = logging.getLogger(__name__)
 
 _ADMIN_TOKEN_ENV = "AURORA_ICT_ADMIN_TOKEN"
 
+# 2026-05-29 (v2): UI 전용 별도 admin 패스워드 — 텔레그램 봇과 같은 토큰을 UI
+# 로그인 비번으로 쓰는 게 불편하다는 파트너 피드백. 텔레그램 봇 호환은
+# AURORA_ICT_ADMIN_TOKEN 유지, UI 사용자는 본인이 설정한 비번으로 로그인.
+# 둘 중 하나만 일치해도 통과 (헤더/쿠키 모두).
+_ADMIN_UI_PASSWORD_ENV = "AURORA_ICT_ADMIN_UI_PASSWORD"
+
 # 2026-05-29: admin token 인증 쿠키 — UI 에서 X-Admin-Token 한 번 입력 후
 # HttpOnly Secure SameSite cookie 로 보관해 이후 admin endpoints 자동 호출.
 _ADMIN_COOKIE_NAME = "aurora_admin_token"
@@ -133,45 +139,80 @@ def _trades_to_csv(rows: list[dict[str, Any]]) -> str:
     return buf.getvalue()
 
 
+def _expected_admin_secrets() -> list[str]:
+    """허용된 admin 비밀값 목록 — ADMIN_TOKEN (텔레그램 봇) + ADMIN_UI_PASSWORD (UI).
+
+    2026-05-29 (v2): UI 사용자가 별도 비번을 설정할 수 있게 분리. 둘 다
+    옵션 — 환경변수 미설정 시 해당 값은 후보에서 제외. 둘 다 미설정이면
+    503 (admin 기능 비활성).
+    """
+    out = []
+    tok = os.environ.get(_ADMIN_TOKEN_ENV)
+    if tok:
+        out.append(tok)
+    pwd = os.environ.get(_ADMIN_UI_PASSWORD_ENV)
+    if pwd:
+        out.append(pwd)
+    return out
+
+
 def _check_admin_token(x_admin_token: str | None) -> None:
     """Admin token 검증 — timing-safe (hmac.compare_digest).
+
+    텔레그램 봇 등 server-to-server 호출이 헤더로 ADMIN_TOKEN 보내는 케이스.
+    ADMIN_UI_PASSWORD 도 같이 후보로 두면 UI 헤더 직접 호출도 통과.
 
     Raises:
         HTTPException 401: 환경변수 미설정 또는 토큰 불일치.
     """
-    expected = os.environ.get(_ADMIN_TOKEN_ENV)
-    if not expected:
+    expected_list = _expected_admin_secrets()
+    if not expected_list:
         raise HTTPException(
             status_code=503,
-            detail=f"{_ADMIN_TOKEN_ENV} 환경변수가 설정되지 않았습니다.",
+            detail=(
+                f"{_ADMIN_TOKEN_ENV} 또는 {_ADMIN_UI_PASSWORD_ENV} 환경변수가 "
+                "설정되지 않았습니다."
+            ),
         )
-    if not x_admin_token or not hmac.compare_digest(x_admin_token, expected):
+    if not x_admin_token:
         raise HTTPException(status_code=401, detail="invalid admin token")
+    for expected in expected_list:
+        if hmac.compare_digest(x_admin_token, expected):
+            return
+    raise HTTPException(status_code=401, detail="invalid admin token")
 
 
 def _check_admin_cookie_or_header(
     cookie_token: str | None, header_token: str | None,
 ) -> None:
-    """헤더 또는 쿠키 둘 중 하나가 admin token 과 일치하면 통과 (2026-05-29).
+    """헤더 또는 쿠키 둘 중 하나가 admin token / UI password 와 일치하면 통과.
 
-    UI 사용자는 1회 X-Admin-Token 헤더로 로그인 → 쿠키 발급 → 이후 쿠키만으로
-    admin endpoint 접근. 텔레그램 봇 등 server-to-server 호출은 헤더 사용.
+    2026-05-29 (v2): 환경변수 2개 (텔레그램 봇용 ADMIN_TOKEN + UI 전용
+    ADMIN_UI_PASSWORD) 중 어느 값과 일치해도 통과. 후보 비교는 timing-safe.
+
+    UI 사용자는 1회 본인의 password 헤더 입력 → 쿠키 발급 → 이후 쿠키만으로
+    admin endpoint 접근. 텔레그램 봇은 ADMIN_TOKEN 헤더로 호출.
 
     Raises:
-        HTTPException 401: 둘 다 없거나 둘 다 불일치.
-        HTTPException 503: AURORA_ICT_ADMIN_TOKEN 미설정.
+        HTTPException 401: 둘 다 없거나 모든 후보와 불일치.
+        HTTPException 503: 두 환경변수 모두 미설정.
     """
-    expected = os.environ.get(_ADMIN_TOKEN_ENV)
-    if not expected:
+    expected_list = _expected_admin_secrets()
+    if not expected_list:
         raise HTTPException(
             status_code=503,
-            detail=f"{_ADMIN_TOKEN_ENV} 환경변수가 설정되지 않았습니다.",
+            detail=(
+                f"{_ADMIN_TOKEN_ENV} 또는 {_ADMIN_UI_PASSWORD_ENV} 환경변수가 "
+                "설정되지 않았습니다."
+            ),
         )
-    # 우선순위: 헤더 → 쿠키.
     candidates = [header_token, cookie_token]
     for tok in candidates:
-        if tok and hmac.compare_digest(tok, expected):
-            return
+        if not tok:
+            continue
+        for expected in expected_list:
+            if hmac.compare_digest(tok, expected):
+                return
     raise HTTPException(status_code=401, detail="invalid admin token")
 
 

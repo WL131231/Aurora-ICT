@@ -632,3 +632,85 @@ def test_admin_update_license_requires_admin_token(data_dir, tmp_path, monkeypat
         },
     )
     assert r.status_code == 401
+
+
+# ============================================================
+# 2026-05-29 (v2): UI 전용 별도 admin password (AURORA_ICT_ADMIN_UI_PASSWORD)
+# 텔레그램 봇 호환은 ADMIN_TOKEN 유지, UI 사용자는 본인 비번으로 로그인
+# ============================================================
+
+
+def test_admin_login_accepts_ui_password(data_dir, monkeypatch):
+    """ADMIN_UI_PASSWORD 만으로도 로그인 통과."""
+    monkeypatch.delenv("AURORA_ICT_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("AURORA_ICT_ADMIN_UI_PASSWORD", "my-easy-pw-1234")
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    r = client.post(
+        "/admin/login", headers={"X-Admin-Token": "my-easy-pw-1234"},
+    )
+    assert r.status_code == 200
+    assert client.cookies["aurora_admin_token"] == "my-easy-pw-1234"
+
+
+def test_admin_login_accepts_token_when_both_set(data_dir, monkeypatch):
+    """ADMIN_TOKEN + ADMIN_UI_PASSWORD 둘 다 박혀있고, token 으로 로그인 통과."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "telegram-bot-token-xyz")
+    monkeypatch.setenv("AURORA_ICT_ADMIN_UI_PASSWORD", "my-ui-pw")
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    r = client.post(
+        "/admin/login", headers={"X-Admin-Token": "telegram-bot-token-xyz"},
+    )
+    assert r.status_code == 200
+
+
+def test_admin_login_accepts_ui_password_when_both_set(data_dir, monkeypatch):
+    """ADMIN_TOKEN + ADMIN_UI_PASSWORD 둘 다 박혀있고, ui pw 로 로그인 통과."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "telegram-bot-token-xyz")
+    monkeypatch.setenv("AURORA_ICT_ADMIN_UI_PASSWORD", "my-ui-pw")
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    r = client.post(
+        "/admin/login", headers={"X-Admin-Token": "my-ui-pw"},
+    )
+    assert r.status_code == 200
+
+
+def test_admin_login_503_when_both_env_unset(data_dir, monkeypatch):
+    """ADMIN_TOKEN + ADMIN_UI_PASSWORD 둘 다 미설정 → 503."""
+    monkeypatch.delenv("AURORA_ICT_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("AURORA_ICT_ADMIN_UI_PASSWORD", raising=False)
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    r = client.post(
+        "/admin/login", headers={"X-Admin-Token": "anything"},
+    )
+    assert r.status_code == 503
+
+
+def test_admin_endpoints_accept_ui_password_cookie(data_dir, monkeypatch):
+    """UI pw 로 로그인 후 쿠키만으로 admin endpoint 호출 가능."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_UI_PASSWORD", "my-pw-99")
+    code = "AICT-UIPW-UIPW-UIPW"
+    _create_user_trades(data_dir, code, [
+        {"ts_ms": 1000, "event_type": "entry"},
+    ])
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    client.post("/admin/login", headers={"X-Admin-Token": "my-pw-99"})
+    r = client.get(f"/admin/trades?user_code={code}")
+    assert r.status_code == 200
+    assert r.json()["count"] == 1
+
+
+def test_admin_login_rejects_wrong_value(data_dir, monkeypatch):
+    """ADMIN_TOKEN 과 ADMIN_UI_PASSWORD 둘 다 박혀있어도 어느 쪽과도 다르면 401."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-tok")
+    monkeypatch.setenv("AURORA_ICT_ADMIN_UI_PASSWORD", "secret-pw")
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    r = client.post(
+        "/admin/login", headers={"X-Admin-Token": "wrong-value"},
+    )
+    assert r.status_code == 401
