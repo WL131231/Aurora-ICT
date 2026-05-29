@@ -1314,27 +1314,16 @@
     border-color: var(--line);
   }
   .cred-slot-label {
-    flex: 0 0 38px;
+    /* 2026-05-29 v6: flex:1 로 라벨이 충분히 넓어져 글자 세로 깨짐 방지. */
+    flex: 1;
     font-weight: 600;
     color: #fbbf24;
     letter-spacing: 0.15em;
+    white-space: nowrap;
   }
   .cred-slot-label.cred-slot-live { color: #fb7185; }
-  /* 2026-05-29 v4 파트너 손글씨 요청: 슬롯 안에 '활성화' 상태 텍스트.
-     기본 hidden — has-key (등록 완료) 일 때만 표시. */
-  .cred-slot-state {
-    flex: 1;
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    color: var(--bg);
-    display: none;
-  }
-  .cred-slot-row.has-key .cred-slot-state {
-    /* START 톤 — has-key 슬롯의 초록 outline 과 어울리는 초록 텍스트. */
-    display: inline;
-    color: #34d399;
-    font-weight: 500;
-  }
+  /* 2026-05-29 v6: '활성화' 텍스트 (.cred-slot-state) 제거 — 파트너 재요청.
+     라벨 + 버튼만으로 구성. */
   .cred-slot-status {
     flex: 1;
     color: var(--text-2);
@@ -1342,12 +1331,14 @@
   .cred-slot-status.ok { color: #34d399; }
   .cred-slot-status.missing { color: var(--text-3); }
   .cred-reenter-mini {
+    /* 2026-05-29 v6 파트너 요청: 버튼 더 작게. */
+    flex: 0 0 auto;
     background: transparent;
     border: 1px dashed var(--line);
     color: var(--text-3);
-    font-size: 9px;
-    padding: 3px 7px;
-    letter-spacing: 0.1em;
+    font-size: 8px;
+    padding: 2px 6px;
+    letter-spacing: 0.08em;
     border-radius: 3px;
     cursor: pointer;
   }
@@ -1785,18 +1776,15 @@
          .has-key / .no-key 클래스 토글. -->
     <!-- 2026-05-29 v3 파트너 결정: 상태 텍스트 ("등록됨"/"미등록") 제거.
          배경색 + 버튼 라벨 (등록 시 "재등록", 미등록 시 "등록") 만으로 시각화.
-         2026-05-29 v4 파트너 손글씨 재요청: 슬롯 안에 "활성화" 텍스트 추가
-         ("DEMO 활성화 [재등록]" 형태). has-key 일 때만 표시 — CSS 로 가시성
-         제어 (.cred-slot-row.no-key .cred-slot-state { display:none }). -->
+         2026-05-29 v6 파트너 재요청: '활성화' 텍스트 제거. 라벨 (DEMO/LIVE)
+         + 우측 작은 [재등록]/[등록] 버튼만. 글자 깨짐 해결 — 라벨 flex:1. -->
     <div class="cred-saved" id="cred-saved-block" style="display:none">
       <div class="cred-slot-row no-key" id="cred-slot-demo">
         <span class="cred-slot-label">DEMO</span>
-        <span class="cred-slot-state">활성화</span>
         <button data-cred-reenter="demo" id="btn-cred-demo" class="cred-reenter-mini">등록</button>
       </div>
       <div class="cred-slot-row no-key" id="cred-slot-live">
         <span class="cred-slot-label cred-slot-live">LIVE</span>
-        <span class="cred-slot-state">활성화</span>
         <button data-cred-reenter="live" id="btn-cred-live" class="cred-reenter-mini">등록</button>
       </div>
     </div>
