@@ -636,3 +636,76 @@ async def test_daily_loss_limit_hit_via_exchange_sync() -> None:
     await bot._sync_today_realized_pnl()
     assert bot._today_realized_pnl_usdt == -500.0
     assert bot._daily_limit_hit is True  # 손실 500 > 한도 400
+
+
+# ============================================================
+# 2026-05-29 #PNL-MATCH-FIX: closed-pnl 매칭 propagation 지연 보정
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_fetch_recent_close_rejects_stale_record_outside_tolerance() -> None:
+    """cp.opened_at_ts 가 entry_ts_ms 와 10분 초과 → 이전 거래 record 로 보고 skip.
+
+    5-29 #5 케이스 회고: Bybit propagation 지연으로 *이전* 거래 (#3) 의 close
+    record 가 응답 가장 최근 자리에 와 잘못 매칭됐던 버그.
+    """
+    from types import SimpleNamespace
+
+    from aurora_ict.bot.bot_ict_instance import _ActivePosition
+    from aurora_ict.interfaces.trades_store import TradeEventType
+
+    client = _mock_client(_ohlcv_rows(datetime(2026, 5, 12, 10, 0, tzinfo=NY), _bars_long_setup()))
+    client.fetch_position = AsyncMock(return_value={"contracts": 0})
+    # 진입 ts 1_000_000_000_000 ms, cp.opened_at_ts 는 그보다 20분 이전 = 이전 거래.
+    entry_ts = 1_000_000_000_000
+    stale_cp = SimpleNamespace(
+        symbol="BTCUSDT", direction="short",
+        exit_price=99999.0, pnl_usd=-500.0,
+        opened_at_ts=entry_ts - 20 * 60 * 1000,  # 20분 전 = tolerance 10분 초과
+        closed_at_ts=entry_ts - 5 * 60 * 1000,
+    )
+    client.fetch_closed_positions = AsyncMock(return_value=[stale_cp])
+    bot = BotIctInstance(client=client, symbol="BTCUSDT")
+    bot._trades_store = _StubStore()
+    bot.active_position = _ActivePosition(
+        direction=Direction.SHORT, entry=100.0, stop_loss=105.0, take_profit=90.0,
+        qty=1.0, setup_ts_ms=12345, entry_ts_ms=entry_ts,
+    )
+    await bot._sync_position_state()
+    # stale cp 를 skip → close 매칭 실패 → SYNC_CLOSE fallback (placeholder 가격).
+    ev = bot._trades_store.events[0]
+    assert ev.event_type is TradeEventType.SYNC_CLOSE
+    # 잘못된 -500 pnl 이 박히지 않아야 함 — 추정치 (0) 박힘.
+    assert ev.pnl_usdt != -500.0
+
+
+@pytest.mark.asyncio
+async def test_fetch_recent_close_accepts_record_within_tolerance() -> None:
+    """cp.opened_at_ts 가 entry_ts_ms 와 ±10분 이내면 정상 매칭."""
+    from types import SimpleNamespace
+
+    from aurora_ict.bot.bot_ict_instance import _ActivePosition
+    from aurora_ict.interfaces.trades_store import TradeEventType
+
+    client = _mock_client(_ohlcv_rows(datetime(2026, 5, 12, 10, 0, tzinfo=NY), _bars_long_setup()))
+    client.fetch_position = AsyncMock(return_value={"contracts": 0})
+    entry_ts = 1_000_000_000_000
+    # 진입 직후 ts (5분 차이) — tolerance 10분 이내라 정상 매칭.
+    valid_cp = SimpleNamespace(
+        symbol="BTCUSDT", direction="long",
+        exit_price=95.0, pnl_usd=-50.0,
+        opened_at_ts=entry_ts + 5 * 60 * 1000,
+        closed_at_ts=entry_ts + 30 * 60 * 1000,
+    )
+    client.fetch_closed_positions = AsyncMock(return_value=[valid_cp])
+    bot = BotIctInstance(client=client, symbol="BTCUSDT")
+    bot._trades_store = _StubStore()
+    bot.active_position = _ActivePosition(
+        direction=Direction.LONG, entry=100.0, stop_loss=95.0, take_profit=110.0,
+        qty=1.0, setup_ts_ms=12345, entry_ts_ms=entry_ts,
+    )
+    await bot._sync_position_state()
+    ev = bot._trades_store.events[0]
+    assert ev.event_type is TradeEventType.SL_HIT
+    assert ev.pnl_usdt == -50.0  # 정상 매칭, 거래소 실현치 박힘

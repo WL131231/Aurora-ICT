@@ -268,6 +268,10 @@ class BotIctInstance:
     # FVG 약화 임계치 — touch 누적 도달 시 mitigation 후보 / flip target 제외.
     htf_fvg_max_touch_count: int = 3
 
+    # 2026-05-29 #HTF-LTF-CONFLICT: HTF FVG bull/bear 우세 + LTF setup 반대 방향 차단.
+    # 0 = 비활성, 1.10 = bull 이 bear 의 110% 이상이면 short setup 차단 (역도 마찬가지).
+    htf_ltf_conflict_guard_ratio: float = 1.10
+
     # 2026-05-29 SaaS 매매 로그 격리 — 사용자별 trades.* 디렉토리 인자.
     # None 이면 paths.data_dir() (단일 사용자 / .exe 흐름) — backward compat.
     # MultiUserBotManager 가 사용자별 dir (<data_dir>/users/<code>/) 을 주입해
@@ -642,6 +646,40 @@ class BotIctInstance:
             )
             self._last_setup_ts_ms = signal.setup.ts_ms
             return signal
+
+        # 2026-05-29 #HTF-LTF-CONFLICT: HTF FVG bull/bear 우세 + LTF 반대 방향 차단.
+        # 5-29 #3/#5 (bull weight 우세인데 LTF turtle_soup short 진입 → SL_HIT)
+        # 패턴 회고 기반. ratio 임계 이상의 명확 우세에서만 차단 (정상 reversal 신호
+        # 까지 막지 않게 보수적). 0 면 비활성.
+        if self.htf_ltf_conflict_guard_ratio > 0:
+            htf_map = self._htf_fvg_map_cache or []
+            bull_w = sum(
+                int(e.weight) for e in htf_map
+                if getattr(e.type, "value", "") == "bullish"
+            )
+            bear_w = sum(
+                int(e.weight) for e in htf_map
+                if getattr(e.type, "value", "") == "bearish"
+            )
+            if bull_w > 0 and bear_w > 0:
+                is_long = signal.setup.direction is Direction.LONG
+                ratio_thr = self.htf_ltf_conflict_guard_ratio
+                if is_long and (bear_w / bull_w) >= ratio_thr:
+                    logger.info(
+                        "HTF/LTF 방향 충돌 skip — bear_w=%d > bull_w=%d * %.2f, "
+                        "LTF setup=long",
+                        bear_w, bull_w, ratio_thr,
+                    )
+                    self._last_setup_ts_ms = signal.setup.ts_ms
+                    return signal
+                if (not is_long) and (bull_w / bear_w) >= ratio_thr:
+                    logger.info(
+                        "HTF/LTF 방향 충돌 skip — bull_w=%d > bear_w=%d * %.2f, "
+                        "LTF setup=short",
+                        bull_w, bear_w, ratio_thr,
+                    )
+                    self._last_setup_ts_ms = signal.setup.ts_ms
+                    return signal
 
         await self._execute_setup(signal.setup, htf_flip_target=htf_target)
         self._last_setup_ts_ms = signal.setup.ts_ms
@@ -1732,20 +1770,35 @@ class BotIctInstance:
         except Exception as e:  # noqa: BLE001
             logger.warning("trades record 실패: %s", e)
 
+    # 2026-05-29 #PNL-MATCH-FIX: cp.opened_at_ts 와 active_position.entry_ts_ms
+    # 허용 차이 (Bybit demo 의 createdTime 정밀도 + 봇 fill 인식 지연 흡수).
+    # 진입 ts ±10분 안의 cp 만 같은 거래로 인정 — 이전 거래 record 가 잘못 매칭되는
+    # propagation 지연 버그 (#5 케이스) 방지.
+    _PNL_MATCH_OPENED_TOLERANCE_MS: ClassVar[int] = 10 * 60 * 1000
+
     async def _fetch_recent_close(self, last_known: _ActivePosition):
         """state-reset 시점 거래소 closed-pnl 에서 매칭되는 close 회수 (#PR-C / #4).
 
+        2026-05-29 #PNL-MATCH-FIX: Bybit demo propagation 지연으로 *이전* 거래의
+        cp 가 응답 가장 최근 자리에 와 잘못 매칭되는 버그 해소.
+        진입 (active_position.entry_ts_ms) 이후의 cp 만 후보로, 그 중에서도
+        cp.opened_at_ts 가 entry_ts_ms 와 ±10분 이내인 것만 같은 거래로 인정.
+
         Args:
-            last_known: state-reset 직전의 active_position (방향·setup ts 매칭 기준).
+            last_known: state-reset 직전의 active_position.
 
         Returns:
-            매칭 ClosedPosition (가장 최근, 같은 symbol+direction). 실패/미매칭이면 None.
+            매칭 ClosedPosition. 매칭 실패면 None — 다음 step 의 sync 가 재시도
+            (지연된 record 가 propagated 된 후 정확히 박힘).
         """
-        since_ms = (
-            last_known.setup_ts_ms
-            if last_known.setup_ts_ms > 0
-            else int(time.time() * 1000) - 3_600_000
-        )
+        # since_ms 는 entry_ts_ms 우선 (없으면 setup_ts_ms fallback, 그것도 없으면 1시간 전).
+        # entry 이전 거래의 close 가 응답에 섞이지 않게 가장 엄격한 시점부터.
+        if last_known.entry_ts_ms > 0:
+            since_ms = last_known.entry_ts_ms
+        elif last_known.setup_ts_ms > 0:
+            since_ms = last_known.setup_ts_ms
+        else:
+            since_ms = int(time.time() * 1000) - 3_600_000
         try:
             closed = await self.client.fetch_closed_positions(
                 since_ms=since_ms, limit=10,
@@ -1757,33 +1810,53 @@ class BotIctInstance:
             # 2026-05-29 #PNL-MATCH: 진단 로그 — 매칭 실패의 가장 흔한 원인 1.
             # since_ms 가 너무 늦거나 거래소 측 응답 propagation 지연.
             logger.info(
-                "closed-pnl 빈 응답 — since_ms=%d (last_setup_ts=%d) want=%s/%s",
-                since_ms, last_known.setup_ts_ms,
+                "closed-pnl 빈 응답 — since_ms=%d (entry_ts=%d setup_ts=%d) want=%s/%s",
+                since_ms, last_known.entry_ts_ms, last_known.setup_ts_ms,
                 self.symbol, last_known.direction.value,
             )
             return None
         want_dir = "long" if last_known.direction is Direction.LONG else "short"
+        entry_ts = last_known.entry_ts_ms
+        tol = self._PNL_MATCH_OPENED_TOLERANCE_MS
         for cp in closed:
             cp_sym = getattr(cp, "symbol", None)
             cp_dir = getattr(cp, "direction", None)
             if cp_sym != self.symbol or cp_dir != want_dir:
                 continue
+            # 2026-05-29 #PNL-MATCH-FIX: cp.opened_at_ts (Bybit createdTime) 가
+            # entry_ts_ms 와 ±10분 이내인지 검증 — 이전 거래 record 가 우연히
+            # 같은 symbol/direction 으로 잡히는 케이스 차단.
+            cp_opened = int(getattr(cp, "opened_at_ts", 0) or 0)
+            if entry_ts > 0 and cp_opened > 0 and abs(cp_opened - entry_ts) > tol:
+                logger.info(
+                    "closed-pnl 후보 시간 불일치 skip — cp_opened=%d entry_ts=%d "
+                    "diff=%d ms (>%d) — 이전 거래 record 의심",
+                    cp_opened, entry_ts, abs(cp_opened - entry_ts), tol,
+                )
+                continue
             # 매칭 성공 — 정확한 PnL/exit 기록 가능. 진단용 한 줄.
             logger.info(
-                "closed-pnl 매칭 — symbol=%s dir=%s exit=%.4f pnl=%.4f USDT",
+                "closed-pnl 매칭 — symbol=%s dir=%s exit=%.4f pnl=%.4f USDT "
+                "(cp_opened=%d entry_ts=%d)",
                 cp_sym, cp_dir,
                 float(getattr(cp, "exit_price", 0.0) or 0.0),
                 float(getattr(cp, "pnl_usd", 0.0) or 0.0),
+                cp_opened, entry_ts,
             )
-            return cp  # 가장 최근(신→구 정렬) 매칭
-        # 응답은 있는데 want_dir / symbol 매칭이 안 됨 — 다른 사용자 거래 / 형식 차이.
+            return cp
+        # 응답은 있는데 want_dir / symbol / 시간 매칭이 안 됨.
         # 응답 첫 cp 의 symbol/direction 까지 보여 운영자가 패턴 파악 가능.
+        # None 반환 시 _sync_position_state 가 pnl_override 없이 추정치로 박는데,
+        # 다음 step 에서 propagated 된 후 다시 시도 안 됨 (active_position 이미 None).
+        # → 차라리 추정치 없이 None 박는 게 통계 신뢰도 보존 (pnl_override=None 으로 위임).
         first = closed[0]
         logger.info(
-            "closed-pnl 매칭 실패 — got=%d cps, want=%s/%s, first=%s/%s",
+            "closed-pnl 매칭 실패 — got=%d cps, want=%s/%s, first=%s/%s "
+            "(entry_ts=%d). 추정치 fallback 사용.",
             len(closed),
             self.symbol, want_dir,
             getattr(first, "symbol", "?"), getattr(first, "direction", "?"),
+            entry_ts,
         )
         return None
 

@@ -163,6 +163,16 @@ class IctSettings(BaseSettings):
         default=("15m", "1h", "2h", "4h", "1d", "1w"),
     )
 
+    # 2026-05-29 #HTF-LTF-CONFLICT: HTF FVG bull/bear weight 명확 우세 + LTF setup
+    # 반대 방향 진입 차단. 5-29 실시간 매매 회고:
+    #   #3 (bull_w=246, bear_w=218, ratio=1.128) SHORT 진입 → SL_HIT
+    #   #5 (bull_w=244, bear_w=218, ratio=1.119) SHORT 진입 → SL_HIT
+    # HTF override threshold 강화 (#147) 만으로 부족 — 우세하지만 threshold 미만인
+    # ratio 구간이 진입 → 풀히트. 별도 가드로 ratio >= 임계 시 차단.
+    # 값: 우세 비율 (1.10 = bull 이 bear 의 110% 이상이면 short 차단, 역도 마찬가지).
+    # 0 = 비활성. 효과 부족 시 0.05 단위로 낮춤 (1.05 가장 엄격).
+    htf_ltf_conflict_guard_ratio: float = Field(default=1.10, ge=0.0, le=2.0)
+
     # --- 신규 (변경 7) 실시간 flip watcher (WS + polling fallback) ---------
     # ICT 정통: FVG zone 1회 touch = mitigation 인정. 5분 봉 close 대기 X — 즉시 flip.
     # 정확성 우선: WS tick 받아도 flip 직전 REST 로 재확인 후 청산/진입 sequential.
