@@ -224,11 +224,12 @@
     border-color: var(--line-strong);
   }
   .pair-toggle button.active {
-    /* 2026-05-29 v2: MODE DEMO 와 동일한 진짜 흰 배경 + 어두운 글자.
-       (이전 outline 만 흰색이었지만 파트너 요청: MODE DEMO 처럼 통일.) */
-    background: var(--accent-2);
-    border-color: var(--accent-2);
-    color: var(--bg);
+    /* 2026-05-29 v5 파트너 요청: START/STOP 톤 적용.
+       배경은 기존 surface 유지 + 초록 outline + 초록 글자 + glow. */
+    background: var(--surface);
+    border-color: #34d399;
+    color: #34d399;
+    box-shadow: 0 0 10px rgba(52, 211, 153, 0.35);
   }
   .pair-hint {
     margin: 6px 0 0 0;
@@ -1291,30 +1292,22 @@
     letter-spacing: 0.05em;
     transition: background 0.18s, border-color 0.18s;
   }
-  /* 2026-05-29 v2: 등록 / 미등록 칸 배경색 — 파트너 요청.
-     2026-05-29 v4: MODE DEMO 와 동일한 진짜 흰 배경 + 어두운 글자 통일.
-     LIVE 슬롯 라벨만 빨강 identity 유지 (아래 .cred-slot-row.has-key
-     .cred-slot-label.cred-slot-live override). */
+  /* 2026-05-29 v5 파트너 요청: START/STOP 톤 적용.
+     배경은 기존 surface 유지 + has-key 초록 outline + glow (START 패턴).
+     no-key 는 일반 회색 outline (STOP 비활성과 동일). LIVE 라벨은
+     identity 색 빨강 유지. */
   .cred-slot-row.has-key {
-    background: var(--accent-2);
-    border-color: var(--accent-2);
-    color: var(--bg);
+    background: var(--surface);
+    border-color: #34d399;
+    color: #34d399;
+    box-shadow: 0 0 10px rgba(52, 211, 153, 0.30);
   }
   .cred-slot-row.has-key .cred-slot-label {
-    color: var(--bg);
+    color: #34d399;
   }
   .cred-slot-row.has-key .cred-slot-label.cred-slot-live {
-    /* LIVE 라벨은 흰 배경 위에서도 빨강 유지 — 실거래 식별 시각. */
+    /* LIVE 라벨은 항상 빨강 identity 유지 — 실거래 슬롯 시각 식별. */
     color: #fb7185;
-  }
-  .cred-slot-row.has-key .cred-reenter-mini {
-    /* 흰 배경 위에서 "재등록" 버튼이 안 보이지 않게 어두운 outline + 글자. */
-    color: var(--bg);
-    border-color: rgba(0, 0, 0, 0.30);
-  }
-  .cred-slot-row.has-key .cred-reenter-mini:hover {
-    background: rgba(0, 0, 0, 0.06);
-    border-color: rgba(0, 0, 0, 0.55);
   }
   .cred-slot-row.no-key {
     background: rgba(106, 106, 106, 0.06);
@@ -1337,9 +1330,9 @@
     display: none;
   }
   .cred-slot-row.has-key .cred-slot-state {
-    /* 등록 슬롯은 흰 배경 + 어두운 글자 (위 has-key 규칙) → 활성화도 어둡게. */
+    /* START 톤 — has-key 슬롯의 초록 outline 과 어울리는 초록 텍스트. */
     display: inline;
-    color: var(--bg);
+    color: #34d399;
     font-weight: 500;
   }
   .cred-slot-status {
