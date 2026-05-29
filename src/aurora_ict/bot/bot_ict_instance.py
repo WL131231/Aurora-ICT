@@ -1607,6 +1607,70 @@ class BotIctInstance:
             }
         return json.dumps(ctx, ensure_ascii=False)
 
+    def _build_close_context_json(
+        self,
+        entry_pos: _ActivePosition,
+        close_price: float,
+        pnl_usd: float,
+        close_reason: str,
+    ) -> str:
+        """2026-05-29 청산 시점 봇 판단 스냅샷 — 봇 개선 분석용.
+
+        파트너 요청: "진입 사유 + 당시 봇 판단 — 진짜 구체적으로. 이 데이터들
+        가지고 앞으로 봇 개선하게".
+
+        진입 시 ``_build_entry_context_json`` 가 진입 컨텍스트를 박고, 청산 시
+        이 함수가 청산 컨텍스트를 박아 사용자가 둘을 비교 분석 가능하게 한다.
+        예: "진입할 때 bull_w=250 우세였는데 청산할 때 bear_w=300 으로 flip"
+        같은 패턴을 UI 에서 직접 볼 수 있다.
+
+        포함 정보:
+            · 청산 가격 / 실현 PnL / 사유 (SL/TP/sync/manual/flip)
+            · 진입 vs 청산 가격 변화 (pct)
+            · 현재 HTF FVG 가중치 (bull_w / bear_w / n)
+            · 마지막 EMA bias / DOL draw / trend / killzone 캐시값
+            · 봇 가동 진단 카운터 (recovery_failed / sync_failure_streak 등)
+        """
+        # 함수 내 import — killzone 모듈 임포트 순환 회피.
+        from aurora_ict.timing.killzone import classify_killzone  # noqa: PLC0415
+        now_ms = int(time.time() * 1000)
+        kz = classify_killzone(now_ms)
+        # HTF FVG map cache 그대로 합계.
+        htf_map = self._htf_fvg_map_cache or []
+        bull_w = sum(
+            int(e.weight) for e in htf_map if getattr(e.type, "value", "") == "bullish"
+        )
+        bear_w = sum(
+            int(e.weight) for e in htf_map if getattr(e.type, "value", "") == "bearish"
+        )
+        # entry 대비 청산 가격 % 변화 (long 은 +면 익, short 은 -면 익).
+        if entry_pos.entry > 0:
+            move_pct = (close_price - entry_pos.entry) / entry_pos.entry * 100.0
+        else:
+            move_pct = 0.0
+        ctx: dict[str, Any] = {
+            "close_price": float(close_price),
+            "entry_price": float(entry_pos.entry),
+            "move_pct": round(move_pct, 4),
+            "pnl_usd": float(pnl_usd),
+            "close_reason": close_reason,
+            # 청산 시점의 HTF FVG 가중치 스냅샷 (진입과 비교용).
+            "htf_fvg_bull_weight": bull_w,
+            "htf_fvg_bear_weight": bear_w,
+            "htf_fvg_n": len(htf_map),
+            # 봇 의사결정 캐시 직전 값들 — log_step_market_snapshot 의 한 줄과 같은 정보.
+            "ema_bias_last": self._last_logged_htf_ema_bias or None,
+            "dol_draw_last": self._last_logged_dol_draw or None,
+            "killzone": kz.value if kz is not None else None,
+            # 진단 카운터 — 청산 시점 봇 상태가 정상인지.
+            "diagnostics": {
+                "recovery_failed": self._recovery_failed,
+                "sync_failure_streak": self._sync_failure_streak,
+                "order_failure_count": self._order_failure_count,
+            },
+        }
+        return json.dumps(ctx, ensure_ascii=False)
+
     def _record_trade(
         self,
         event_type: TradeEventType,
@@ -1785,6 +1849,11 @@ class BotIctInstance:
             "position 종료 — entry=%.4f close=%.4f pnl=%.4f USDT (%s)",
             last_known.entry, close_px, pnl_usd, close_reason,
         )
+        # 2026-05-29: 청산 시점 봇 판단 스냅샷 — 봇 개선 분석용. UI 가 진입 vs
+        # 청산 두 컨텍스트 비교해 패턴 파악 가능.
+        close_ctx = self._build_close_context_json(
+            last_known, close_px, pnl_usd, close_reason,
+        )
         self._record_trade(
             evt_type,
             direction=last_known.direction,
@@ -1794,6 +1863,7 @@ class BotIctInstance:
             setup_ts_ms=last_known.setup_ts_ms,
             reason=close_reason,
             pnl_override=pnl_usd if cp is not None else None,
+            context_json=close_ctx,
         )
         # 2026-05-28: 학습/복기 dataset JSON sidecar 저장 (best-effort, 실패해도 봇 OK)
         try:
