@@ -803,3 +803,70 @@ def test_settings_symbol_validator_rejects_unknown_pair() -> None:
     # SOL 등 미지원 페어는 차단.
     with pytest.raises(ValueError, match="symbol"):
         IctSettings(symbol="SOL/USDT:USDT")
+
+
+@pytest.mark.asyncio
+async def test_start_uses_last_run_mode_when_force_not_given(
+    db_path, base_settings, master_key,
+) -> None:
+    """파트너 보고 2026-05-29: 모드는 라이브인데 START 누르면 DEMO 키 미등록 에러.
+
+    원인: _build_user_settings 가 force_run_mode 없을 때 base.run_mode (DEMO 기본)
+    로 settings 만들어 DEMO 키 검사. last_run_mode='live' 박혀있어도 무시.
+
+    Fix: force_run_mode 미명시 시 DB last_run_mode 폴백. 그래서 사용자가 UI 에서
+    LIVE 로 전환 후 START 누르면 LIVE 키로 가동 시도.
+    """
+    code = "AICT-LAST-LAST-LAST"
+    users_db.create_user(db_path, code)
+    # LIVE 키만 등록 (DEMO 키는 없음).
+    live_enc = keystore.encrypt_secret("live_plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "live_pub", live_enc, mode="live")
+    # 사용자가 UI 에서 LIVE 전환 → /ict/run-mode 가 last_run_mode='live' 박음.
+    users_db.set_last_run_mode(db_path, code, "live")
+
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,  # default run_mode=DEMO
+        master_key=master_key,
+    )
+    # force_run_mode 미명시 — UI 의 START 클릭이 호출하는 경로.
+    # 폴백 동작 검증: last_run_mode='live' 이면 LIVE 키로 가동 (DEMO 키 검사 X).
+    await mu.start(code)
+    bot = await mu.get_or_create_bot(code)
+    assert bot.state is BotState.RUNNING
+    # 슬롯 settings 의 run_mode 가 LIVE 로 박혔는지 확인.
+    slot = mu._slots[(code, "BTC/USDT:USDT")]
+    from aurora_ict.config.settings import RunMode
+    assert slot.settings.run_mode is RunMode.LIVE
+
+    await mu.stop(code)
+
+
+@pytest.mark.asyncio
+async def test_start_demo_user_unaffected_by_last_run_mode_fallback(
+    db_path, base_settings, master_key,
+) -> None:
+    """폴백 회귀 방지: last_run_mode 미설정 사용자는 base.run_mode (DEMO) 로 가동."""
+    code = "AICT-NEWB-NEWB-NEWB"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc, mode="demo")
+    # last_run_mode 박지 않음 (첫 가동 사용자).
+
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,  # default run_mode=DEMO
+        master_key=master_key,
+    )
+    await mu.start(code)
+    slot = mu._slots[(code, "BTC/USDT:USDT")]
+    from aurora_ict.config.settings import RunMode
+    # last_run_mode 없으면 base 그대로 (DEMO).
+    assert slot.settings.run_mode is RunMode.DEMO
+
+    await mu.stop(code)

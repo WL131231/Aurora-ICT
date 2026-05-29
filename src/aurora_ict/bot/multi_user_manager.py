@@ -152,10 +152,32 @@ class MultiUserBotManager:
         settings.license_type = license_type
         # 2026-05-29 PR B: symbol 강제 (멀티 페어 — 슬롯별 symbol 정확히 박음).
         settings.symbol = symbol
-        # 2026-05-29 hot-fix: force_run_mode 명시 시 그 값으로 강제 override.
+        # 2026-05-29 hot-fix #1: force_run_mode 명시 시 그 값으로 강제 override.
         # 사용자 마지막 가동 모드 복원 (auto_resume 흐름).
+        # 2026-05-29 hot-fix #2 (파트너 보고): force_run_mode 미명시 시 DB 의
+        # last_run_mode 를 폴백으로 사용. 사용자가 UI 에서 LIVE 로 전환한
+        # 상태에서 START 누르면 /ict/start 핸들러가 force_run_mode 없이 호출
+        # 하는데, base_settings.run_mode 가 DEMO 기본이라 DEMO 키 검사 → "DEMO
+        # API 키 미등록" 에러로 가동 차단. last_run_mode 폴백으로 사용자가
+        # 마지막 선택한 모드 그대로 가동.
         if force_run_mode is not None:
             settings.run_mode = force_run_mode
+        else:
+            try:
+                last_mode_str = users_db.get_last_run_mode(
+                    self.db_path, user_code,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "사용자 %s last_run_mode 조회 실패 (무시): %s",
+                    user_code, e,
+                )
+                last_mode_str = None
+            if last_mode_str == "live":
+                settings.run_mode = RunMode.LIVE
+            elif last_mode_str == "demo":
+                settings.run_mode = RunMode.DEMO
+            # 둘 다 아니면 base.run_mode 그대로 (last_run_mode 미설정 = 첫 가동).
         effective_mode = settings.run_mode
 
         # 양쪽 모드 키 로드 — 있는 것만 박는다.
