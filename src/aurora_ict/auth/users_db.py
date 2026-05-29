@@ -481,6 +481,59 @@ def has_api_keys(db_path: Path | str, code: str, mode: str) -> bool:
     return get_api_keys(db_path, code, mode) is not None
 
 
+def set_license(
+    db_path: Path | str,
+    code: str,
+    license_type: str,
+    expires_at: str | None,
+) -> dict[str, Any]:
+    """라이선스 코드 발급/정정 — idempotent (create-or-update).
+
+    2026-05-29 (라이선스 근본 fix): 라이선스 봇 (aurora-ict-license/admin_bot.py)
+    이 ``/issue_sub 365`` 발급 시 SaaS 의 ``/admin/license/issue`` 호출 →
+    이 함수가 users.db 에 pre-insert. 그러면 사용자가 SaaS UI 에 코드 입력 +
+    PIN 설정해도 ``setup_pin`` 이 default ``referral`` 로 덮어쓰지 않고
+    pre-insert 된 license_type 그대로 유지.
+
+    Args:
+        db_path: users.db 경로.
+        code: 라이선스 코드 (``AICT-XXXX-XXXX-XXXX``).
+        license_type: ``referral`` / ``sub_30d`` / ``sub_90d`` / ``sub_365d``.
+        expires_at: ISO 8601 UTC 만료 (``referral`` 은 None 허용).
+
+    Returns:
+        ``{"created": bool, "code": str, "license_type": str, "expires_at": str|None}``.
+        - created=True: 신규 row INSERT (사용자가 아직 setup_pin 안 함).
+        - created=False: 기존 row UPDATE (정정 흐름).
+
+    Raises:
+        ValueError: ``license_type`` 이 허용 외 값.
+    """
+    allowed = {"referral", "sub_30d", "sub_90d", "sub_365d"}
+    if license_type not in allowed:
+        raise ValueError(
+            f"license_type 허용 외 값: {license_type!r} (허용: {sorted(allowed)})",
+        )
+    existing = get_user_by_code(db_path, code)
+    if existing is None:
+        # 신규 — create_user 호출 (license_type/expires_at 박힘).
+        create_user(db_path, code, license_type, expires_at)
+        return {
+            "created": True,
+            "code": code,
+            "license_type": license_type,
+            "expires_at": expires_at,
+        }
+    # 기존 — update_license 호출 (정정).
+    update_license(db_path, code, license_type, expires_at)
+    return {
+        "created": False,
+        "code": code,
+        "license_type": license_type,
+        "expires_at": expires_at,
+    }
+
+
 def update_license(
     db_path: Path | str,
     code: str,
@@ -934,6 +987,7 @@ __all__ = [
     "get_last_run_mode",
     "list_running_bots",
     "set_last_run_mode",
+    "set_license",
     "set_pin",
     "update_last_login",
     "update_license",
