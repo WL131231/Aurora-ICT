@@ -116,7 +116,24 @@ def _query_trades(
     params.append(limit)
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(sql, params).fetchall()
+        # 2026-05-29 hot-fix: 옛 trades.db (PR #166 이전 사용자) 에 mode
+        # 컬럼 없으면 SELECT 가 OperationalError → HTTP 500. TradesStore
+        # __init__ 의 ALTER 가 봇 가동 시점에만 실행되므로, admin 이 봇 비가동
+        # 사용자 조회 시 마이그레이션 안 됨. 여기서 idempotent ALTER 한 번 더.
+        try:
+            conn.execute("ALTER TABLE trades ADD COLUMN mode TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # 이미 컬럼 있음 또는 trades 테이블 자체 없음 (빈 DB)
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError as e:
+            # trades 테이블 자체 없음 — 사용자 봇이 한 번도 가동된 적 없는 경우.
+            # 빈 list 반환해 UI 가 "데이터 없음" 표시 (HTTP 500 회피).
+            logger.warning(
+                "trades 테이블 조회 실패 (빈 DB 추정): %s", e,
+            )
+            return []
     return [dict(r) for r in rows]
 
 

@@ -718,3 +718,68 @@ def test_admin_login_rejects_wrong_value(data_dir, monkeypatch):
         "/admin/login", headers={"X-Admin-Token": "wrong-value"},
     )
     assert r.status_code == 401
+
+
+def test_query_trades_legacy_db_without_mode_column_auto_migrates(
+    data_dir,
+):
+    """옛 trades.db (mode 컬럼 없는 PR #166 이전 schema) 도 SELECT 성공.
+
+    파트너 보고 2026-05-29 — admin 페이지에서 다른 사용자 조회 시 HTTP 500.
+    원인: TradesStore.__init__ 의 ALTER 가 봇 가동 시점에만 실행. admin 이
+    봇 비가동 사용자 조회 시 mode 컬럼 없어 OperationalError.
+
+    Fix: _query_trades 가 SELECT 직전 idempotent ALTER 시도.
+    """
+    code = "AICT-LEGACY-XX-XX"
+    user_dir = data_dir / "users" / code
+    user_dir.mkdir(parents=True, exist_ok=True)
+    db_path = user_dir / "trades.db"
+    # 옛 schema — mode 컬럼 없음 (PR #166 이전).
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE trades (
+            rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts_ms INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            price REAL NOT NULL,
+            qty REAL NOT NULL,
+            pnl_usdt REAL,
+            setup_ts_ms INTEGER,
+            reason TEXT NOT NULL DEFAULT '',
+            context_json TEXT
+        )
+        """,
+    )
+    conn.execute(
+        "INSERT INTO trades(ts_ms, event_type, symbol, direction, price, qty) "
+        "VALUES (1000, 'entry', 'BTC/USDT:USDT', 'short', 73000.0, 1.0)",
+    )
+    conn.commit()
+    conn.close()
+
+    # _query_trades 직접 호출 — mode 컬럼 없는 옛 DB 라도 빈 list 아님.
+    from aurora_ict.api.trades_router import _query_trades
+    rows = _query_trades(db_path, limit=100, since_ms=None, event_type=None)
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == "entry"
+    # 마이그레이션 완료된 컬럼은 NULL.
+    assert rows[0]["mode"] is None
+
+
+def test_query_trades_empty_db_returns_empty_list(data_dir):
+    """trades 테이블 자체 없는 빈 DB 도 HTTP 500 안 내고 빈 list 반환."""
+    code = "AICT-EMPTY-XX-XX"
+    user_dir = data_dir / "users" / code
+    user_dir.mkdir(parents=True, exist_ok=True)
+    db_path = user_dir / "trades.db"
+    # 빈 DB 파일만 생성 (테이블 없음).
+    conn = sqlite3.connect(str(db_path))
+    conn.close()
+
+    from aurora_ict.api.trades_router import _query_trades
+    rows = _query_trades(db_path, limit=100, since_ms=None, event_type=None)
+    assert rows == []
