@@ -224,10 +224,11 @@
     border-color: var(--line-strong);
   }
   .pair-toggle button.active {
-    /* 2026-05-29 파트너 요청: 파란 → 흰 통일. */
-    background: rgba(255, 255, 255, 0.10);
-    border-color: rgba(255, 255, 255, 0.45);
-    color: var(--text-1);
+    /* 2026-05-29 v2: MODE DEMO 와 동일한 진짜 흰 배경 + 어두운 글자.
+       (이전 outline 만 흰색이었지만 파트너 요청: MODE DEMO 처럼 통일.) */
+    background: var(--accent-2);
+    border-color: var(--accent-2);
+    color: var(--bg);
   }
   .pair-hint {
     margin: 6px 0 0 0;
@@ -1291,10 +1292,29 @@
     transition: background 0.18s, border-color 0.18s;
   }
   /* 2026-05-29 v2: 등록 / 미등록 칸 배경색 — 파트너 요청.
-     2026-05-29 v3: 파란 → 흰 통일 (파트너 요청). LIVE 슬롯 라벨은 빨강 유지. */
+     2026-05-29 v4: MODE DEMO 와 동일한 진짜 흰 배경 + 어두운 글자 통일.
+     LIVE 슬롯 라벨만 빨강 identity 유지 (아래 .cred-slot-row.has-key
+     .cred-slot-label.cred-slot-live override). */
   .cred-slot-row.has-key {
-    background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(255, 255, 255, 0.35);
+    background: var(--accent-2);
+    border-color: var(--accent-2);
+    color: var(--bg);
+  }
+  .cred-slot-row.has-key .cred-slot-label {
+    color: var(--bg);
+  }
+  .cred-slot-row.has-key .cred-slot-label.cred-slot-live {
+    /* LIVE 라벨은 흰 배경 위에서도 빨강 유지 — 실거래 식별 시각. */
+    color: #fb7185;
+  }
+  .cred-slot-row.has-key .cred-reenter-mini {
+    /* 흰 배경 위에서 "재등록" 버튼이 안 보이지 않게 어두운 outline + 글자. */
+    color: var(--bg);
+    border-color: rgba(0, 0, 0, 0.30);
+  }
+  .cred-slot-row.has-key .cred-reenter-mini:hover {
+    background: rgba(0, 0, 0, 0.06);
+    border-color: rgba(0, 0, 0, 0.55);
   }
   .cred-slot-row.no-key {
     background: rgba(106, 106, 106, 0.06);
