@@ -1281,18 +1281,17 @@
     color: #fb7185;
   }
   .cred-slot-row {
+    /* 2026-05-29 v10 파트너 답답함 종결: layout 완전 재작성.
+       flex + justify-content:space-between → 라벨 좌측 / 버튼 우측 자동.
+       라벨에 flex 안 박아 content 폭 그대로 유지 — collapse 방지. */
     display: flex;
     align-items: center;
-    gap: 8px;
-    /* 2026-05-29 v8: 버튼이 박스 밖으로 overflow 하던 버그 fix.
-       padding 좌우 ↑ 으로 안쪽 여유 + overflow:hidden 으로 외부 튀어나옴 방지. */
-    padding: 8px 10px;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 9px 12px;
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: 4px;
-    overflow: hidden;
-    font-size: 10px;
-    letter-spacing: 0.05em;
     transition: background 0.18s, border-color 0.18s;
   }
   /* 2026-05-29 v7 파트너 요청: START 버튼과 완전 동일 톤.
@@ -1318,18 +1317,13 @@
     border-color: var(--line);
   }
   .cred-slot-label {
-    /* 2026-05-29 v8: flex:1 + min-width:0 — 박스 폭 안에서 자연 shrink.
-       letter-spacing 0.15 → 0.08 (DEMO 4글자 너비 줄여 버튼이 박스 안에
-       fitting). 한 줄 유지. */
-    flex: 1 1 auto;
-    min-width: 0;
+    /* 2026-05-29 v10: flex 제거 — content 자연 폭 유지.
+       justify-content:space-between 이 라벨/버튼 자동 양쪽 끝 배치. */
     font-weight: 600;
     color: #fbbf24;
     letter-spacing: 0.08em;
-    font-size: 11px;
+    font-size: 12px;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
   .cred-slot-label.cred-slot-live { color: #fb7185; }
   /* 2026-05-29 v6: '활성화' 텍스트 (.cred-slot-state) 제거 — 파트너 재요청.
@@ -1341,17 +1335,18 @@
   .cred-slot-status.ok { color: #34d399; }
   .cred-slot-status.missing { color: var(--text-3); }
   .cred-reenter-mini {
-    /* 2026-05-29 v9 파트너 요청: dashed → solid 박스. */
-    flex: 0 0 auto;
+    /* 2026-05-29 v10: flex 제거 — space-between 으로 우측 자동.
+       solid 박스 + 잘 보이는 글자. */
     background: transparent;
     border: 1px solid var(--line-strong);
     color: var(--text-1);
-    font-size: 9px;
-    padding: 3px 8px;
+    font-size: 10px;
+    padding: 3px 9px;
     letter-spacing: 0.1em;
     border-radius: 3px;
     cursor: pointer;
     font-weight: 500;
+    white-space: nowrap;
   }
   .cred-reenter-mini:hover {
     color: var(--text-1);
