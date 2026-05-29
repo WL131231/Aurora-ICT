@@ -665,3 +665,141 @@ async def test_status_reports_both_credentials_flags(
     st = await mu.status(code)
     assert st["has_demo_credentials"] is True
     assert st["has_live_credentials"] is True
+
+
+# ============================================================
+# 6. PR B — 멀티 페어 슬롯 + status resuming + run_mode 격리 (2026-05-29)
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_multi_pair_slots_isolated(
+    db_path, base_settings, master_key,
+) -> None:
+    """한 사용자가 BTC + ETH 두 슬롯 동시 가동 — 각자 다른 bot/client."""
+    code = "AICT-DUAL-DUAL-DUAL"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc)
+
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,
+        master_key=master_key,
+    )
+    btc_bot = await mu.get_or_create_bot(code, "BTC/USDT:USDT")
+    eth_bot = await mu.get_or_create_bot(code, "ETH/USDT:USDT")
+    assert btc_bot is not eth_bot
+    assert btc_bot.symbol == "BTC/USDT:USDT"
+    assert eth_bot.symbol == "ETH/USDT:USDT"
+    # 슬롯별 client 분리 — 2개 생성.
+    assert len(clients) == 2
+    # list_users 는 unique user 만 (1명).
+    assert mu.list_users() == [code]
+    # list_slots 는 (code, symbol) 튜플 2개.
+    assert sorted(mu.list_slots()) == [
+        (code, "BTC/USDT:USDT"),
+        (code, "ETH/USDT:USDT"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_status_resuming_when_db_running_but_no_slot(
+    db_path, base_settings, master_key,
+) -> None:
+    """fly machine 재시작 직후 — DB 가동 중인데 슬롯 없으면 state=resuming.
+
+    파트너 보고 "또 데모로 넘어가고 STOP 에 불들어옴" 버그 회귀 방지.
+    """
+    code = "AICT-RSUM-RSUM-RSUM"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc)
+    # 직접 DB 에 BTC 가동 중 + last_run_mode=live 박기 (재배포 직전 상태 모사).
+    users_db.set_bot_running(db_path, code, True, symbol="BTC/USDT:USDT")
+    users_db.set_last_run_mode(db_path, code, "live")
+
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,
+        master_key=master_key,
+    )
+    # 슬롯 비어있는 상태에서 status — resuming + LIVE 표시.
+    st = await mu.status(code)
+    assert st["state"] == "resuming"
+    assert st["run_mode"] == "live"
+    assert st["enabled"] is True
+    assert "BTC/USDT:USDT" in st["running_symbols"]
+
+
+@pytest.mark.asyncio
+async def test_status_last_run_mode_overrides_base_when_no_slot(
+    db_path, base_settings, master_key,
+) -> None:
+    """슬롯 없을 때 last_run_mode 가 base_settings.run_mode 보다 우선.
+
+    base_settings 가 demo 기본이라도 사용자가 LIVE 가동 이력 있으면 LIVE 표시.
+    """
+    code = "AICT-LASM-LASM-LASM"
+    users_db.create_user(db_path, code)
+    users_db.set_last_run_mode(db_path, code, "live")
+
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,  # default demo
+        master_key=master_key,
+    )
+    st = await mu.status(code)
+    assert st["run_mode"] == "live"
+
+
+@pytest.mark.asyncio
+async def test_start_persists_bot_running_symbols(
+    db_path, base_settings, master_key,
+) -> None:
+    """start(code, symbol) 가 DB 의 bot_running_symbols 에 symbol 추가."""
+    code = "AICT-PERS-PERS-PERS"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc)
+
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,
+        master_key=master_key,
+    )
+    await mu.start(code, "BTC/USDT:USDT")
+    running = users_db.get_bot_running_symbols(db_path, code)
+    assert "BTC/USDT:USDT" in running
+
+    # ETH 도 추가 가동 — running symbol list 누적.
+    await mu.start(code, "ETH/USDT:USDT")
+    running = users_db.get_bot_running_symbols(db_path, code)
+    assert "BTC/USDT:USDT" in running
+    assert "ETH/USDT:USDT" in running
+
+    # BTC 만 정지 — ETH 는 그대로.
+    await mu.stop(code, "BTC/USDT:USDT")
+    running = users_db.get_bot_running_symbols(db_path, code)
+    assert "BTC/USDT:USDT" not in running
+    assert "ETH/USDT:USDT" in running
+
+    await mu.stop(code, "ETH/USDT:USDT")
+
+
+def test_settings_symbol_validator_rejects_unknown_pair() -> None:
+    """settings.symbol — BTC/ETH 외 페어는 ValueError (2026-05-29 PR B 화이트리스트)."""
+    # BTC / ETH 통과.
+    IctSettings(symbol="BTC/USDT:USDT")
+    IctSettings(symbol="ETH/USDT:USDT")
+    # SOL 등 미지원 페어는 차단.
+    with pytest.raises(ValueError, match="symbol"):
+        IctSettings(symbol="SOL/USDT:USDT")

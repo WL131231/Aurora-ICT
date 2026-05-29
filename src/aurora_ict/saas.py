@@ -65,21 +65,23 @@ async def auto_resume_running_bots(
         startup 로그 + 테스트 검증용. 한 명도 가동 안 됐으면 attempted=0.
     """
     stats = {"attempted": 0, "succeeded": 0, "failed": 0}
+    # 2026-05-29 PR B: 사용자×symbol 슬롯 단위 재가동. 한 사용자가 BTC + ETH 동시
+    # 가동 중이었으면 두 슬롯 모두 살림.
     try:
-        codes = users_db.list_running_codes(db_path)
+        bots = users_db.list_running_bots(db_path)
     except Exception as e:  # noqa: BLE001
-        logger.warning("bot 자동 재가동 — list_running_codes 실패: %s", e)
+        logger.warning("bot 자동 재가동 — list_running_bots 실패: %s", e)
         return stats
-    if not codes:
-        logger.info("bot 자동 재가동 대상 없음 (bot_running=1 사용자 0명)")
+    if not bots:
+        logger.info("bot 자동 재가동 대상 없음 (가동 중 슬롯 0개)")
         return stats
-    stats["attempted"] = len(codes)
-    logger.info("bot 자동 재가동 시도 — %d명", len(codes))
+    stats["attempted"] = len(bots)
+    logger.info("bot 자동 재가동 시도 — %d 슬롯", len(bots))
     # 2026-05-29 hot-fix: 사용자별 last_run_mode 로 강제 가동. LIVE 사용자가
     # base_settings.run_mode (DEMO 기본) 때문에 DEMO 키 미등록 ValueError 로
     # 봇 죽던 버그 해소. last_run_mode 미설정 (구식 사용자) 은 base 그대로.
     from aurora_ict.config.settings import RunMode
-    for code in codes:
+    for code, sym in bots:
         try:
             last_mode_str = users_db.get_last_run_mode(db_path, code)
         except Exception as e:  # noqa: BLE001
@@ -91,16 +93,19 @@ async def auto_resume_running_bots(
         elif last_mode_str == "demo":
             force_mode = RunMode.DEMO
         try:
-            await mu.start(code, force_run_mode=force_mode)
+            await mu.start(code, sym, force_run_mode=force_mode)
             stats["succeeded"] += 1
             logger.info(
-                "bot 자동 재가동 — %s ✓ (run_mode=%s)",
-                code, force_mode.value if force_mode else "base_default",
+                "bot 자동 재가동 — %s/%s ✓ (run_mode=%s)",
+                code, sym,
+                force_mode.value if force_mode else "base_default",
             )
         except Exception as e:  # noqa: BLE001
             stats["failed"] += 1
-            # API 키 미등록 / 만료 / 거래소 응답 실패 등 — 다음 사용자에 영향 X.
-            logger.warning("bot 자동 재가동 실패 — %s: %s", code, e)
+            # API 키 미등록 / 만료 / 거래소 응답 실패 등 — 다음 슬롯에 영향 X.
+            logger.warning(
+                "bot 자동 재가동 실패 — %s/%s: %s", code, sym, e,
+            )
     return stats
 
 
@@ -203,20 +208,24 @@ def main() -> int:
     #   루프 사용.
     @app.on_event("shutdown")
     async def _on_shutdown() -> None:
-        logger.info("SaaS shutdown 신호 — 모든 사용자 봇 정지 시작 (DB 가동 플래그 보존)")
-        # DB 의 bot_running 을 덮지 않도록 stop_all 대신 in-memory 정지만.
+        logger.info("SaaS shutdown 신호 — 모든 슬롯 봇 정지 시작 (DB 가동 플래그 보존)")
+        # DB 의 bot_running_symbols 을 덮지 않도록 stop_all 대신 in-memory 정지만.
         # 사용자가 명시 STOP 을 누른 게 아니라 단지 프로세스 graceful 종료이므로
-        # 다음 부팅에서 다시 살아나야 정상.
-        for code in list(mu.list_users()):
-            slot = mu._slots.get(code)
+        # 다음 부팅에서 자동 재가동으로 다시 살아나야 정상.
+        # 2026-05-29 PR B: (user_code, symbol) 튜플 키 순회.
+        for key in list(mu.list_slots()):
+            slot = mu._slots.get(key)
             if slot is None:
                 continue
+            code, sym = key
             try:
                 if slot.bot is not None:
                     await slot.bot.stop()
                 await mu._close_client(slot)
             except Exception as e:  # noqa: BLE001
-                logger.warning("shutdown: 사용자 %s 정지 실패 — %s", code, e)
+                logger.warning(
+                    "shutdown: 슬롯 %s/%s 정지 실패 — %s", code, sym, e,
+                )
         logger.info("SaaS shutdown 완료")
 
     host = os.environ.get("AURORA_ICT_HOST", "0.0.0.0")  # noqa: S104 — 컨테이너 바인드 의도

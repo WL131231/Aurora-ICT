@@ -70,6 +70,21 @@ class IctSettings(BaseSettings):
     # / Macro 등 사소한 setup 까지 잡기 위해 짧은 TF 가 자연스러움).
     timeframe: str = Field(default="5m")
 
+    @field_validator("symbol")
+    @classmethod
+    def _validate_symbol(cls, v: str) -> str:
+        """2026-05-29 PR B: 멀티 페어 — BTC + ETH 허용. 그 외는 차단.
+
+        Bybit V5 linear perpetual ccxt unified format. ETHUSDT 추가는 파트너
+        결정 (BTC/ETH 분산 진입). 다른 알트는 추후 화이트리스트로 점진 확장.
+        """
+        allowed = {"BTC/USDT:USDT", "ETH/USDT:USDT"}
+        if v not in allowed:
+            raise ValueError(
+                f"symbol '{v}' 미지원 — 허용 목록: {sorted(allowed)}",
+            )
+        return v
+
     @field_validator("timeframe")
     @classmethod
     def _validate_trade_timeframe(cls, v: str) -> str:
