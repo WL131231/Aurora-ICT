@@ -40,6 +40,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from datetime import UTC, datetime
@@ -127,6 +128,33 @@ def _connect(db_path: Path | str) -> sqlite3.Connection:
     return conn
 
 
+def _ensure_bot_running_symbols_column(conn: sqlite3.Connection) -> None:
+    """2026-05-29 PR B: 멀티 페어 (BTC + ETH 동시 진입) 영속화 — bot_running
+    boolean → bot_running_symbols JSON 배열 컬럼.
+
+    마이그레이션:
+      1) bot_running_symbols TEXT 컬럼 idempotent 추가.
+      2) 기존 ``bot_running = 1`` row 의 bot_running_symbols 가 비어있으면
+         ``'["BTC/USDT:USDT"]'`` 로 자동 설정 (기존 단일 페어 가동 상태 보존).
+
+    bot_running 컬럼은 backward compat 위해 그대로 남겨둠 (사용 안 함).
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "bot_running_symbols" not in cols:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN bot_running_symbols TEXT",
+        )
+    # 기존 bot_running=1 인데 bot_running_symbols 비어있는 row 만 마이그레이션.
+    conn.execute(
+        """
+        UPDATE users
+        SET bot_running_symbols = '["BTC/USDT:USDT"]'
+        WHERE bot_running = 1
+          AND (bot_running_symbols IS NULL OR bot_running_symbols = '')
+        """,
+    )
+
+
 def _ensure_bot_running_column(conn: sqlite3.Connection) -> None:
     """기존 users 테이블에 ``bot_running`` 컬럼 없으면 ALTER TABLE 로 추가.
 
@@ -209,6 +237,8 @@ def init_db(db_path: Path | str) -> None:
         # 기존 DB 마이그레이션 — 누락 컬럼 추가 + 기존 데이터 보존.
         _ensure_bot_running_column(conn)
         _ensure_dual_key_columns(conn)
+        # 2026-05-29 PR B: 멀티 페어 영속화 컬럼 + 기존 데이터 마이그레이션.
+        _ensure_bot_running_symbols_column(conn)
         conn.commit()
     # 2026-05-28: 공지사항 테이블도 같은 파일에 idempotent 생성.
     from aurora_ict.auth.notices_db import init_notices_table
@@ -507,52 +537,133 @@ def update_last_login(db_path: Path | str, code: str) -> bool:
 # ============================================================
 
 
-def set_bot_running(db_path: Path | str, code: str, running: bool) -> bool:
-    """봇 가동 상태 플래그 박기 — START 시 True, STOP 시 False.
+def _parse_running_symbols(raw: str | None) -> list[str]:
+    """bot_running_symbols 컬럼 (JSON 배열 문자열) → list[str]. 손상/빈값은 [].
+    """
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [str(s) for s in data if isinstance(s, str) and s]
 
-    Why: ``MultiUserBotManager._slots`` 는 in-memory dict 라 Fly machine
-    OOM / 재배포 시 사라짐. 이 컬럼을 영속화해 둬야 startup hook
-    (``saas.py``) 이 ``list_running_codes`` 로 자동 재가동 가능.
+
+def get_bot_running_symbols(db_path: Path | str, code: str) -> list[str]:
+    """사용자 코드의 가동 중 symbol list 조회 — 2026-05-29 PR B.
 
     Args:
         db_path: users.db 경로.
         code: 대상 사용자 라이선스 코드.
-        running: True 면 1, False 면 0 으로 박음.
+
+    Returns:
+        가동 중인 symbol list (예: ``["BTC/USDT:USDT", "ETH/USDT:USDT"]``).
+        사용자 미존재 / 가동 없음이면 빈 list.
+    """
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT bot_running_symbols FROM users WHERE code = ?",
+            (code,),
+        ).fetchone()
+    if row is None:
+        return []
+    return _parse_running_symbols(row["bot_running_symbols"])
+
+
+def set_bot_running(
+    db_path: Path | str,
+    code: str,
+    running: bool,
+    symbol: str = "BTC/USDT:USDT",
+) -> bool:
+    """봇 가동 상태 플래그 박기 — symbol 단위 (멀티 페어, 2026-05-29 PR B).
+
+    Why: ``MultiUserBotManager._slots`` 는 in-memory dict 라 Fly machine
+    OOM / 재배포 시 사라짐. 이 컬럼 (JSON 배열) 을 영속화해 둬야 startup hook
+    (``saas.py``) 이 ``list_running_bots`` 로 페어별 자동 재가동 가능.
+
+    Args:
+        db_path: users.db 경로.
+        code: 대상 사용자 라이선스 코드.
+        running: True 면 symbol 을 list 에 추가, False 면 제거.
+        symbol: ccxt 형식 symbol (예: "BTC/USDT:USDT"). 기본값 backward compat.
 
     Returns:
         True 면 UPDATE 1건 성공, False 면 해당 code 가 DB 에 없음 (no-op).
     """
     now = _utcnow_iso()
-    # SQLite 는 BOOLEAN 타입이 없어 INTEGER 0/1 로 저장.
-    flag = 1 if running else 0
     with _connect(db_path) as conn:
-        cur = conn.execute(
+        row = conn.execute(
+            "SELECT bot_running_symbols FROM users WHERE code = ?",
+            (code,),
+        ).fetchone()
+        if row is None:
+            return False
+        cur_list = _parse_running_symbols(row["bot_running_symbols"])
+        cur_set = set(cur_list)
+        if running:
+            cur_set.add(symbol)
+        else:
+            cur_set.discard(symbol)
+        # 안정 정렬 — 순서 보장으로 startup 재가동 흐름 결정적.
+        new_arr = sorted(cur_set)
+        new_json = json.dumps(new_arr, ensure_ascii=False)
+        # 기존 컬럼 (bot_running) 도 호환 위해 동기화 — list 비어있으면 0,
+        # 1개 이상이면 1. 옛 코드 경로 (단일 사용자 흐름 등) 가 그 값 읽어도 OK.
+        legacy_flag = 1 if new_arr else 0
+        conn.execute(
             """
             UPDATE users
-            SET bot_running = ?, updated_at = ?
+            SET bot_running_symbols = ?, bot_running = ?, updated_at = ?
             WHERE code = ?
             """,
-            (flag, now, code),
+            (new_json, legacy_flag, now, code),
         )
         conn.commit()
-        return cur.rowcount > 0
+        return True
 
 
-def list_running_codes(db_path: Path | str) -> list[str]:
-    """``bot_running = 1`` 인 사용자 code 목록 — startup 자동 재가동용.
+def list_running_bots(db_path: Path | str) -> list[tuple[str, str]]:
+    """가동 중 (user_code, symbol) 쌍 목록 — startup 자동 재가동용.
+
+    bot_running_symbols JSON 배열 파싱 후 expand.
 
     Args:
         db_path: users.db 경로.
 
     Returns:
-        가동 중으로 마킹된 사용자 라이선스 코드 list. 결과 없으면 빈 list.
-        순서 보장은 없음 — startup hook 이 best-effort 로 순차 호출하므로 OK.
+        list[(user_code, symbol)] — code 오름차순 + symbol 오름차순.
     """
+    out: list[tuple[str, str]] = []
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT code FROM users WHERE bot_running = 1",
+            "SELECT code, bot_running_symbols FROM users "
+            "WHERE bot_running_symbols IS NOT NULL AND bot_running_symbols != ''",
         ).fetchall()
-        return [str(row["code"]) for row in rows]
+    for row in rows:
+        code = str(row["code"])
+        for sym in _parse_running_symbols(row["bot_running_symbols"]):
+            out.append((code, sym))
+    out.sort()
+    return out
+
+
+def list_running_codes(db_path: Path | str) -> list[str]:
+    """[Deprecated 2026-05-29 PR B] 기존 boolean 흐름 호환용.
+
+    내부적으로 ``list_running_bots`` 를 호출해 unique user_code 만 반환.
+    신규 코드는 ``list_running_bots`` 직접 사용 권장.
+    """
+    bots = list_running_bots(db_path)
+    seen: set[str] = set()
+    out = []
+    for code, _ in bots:
+        if code not in seen:
+            seen.add(code)
+            out.append(code)
+    return out
 
 
 # ============================================================
@@ -748,6 +859,8 @@ __all__ = [
     "list_running_codes",
     "set_api_keys",
     "set_bot_running",
+    "get_bot_running_symbols",
+    "list_running_bots",
     "set_pin",
     "update_last_login",
     "update_license",
