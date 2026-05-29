@@ -94,13 +94,19 @@ def _create_user_trades(
 
 
 def _make_app(data_dir: Path, current_user: str = "AICT-TEST-USER-0001") -> FastAPI:
-    """trades_router 만 등록한 가벼운 FastAPI app — require_auth 는 고정 코드 반환."""
+    """trades_router 만 등록한 가벼운 FastAPI app — require_auth 는 고정 코드 반환.
+
+    secure_cookie=False — TestClient 는 HTTP 라 Secure 쿠키가 후속 요청에
+    안 실린다. 운영 SaaS 는 saas.py 에서 secure_cookie=True 로 주입.
+    """
     app = FastAPI()
 
     async def _fake_require_auth() -> str:
         return current_user
 
-    app.include_router(create_trades_router(data_dir, _fake_require_auth))
+    app.include_router(
+        create_trades_router(data_dir, _fake_require_auth, secure_cookie=False),
+    )
     return app
 
 
@@ -330,3 +336,165 @@ def test_admin_backup_jsonl(data_dir, monkeypatch):
     assert r.status_code == 200
     assert "attachment" in r.headers["content-disposition"]
     assert '"event_type": "entry"' in r.text
+
+
+# ============================================================
+# 2026-05-29: Admin 인증 cookie + rebuild + users 목록
+# ============================================================
+
+
+def test_admin_login_sets_cookie(data_dir, monkeypatch):
+    """/admin/login 통과 시 aurora_admin_token 쿠키 발급."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    r = client.post(
+        "/admin/login",
+        headers={"X-Admin-Token": "secret-token-xyz"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    # 쿠키가 세팅됨.
+    assert "aurora_admin_token" in client.cookies
+    assert client.cookies["aurora_admin_token"] == "secret-token-xyz"
+
+
+def test_admin_login_invalid_token_401(data_dir, monkeypatch):
+    """잘못된 토큰은 쿠키 발급 X."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    r = client.post(
+        "/admin/login",
+        headers={"X-Admin-Token": "wrong"},
+    )
+    assert r.status_code == 401
+    assert "aurora_admin_token" not in client.cookies
+
+
+def test_admin_endpoints_accept_cookie_after_login(data_dir, monkeypatch):
+    """로그인 후 쿠키만으로 admin endpoint 호출 가능."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
+    code = "AICT-CKAY-CKAY-CKAY"
+    _create_user_trades(data_dir, code, [
+        {"ts_ms": 1000, "event_type": "entry"},
+    ])
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    # 로그인 → 쿠키
+    r = client.post("/admin/login", headers={"X-Admin-Token": "secret-token-xyz"})
+    assert r.status_code == 200
+    # 헤더 없이 쿠키만으로 admin endpoint 호출.
+    r = client.get(f"/admin/trades?user_code={code}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] == 1
+
+
+def test_admin_session_endpoint(data_dir, monkeypatch):
+    """/admin/session — 로그인 전 false, 후 true."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    assert client.get("/admin/session").json() == {"authenticated": False}
+    client.post("/admin/login", headers={"X-Admin-Token": "secret-token-xyz"})
+    assert client.get("/admin/session").json() == {"authenticated": True}
+
+
+def test_admin_logout_clears_cookie(data_dir, monkeypatch):
+    """로그아웃 후 쿠키 제거 → admin endpoint 401."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    client.post("/admin/login", headers={"X-Admin-Token": "secret-token-xyz"})
+    r = client.post("/admin/logout")
+    assert r.status_code == 200
+    # 쿠키 만료 (max_age=0). httpx 는 expired 쿠키를 제거하므로 jar 에 없거나 빈 값.
+    assert (
+        "aurora_admin_token" not in client.cookies
+        or client.cookies.get("aurora_admin_token") in (None, "", '""')
+    )
+    # 헤더도 없으면 401.
+    r = client.get("/admin/trades?user_code=AICT-X-X-X")
+    assert r.status_code == 401
+
+
+def test_admin_users_list(data_dir, monkeypatch):
+    """/admin/users — `<data_dir>/users/` 하위 디렉토리 목록."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
+    _create_user_trades(data_dir, "AICT-USR1-USR1-USR1", [
+        {"ts_ms": 1000, "event_type": "entry"},
+    ])
+    _create_user_trades(data_dir, "AICT-USR2-USR2-USR2", [
+        {"ts_ms": 2000, "event_type": "tp_hit", "pnl_usdt": 5.0},
+    ])
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    r = client.get(
+        "/admin/users",
+        headers={"X-Admin-Token": "secret-token-xyz"},
+    )
+    assert r.status_code == 200
+    users = r.json()["users"]
+    assert "AICT-USR1-USR1-USR1" in users
+    assert "AICT-USR2-USR2-USR2" in users
+
+
+def test_admin_rebuild_sqlite(data_dir, monkeypatch):
+    """JSONL 기준으로 SQLite 재생성 — 기존 db 비우고 jsonl 전체 insert."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
+    code = "AICT-RBLD-RBLD-RBLD"
+    # 사용자 디렉토리 + 최소 trades.jsonl (event_type=entry 3건).
+    user_dir = data_dir / "users" / code
+    user_dir.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {
+            "ts_ms": 1000 + i,
+            "event_type": "entry",
+            "symbol": "BTC/USDT:USDT",
+            "direction": "short",
+            "price": 73000.0,
+            "qty": 1.0,
+            "pnl_usdt": None,
+            "setup_ts_ms": None,
+            "reason": "",
+            "context_json": None,
+        }
+        for i in range(3)
+    ]
+    with (user_dir / "trades.jsonl").open("w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    # rebuild
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    r = client.post(
+        f"/admin/trades/rebuild?user_code={code}",
+        headers={"X-Admin-Token": "secret-token-xyz"},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["inserted_count"] == 3
+    # 이후 admin/trades 조회로 확인.
+    r = client.get(
+        f"/admin/trades?user_code={code}",
+        headers={"X-Admin-Token": "secret-token-xyz"},
+    )
+    assert r.status_code == 200
+    assert r.json()["count"] == 3
+
+
+def test_admin_rebuild_no_jsonl(data_dir, monkeypatch):
+    """JSONL 부재 시 ok=False, reason=no_jsonl."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    r = client.post(
+        "/admin/trades/rebuild?user_code=AICT-MISS-MISS-MISS",
+        headers={"X-Admin-Token": "secret-token-xyz"},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is False
+    assert data["reason"] == "no_jsonl"

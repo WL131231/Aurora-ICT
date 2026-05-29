@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>매매 기록 · Aurora-ICT</title>
   <style>
-    /* 2026-05-29: 매매 기록 별도 페이지 — 메인 UI 와 일관된 다크 톤. */
     :root {
       --bg: #0a0a0a;
       --surface: #141414;
@@ -18,6 +17,7 @@
       --accent: #34d399;
       --warn: #fbbf24;
       --loss: #fb7185;
+      --info: #60a5fa;
     }
     * { box-sizing: border-box; }
     html, body {
@@ -37,21 +37,32 @@
       padding: 14px 20px;
       background: var(--surface);
       border-bottom: 1px solid var(--line);
+      flex-wrap: wrap;
+      gap: 10px;
     }
-    header h1 {
-      margin: 0;
-      font-size: 16px;
-      font-weight: 600;
-      letter-spacing: 0.05em;
-    }
-    header .back {
+    header h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: 0.05em; }
+    header .head-right { display: flex; align-items: center; gap: 10px; }
+    header .back, header .admin-state {
       color: var(--text-3);
       text-decoration: none;
       font-size: 11px;
       letter-spacing: 0.1em;
     }
     header .back:hover { color: var(--text-1); }
-    .wrap { padding: 16px 20px; max-width: 1280px; margin: 0 auto; }
+    header .admin-state.on { color: var(--accent); }
+    header button.head-btn {
+      background: var(--surface-2);
+      border: 1px solid var(--line-strong);
+      color: var(--text-2);
+      padding: 5px 11px;
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      cursor: pointer;
+      border-radius: 3px;
+      font-family: inherit;
+    }
+    header button.head-btn:hover { color: var(--text-1); border-color: var(--info); }
+    .wrap { padding: 16px 20px; max-width: 1400px; margin: 0 auto; }
     .stats {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -64,19 +75,70 @@
       border-radius: 5px;
       padding: 10px 12px;
     }
-    .stat-card .k {
-      font-size: 10px;
-      letter-spacing: 0.15em;
-      color: var(--text-3);
-      text-transform: uppercase;
-    }
-    .stat-card .v {
-      font-size: 18px;
-      font-weight: 600;
-      margin-top: 4px;
-    }
+    .stat-card .k { font-size: 10px; letter-spacing: 0.15em; color: var(--text-3); text-transform: uppercase; }
+    .stat-card .v { font-size: 18px; font-weight: 600; margin-top: 4px; }
     .stat-card .v.pos { color: var(--accent); }
     .stat-card .v.neg { color: var(--loss); }
+
+    /* admin section — 다른 사용자 조회 */
+    .admin-section {
+      background: rgba(96, 165, 250, 0.06);
+      border: 1px solid rgba(96, 165, 250, 0.35);
+      border-radius: 5px;
+      padding: 10px 12px;
+      margin-bottom: 14px;
+      display: none;
+    }
+    .admin-section.show { display: block; }
+    .admin-section .as-title {
+      font-size: 10px;
+      letter-spacing: 0.15em;
+      color: var(--info);
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .admin-section .as-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .admin-section input, .admin-section select {
+      background: var(--bg);
+      border: 1px solid var(--line);
+      color: var(--text-1);
+      padding: 6px 10px;
+      font-size: 12px;
+      border-radius: 4px;
+      font-family: inherit;
+    }
+    .admin-section input { min-width: 240px; letter-spacing: 0.05em; }
+    .admin-section button {
+      background: rgba(96, 165, 250, 0.15);
+      border: 1px solid rgba(96, 165, 250, 0.45);
+      color: var(--info);
+      padding: 6px 14px;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      cursor: pointer;
+      border-radius: 4px;
+      font-family: inherit;
+    }
+    .admin-section button.danger {
+      background: rgba(251, 113, 133, 0.10);
+      border-color: rgba(251, 113, 133, 0.45);
+      color: var(--loss);
+    }
+    .admin-section .current-target {
+      color: var(--info);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      padding: 4px 10px;
+      background: rgba(96, 165, 250, 0.10);
+      border-radius: 3px;
+    }
+    .admin-section .current-target.mine { color: var(--text-2); background: transparent; }
+
     .controls {
       display: flex;
       flex-wrap: wrap;
@@ -84,8 +146,7 @@
       margin-bottom: 12px;
       align-items: center;
     }
-    .controls select,
-    .controls input {
+    .controls select, .controls input {
       background: var(--surface);
       border: 1px solid var(--line);
       color: var(--text-1);
@@ -111,6 +172,7 @@
       border-color: rgba(52, 211, 153, 0.50);
       color: var(--accent);
     }
+
     table {
       width: 100%;
       border-collapse: collapse;
@@ -120,9 +182,7 @@
       overflow: hidden;
       font-size: 12px;
     }
-    thead {
-      background: var(--surface-2);
-    }
+    thead { background: var(--surface-2); }
     th, td {
       padding: 8px 10px;
       text-align: left;
@@ -135,7 +195,17 @@
       text-transform: uppercase;
       font-weight: 500;
     }
-    tbody tr:hover { background: var(--surface-2); }
+    tbody tr.row { cursor: pointer; }
+    tbody tr.row:hover { background: var(--surface-2); }
+    tbody tr.row.expanded { background: var(--surface-2); }
+    tbody tr.row.expanded td:first-child::before {
+      content: "▾ ";
+      color: var(--info);
+    }
+    tbody tr.row td:first-child::before {
+      content: "▸ ";
+      color: var(--text-3);
+    }
     .pnl-pos { color: var(--accent); }
     .pnl-neg { color: var(--loss); }
     .dir-long { color: var(--accent); }
@@ -148,7 +218,7 @@
       letter-spacing: 0.1em;
       text-transform: uppercase;
     }
-    .ev-entry { background: rgba(96, 165, 250, 0.20); color: #60a5fa; }
+    .ev-entry { background: rgba(96, 165, 250, 0.20); color: var(--info); }
     .ev-sl_hit { background: rgba(251, 113, 133, 0.20); color: var(--loss); }
     .ev-tp_hit { background: rgba(52, 211, 153, 0.20); color: var(--accent); }
     .ev-flip_close, .ev-flip_open { background: rgba(251, 191, 36, 0.20); color: var(--warn); }
@@ -156,53 +226,179 @@
       background: rgba(106, 106, 106, 0.20);
       color: var(--text-2);
     }
-    .empty {
-      text-align: center;
-      padding: 40px;
+    .empty { text-align: center; padding: 40px; color: var(--text-3); font-size: 12px; }
+
+    /* row expand — 진입/청산 컨텍스트 풀 노출 */
+    tr.detail-row > td { padding: 0; border: 0; }
+    .detail-box {
+      background: #0e0e0e;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      padding: 14px 18px;
+    }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px 18px;
+      margin-bottom: 10px;
+    }
+    .d-cell { display: flex; flex-direction: column; gap: 2px; }
+    .d-cell .dk {
+      font-size: 9px;
+      letter-spacing: 0.15em;
       color: var(--text-3);
+      text-transform: uppercase;
+    }
+    .d-cell .dv {
       font-size: 12px;
+      color: var(--text-1);
+      font-family: ui-monospace, SFMono-Regular, monospace;
     }
-    .pagination {
-      display: flex;
-      justify-content: center;
-      gap: 8px;
-      margin-top: 14px;
-      align-items: center;
+    .d-cell .dv.pos { color: var(--accent); }
+    .d-cell .dv.neg { color: var(--loss); }
+    .d-cell .dv.warn { color: var(--warn); }
+    .detail-section-title {
+      font-size: 10px;
+      letter-spacing: 0.15em;
+      color: var(--text-3);
+      text-transform: uppercase;
+      margin: 10px 0 6px;
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--line);
     }
-    .pagination button {
-      background: var(--surface);
+    .conf-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+    .conf-chip {
+      font-size: 10px;
+      padding: 2px 8px;
+      background: rgba(52, 211, 153, 0.12);
+      color: var(--accent);
+      border-radius: 3px;
+      letter-spacing: 0.05em;
+    }
+    .raw-json {
+      background: var(--bg);
       border: 1px solid var(--line);
+      border-radius: 3px;
+      padding: 8px 10px;
+      font-size: 10.5px;
       color: var(--text-2);
-      padding: 5px 12px;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 200px;
+      overflow: auto;
+    }
+
+    /* admin login modal */
+    .modal-bg {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.78);
+      display: none; align-items: center; justify-content: center;
+      z-index: 200;
+    }
+    .modal-bg.show { display: flex; }
+    .modal-box {
+      background: var(--surface);
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      padding: 18px 20px;
+      width: 90%;
+      max-width: 420px;
+    }
+    .modal-box h2 { margin: 0 0 8px; font-size: 14px; letter-spacing: 0.05em; }
+    .modal-box .hint { color: var(--text-3); font-size: 11px; line-height: 1.5; margin-bottom: 12px; }
+    .modal-box input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--line);
+      color: var(--text-1);
+      padding: 8px 10px;
+      font-size: 12px;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      letter-spacing: 0.03em;
+    }
+    .modal-box .modal-actions {
+      display: flex; gap: 8px; margin-top: 12px;
+    }
+    .modal-box button {
+      background: var(--surface-2);
+      border: 1px solid var(--line-strong);
+      color: var(--text-1);
+      padding: 7px 14px;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      cursor: pointer;
+      border-radius: 4px;
+      font-family: inherit;
+    }
+    .modal-box button.primary {
+      background: rgba(96, 165, 250, 0.18);
+      border-color: rgba(96, 165, 250, 0.55);
+      color: var(--info);
+    }
+    .modal-box .err { color: var(--loss); font-size: 11px; margin-top: 6px; min-height: 14px; }
+
+    .toast {
+      position: fixed; bottom: 20px; right: 20px;
+      padding: 10px 16px;
+      background: var(--surface);
+      border: 1px solid var(--line-strong);
+      color: var(--text-1);
+      border-radius: 4px;
       font-size: 11px;
       letter-spacing: 0.05em;
-      cursor: pointer;
-      border-radius: 3px;
+      display: none;
+      z-index: 300;
     }
-    .pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
-    .pagination .page-info { color: var(--text-3); font-size: 11px; }
+    .toast.error {
+      background: rgba(251, 113, 133, 0.12);
+      border-color: rgba(251, 113, 133, 0.45);
+      color: var(--loss);
+    }
     @media (max-width: 640px) {
       th, td { padding: 6px 6px; font-size: 11px; }
       th:nth-child(8), td:nth-child(8) { display: none; }
+      .admin-section input { min-width: 0; flex: 1; }
     }
   </style>
 </head>
 <body>
   <header>
     <h1>매매 기록 · Aurora-ICT</h1>
-    <a href="/ui/" class="back">← 봇 화면</a>
+    <div class="head-right">
+      <span class="admin-state" id="admin-state">user</span>
+      <button class="head-btn" id="btn-admin-login">Admin 로그인</button>
+      <button class="head-btn" id="btn-admin-logout" style="display:none">Admin 로그아웃</button>
+      <a href="/ui/" class="back">← 봇 화면</a>
+    </div>
   </header>
 
   <div class="wrap">
+    <!-- Admin 전용 — 다른 사용자 조회 / DB 재빌드 -->
+    <div class="admin-section" id="admin-section">
+      <div class="as-title">Admin · 다른 사용자 조회</div>
+      <div class="as-controls">
+        <input id="target-code" type="text" placeholder="AICT-XXXX-XXXX-XXXX" />
+        <select id="target-dropdown">
+          <option value="">-- 사용자 선택 --</option>
+        </select>
+        <button id="btn-load-target">조회</button>
+        <button id="btn-clear-target">본인으로</button>
+        <button id="btn-rebuild" class="danger">SQLite 재빌드</button>
+        <span class="current-target mine" id="current-target">본인 거래</span>
+      </div>
+    </div>
+
     <div class="stats" id="stats"></div>
 
     <div class="controls">
       <label style="color:var(--text-3);font-size:11px">기간</label>
       <select id="f-period">
         <option value="86400000">24시간</option>
-        <option value="604800000" selected>최근 7일</option>
+        <option value="604800000">최근 7일</option>
         <option value="2592000000">최근 30일</option>
-        <option value="0">전체</option>
+        <option value="0" selected>전체</option>
       </select>
       <label style="color:var(--text-3);font-size:11px">유형</label>
       <select id="f-event">
@@ -219,9 +415,9 @@
       <label style="color:var(--text-3);font-size:11px">행 수</label>
       <select id="f-limit">
         <option value="50">50</option>
-        <option value="200" selected>200</option>
+        <option value="200">200</option>
         <option value="500">500</option>
-        <option value="2000">2000</option>
+        <option value="2000" selected>2000</option>
       </select>
       <button id="btn-refresh">새로고침</button>
       <button id="btn-csv" class="accent">CSV 다운로드</button>
@@ -246,8 +442,36 @@
     </table>
   </div>
 
+  <!-- Admin 로그인 모달 -->
+  <div class="modal-bg" id="modal-bg">
+    <div class="modal-box">
+      <h2>Admin 로그인</h2>
+      <p class="hint">
+        Fly secret <b>AURORA_ICT_ADMIN_TOKEN</b> 의 값을 그대로 입력하세요.<br/>
+        통과 시 HttpOnly 쿠키로 저장되어 다음 접속까지 자동 유지됩니다 (30일).<br/>
+        — 텔레그램 admin 봇과 같은 토큰입니다.
+      </p>
+      <input id="admin-token" type="password" autocomplete="off"
+             placeholder="X-Admin-Token (긴 비밀 문자열)" />
+      <div class="err" id="modal-err"></div>
+      <div class="modal-actions">
+        <button id="btn-modal-cancel">취소</button>
+        <button id="btn-modal-login" class="primary">로그인</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
   <script>
-    // 2026-05-29: 매매 기록 페이지 — /ict/trades 조회, KST 변환, CSV 다운로드.
+    // ============================================================
+    // 매매 기록 페이지 v2 (2026-05-29)
+    //   · admin token 모달 로그인 → HttpOnly 쿠키 → admin endpoints
+    //   · 다른 사용자 코드 조회 (admin 만)
+    //   · 행 클릭 시 아래 expand — context_json 풀어서 진입 사유 + 당시 봇 판단
+    //   · SQLite 재빌드 (admin 만, JSONL → trades.db 정합 복구)
+    // ============================================================
+
     const $ = (id) => document.getElementById(id);
     const fmt = (n, d = 2) => (n == null || isNaN(n)) ? "—" : Number(n).toFixed(d);
     const fmtTs = (ms) => {
@@ -257,17 +481,157 @@
       return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
              `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
     };
+    const escapeHtml = (s) => String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
-    async function api(path) {
-      const r = await fetch(path, { credentials: "include" });
+    let isAdmin = false;       // /admin/session 결과
+    let targetCode = null;     // null = 본인, 그 외 = admin 으로 조회 중인 사용자
+    let lastRows = [];         // 현재 표 데이터 (행 클릭 expand 용)
+
+    function toast(msg, isErr = false) {
+      const el = $("toast");
+      el.textContent = msg;
+      el.className = "toast" + (isErr ? " error" : "");
+      el.style.display = "block";
+      setTimeout(() => { el.style.display = "none"; }, 2500);
+    }
+
+    async function api(path, opts = {}) {
+      const r = await fetch(path, { credentials: "include", ...opts });
       if (r.status === 401) {
-        location.href = "/ui/";
-        throw new Error("unauthorized");
+        // /ict/trades 401 = 봇 로그인 안 됨 → 메인으로
+        if (path.startsWith("/ict/")) location.href = "/ui/";
+        throw new Error("401 unauthorized");
       }
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      if (!r.ok) {
+        let detail = "";
+        try { detail = (await r.json()).detail || ""; } catch (e) {}
+        throw new Error(`HTTP ${r.status}${detail ? " — " + detail : ""}`);
+      }
       return await r.json();
     }
 
+    // ============================================================
+    // Admin 인증
+    // ============================================================
+    async function checkAdminSession() {
+      try {
+        const r = await api("/admin/session");
+        isAdmin = !!r.authenticated;
+      } catch (e) { isAdmin = false; }
+      $("admin-state").textContent = isAdmin ? "admin" : "user";
+      $("admin-state").className = "admin-state" + (isAdmin ? " on" : "");
+      $("btn-admin-login").style.display = isAdmin ? "none" : "";
+      $("btn-admin-logout").style.display = isAdmin ? "" : "none";
+      $("admin-section").classList.toggle("show", isAdmin);
+      if (isAdmin) await loadUserDropdown();
+    }
+
+    async function loadUserDropdown() {
+      try {
+        const r = await api("/admin/users");
+        const sel = $("target-dropdown");
+        sel.innerHTML = '<option value="">-- 사용자 선택 --</option>' +
+          (r.users || []).map((c) =>
+            `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`,
+          ).join("");
+      } catch (e) { /* 무시 */ }
+    }
+
+    $("btn-admin-login").onclick = () => {
+      $("admin-token").value = "";
+      $("modal-err").textContent = "";
+      $("modal-bg").classList.add("show");
+      setTimeout(() => $("admin-token").focus(), 50);
+    };
+    $("btn-modal-cancel").onclick = () => $("modal-bg").classList.remove("show");
+    $("btn-modal-login").onclick = async () => {
+      const token = $("admin-token").value.trim();
+      if (!token) {
+        $("modal-err").textContent = "토큰을 입력하세요.";
+        return;
+      }
+      $("modal-err").textContent = "";
+      try {
+        await fetch("/admin/login", {
+          method: "POST",
+          credentials: "include",
+          headers: { "X-Admin-Token": token },
+        }).then(async (r) => {
+          if (!r.ok) {
+            let d = "";
+            try { d = (await r.json()).detail || ""; } catch(e) {}
+            throw new Error(`HTTP ${r.status}${d ? " — " + d : ""}`);
+          }
+        });
+        $("modal-bg").classList.remove("show");
+        toast("Admin 로그인 완료");
+        await checkAdminSession();
+        await load();
+      } catch (e) {
+        $("modal-err").textContent = "로그인 실패 — " + e.message;
+      }
+    };
+    $("admin-token").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") $("btn-modal-login").click();
+    });
+    $("btn-admin-logout").onclick = async () => {
+      try {
+        await fetch("/admin/logout", { method: "POST", credentials: "include" });
+        toast("Admin 로그아웃");
+        targetCode = null;
+        $("current-target").textContent = "본인 거래";
+        $("current-target").className = "current-target mine";
+        await checkAdminSession();
+        await load();
+      } catch (e) { toast(e.message, true); }
+    };
+
+    // ============================================================
+    // Admin 다른 사용자 조회
+    // ============================================================
+    $("btn-load-target").onclick = async () => {
+      const code = $("target-code").value.trim().toUpperCase()
+        || $("target-dropdown").value;
+      if (!code) { toast("코드를 입력하거나 선택하세요.", true); return; }
+      targetCode = code;
+      $("current-target").textContent = "조회 중: " + code;
+      $("current-target").className = "current-target";
+      await load();
+    };
+    $("btn-clear-target").onclick = async () => {
+      targetCode = null;
+      $("target-code").value = "";
+      $("target-dropdown").value = "";
+      $("current-target").textContent = "본인 거래";
+      $("current-target").className = "current-target mine";
+      await load();
+    };
+    $("btn-rebuild").onclick = async () => {
+      const code = targetCode || prompt("재빌드할 사용자 코드를 입력하세요:");
+      if (!code) return;
+      if (!confirm(
+        `${code} 의 trades.db 를 trades.jsonl 기준으로 재생성합니다.\n` +
+        "기존 db row 는 전부 삭제 후 jsonl 전체를 다시 insert합니다.\n계속?",
+      )) return;
+      try {
+        const r = await fetch(
+          `/admin/trades/rebuild?user_code=${encodeURIComponent(code)}`,
+          { method: "POST", credentials: "include" },
+        ).then((res) => res.json());
+        if (r.ok) {
+          toast(`재빌드 완료 — ${r.inserted_count} 건`);
+          await load();
+        } else {
+          toast(`재빌드 실패 — ${r.reason}`, true);
+        }
+      } catch (e) { toast(e.message, true); }
+    };
+
+    // ============================================================
+    // 데이터 로드
+    // ============================================================
     function renderStats(stats) {
       const root = $("stats");
       const cards = [
@@ -285,30 +649,184 @@
       ).join("");
     }
 
+    function rowHtml(r, idx) {
+      const pnlCls = r.pnl_usdt == null ? "" :
+        (r.pnl_usdt >= 0 ? "pnl-pos" : "pnl-neg");
+      const pnlTxt = r.pnl_usdt == null ? "—" :
+        `${r.pnl_usdt >= 0 ? "+" : ""}${fmt(r.pnl_usdt)}`;
+      const dirCls = r.direction === "long" ? "dir-long" :
+                     (r.direction === "short" ? "dir-short" : "");
+      return `<tr class="row" data-idx="${idx}">
+        <td>${fmtTs(r.ts_ms)}</td>
+        <td><span class="ev ev-${escapeHtml(r.event_type)}">${escapeHtml(r.event_type)}</span></td>
+        <td class="${dirCls}">${escapeHtml(r.direction || "—")}</td>
+        <td>${escapeHtml(r.symbol || "—")}</td>
+        <td>${fmt(r.price, 2)}</td>
+        <td>${fmt(r.qty, 4)}</td>
+        <td class="${pnlCls}">${pnlTxt}</td>
+        <td style="color:var(--text-3);font-size:10px">${escapeHtml(r.reason || "")}</td>
+      </tr>`;
+    }
+
     function renderRows(rows) {
+      lastRows = rows || [];
       const tbody = $("rows");
       if (!rows || rows.length === 0) {
         tbody.innerHTML = `<tr><td colspan="8" class="empty">데이터 없음</td></tr>`;
         return;
       }
-      tbody.innerHTML = rows.map((r) => {
-        const pnlCls = r.pnl_usdt == null ? "" :
-          (r.pnl_usdt >= 0 ? "pnl-pos" : "pnl-neg");
-        const pnlTxt = r.pnl_usdt == null ? "—" :
-          `${r.pnl_usdt >= 0 ? "+" : ""}${fmt(r.pnl_usdt)}`;
-        const dirCls = r.direction === "long" ? "dir-long" :
-                       (r.direction === "short" ? "dir-short" : "");
-        return `<tr>
-          <td>${fmtTs(r.ts_ms)}</td>
-          <td><span class="ev ev-${r.event_type}">${r.event_type}</span></td>
-          <td class="${dirCls}">${r.direction || "—"}</td>
-          <td>${r.symbol || "—"}</td>
-          <td>${fmt(r.price, 2)}</td>
-          <td>${fmt(r.qty, 4)}</td>
-          <td class="${pnlCls}">${pnlTxt}</td>
-          <td style="color:var(--text-3);font-size:10px">${r.reason || ""}</td>
-        </tr>`;
-      }).join("");
+      tbody.innerHTML = rows.map((r, i) => rowHtml(r, i)).join("");
+    }
+
+    // 행 클릭 → 아래 detail-row 토글 (진입 사유 + 당시 봇 판단)
+    $("rows").addEventListener("click", (e) => {
+      const tr = e.target.closest("tr.row");
+      if (!tr) return;
+      const idx = parseInt(tr.dataset.idx, 10);
+      const r = lastRows[idx];
+      if (!r) return;
+      // 이미 열려있으면 토글로 닫음
+      const next = tr.nextElementSibling;
+      if (next && next.classList.contains("detail-row")) {
+        next.remove();
+        tr.classList.remove("expanded");
+        return;
+      }
+      // 다른 expand 닫기 (한 번에 하나만)
+      document.querySelectorAll("tr.detail-row").forEach((x) => x.remove());
+      document.querySelectorAll("tr.row.expanded").forEach((x) =>
+        x.classList.remove("expanded"),
+      );
+      tr.classList.add("expanded");
+      const detailTr = document.createElement("tr");
+      detailTr.className = "detail-row";
+      detailTr.innerHTML = `<td colspan="8"><div class="detail-box">${detailHtml(r)}</div></td>`;
+      tr.parentNode.insertBefore(detailTr, tr.nextSibling);
+    });
+
+    function dCell(k, v, cls = "") {
+      return `<div class="d-cell"><div class="dk">${escapeHtml(k)}</div>` +
+        `<div class="dv ${cls}">${escapeHtml(v)}</div></div>`;
+    }
+
+    function detailHtml(r) {
+      let ctx = {};
+      try { if (r.context_json) ctx = JSON.parse(r.context_json); } catch (e) { ctx = {}; }
+      const isEntry = r.event_type === "entry" || r.event_type === "flip_open";
+      const isClose = ["sl_hit", "tp_hit", "flip_close", "sync_close", "manual_close"]
+        .includes(r.event_type);
+      let html = "";
+
+      // 공통 — 이벤트 기본 정보
+      html += `<div class="detail-section-title">이벤트</div>`;
+      html += `<div class="detail-grid">`;
+      html += dCell("시각 (KST)", fmtTs(r.ts_ms));
+      html += dCell("유형", r.event_type);
+      html += dCell("방향", r.direction || "—",
+        r.direction === "long" ? "pos" : (r.direction === "short" ? "neg" : ""));
+      html += dCell("심볼", r.symbol || "—");
+      html += dCell("가격", fmt(r.price, 2));
+      html += dCell("수량", fmt(r.qty, 4));
+      if (r.pnl_usdt != null) {
+        html += dCell(
+          "실현 PnL (USDT)",
+          (r.pnl_usdt >= 0 ? "+" : "") + fmt(r.pnl_usdt),
+          r.pnl_usdt >= 0 ? "pos" : "neg",
+        );
+      }
+      if (r.reason) html += dCell("사유", r.reason);
+      if (r.setup_ts_ms) html += dCell("setup ts", String(r.setup_ts_ms));
+      html += `</div>`;
+
+      // 진입 컨텍스트 — _build_entry_context_json 결과
+      if (isEntry && (ctx.entry != null || ctx.confluences)) {
+        html += `<div class="detail-section-title">진입 사유 (당시 봇 판단)</div>`;
+        html += `<div class="detail-grid">`;
+        if (ctx.entry != null) html += dCell("진입가", fmt(ctx.entry, 2));
+        if (ctx.sl != null) html += dCell("SL", fmt(ctx.sl, 2));
+        if (ctx.tp != null) html += dCell("TP", fmt(ctx.tp, 2));
+        if (ctx.qty != null) html += dCell("수량", fmt(ctx.qty, 4));
+        if (ctx.leverage != null) html += dCell("레버리지", ctx.leverage + "x");
+        if (ctx.rr != null) html += dCell("RR", fmt(ctx.rr, 2));
+        if (ctx.score != null) html += dCell("Confluence Score", String(ctx.score));
+        if (ctx.source) html += dCell("Source", ctx.source);
+        if (ctx.window) html += dCell("Window", ctx.window);
+        html += `</div>`;
+        if (Array.isArray(ctx.confluences) && ctx.confluences.length) {
+          html += `<div class="detail-section-title">Confluences (작동한 지표)</div>`;
+          html += `<div class="conf-chips">` +
+            ctx.confluences.map((c) =>
+              `<span class="conf-chip">${escapeHtml(c)}</span>`,
+            ).join("") + `</div>`;
+        }
+        if (ctx.htf_flip_target_armed && ctx.htf_flip_target) {
+          html += `<div class="detail-section-title">HTF Flip Target (반대 zone 감시)</div>`;
+          html += `<div class="detail-grid">`;
+          html += dCell("TF", ctx.htf_flip_target.tf || "—");
+          html += dCell("가중치", String(ctx.htf_flip_target.weight || 0));
+          html += dCell("low", fmt(ctx.htf_flip_target.low, 2));
+          html += dCell("high", fmt(ctx.htf_flip_target.high, 2));
+          html += `</div>`;
+        }
+      }
+
+      // 청산 컨텍스트 — _build_close_context_json 결과
+      if (isClose && (ctx.close_price != null || ctx.htf_fvg_bull_weight != null)) {
+        html += `<div class="detail-section-title">청산 시점 봇 판단 스냅샷</div>`;
+        html += `<div class="detail-grid">`;
+        if (ctx.entry_price != null) html += dCell("진입가", fmt(ctx.entry_price, 2));
+        if (ctx.close_price != null) html += dCell("청산가", fmt(ctx.close_price, 2));
+        if (ctx.move_pct != null) {
+          html += dCell(
+            "가격 변화 (%)",
+            (ctx.move_pct >= 0 ? "+" : "") + fmt(ctx.move_pct, 4) + "%",
+            ctx.move_pct >= 0 ? "pos" : "neg",
+          );
+        }
+        if (ctx.pnl_usd != null) {
+          html += dCell(
+            "실현 PnL",
+            (ctx.pnl_usd >= 0 ? "+" : "") + fmt(ctx.pnl_usd, 2),
+            ctx.pnl_usd >= 0 ? "pos" : "neg",
+          );
+        }
+        if (ctx.close_reason) html += dCell("청산 사유", ctx.close_reason);
+        if (ctx.killzone) html += dCell("Killzone", ctx.killzone);
+        if (ctx.ema_bias_last) html += dCell("EMA bias", ctx.ema_bias_last);
+        if (ctx.dol_draw_last) html += dCell("DOL draw", ctx.dol_draw_last);
+        if (ctx.htf_fvg_bull_weight != null) {
+          html += dCell("HTF FVG bull weight", String(ctx.htf_fvg_bull_weight),
+            ctx.htf_fvg_bull_weight > (ctx.htf_fvg_bear_weight || 0) ? "pos" : "");
+        }
+        if (ctx.htf_fvg_bear_weight != null) {
+          html += dCell("HTF FVG bear weight", String(ctx.htf_fvg_bear_weight),
+            ctx.htf_fvg_bear_weight > (ctx.htf_fvg_bull_weight || 0) ? "neg" : "");
+        }
+        if (ctx.htf_fvg_n != null) html += dCell("HTF FVG 개수", String(ctx.htf_fvg_n));
+        html += `</div>`;
+        if (ctx.diagnostics) {
+          const d = ctx.diagnostics;
+          html += `<div class="detail-section-title">청산 시점 봇 진단 카운터</div>`;
+          html += `<div class="detail-grid">`;
+          html += dCell("recovery_failed", String(!!d.recovery_failed),
+            d.recovery_failed ? "warn" : "");
+          html += dCell("sync_failure_streak", String(d.sync_failure_streak || 0),
+            (d.sync_failure_streak || 0) > 0 ? "warn" : "");
+          html += dCell("order_failure_count", String(d.order_failure_count || 0),
+            (d.order_failure_count || 0) > 0 ? "warn" : "");
+          html += `</div>`;
+        }
+      }
+
+      // raw context_json — 디버그/풀 분석용
+      if (r.context_json) {
+        html += `<div class="detail-section-title">Raw context_json</div>`;
+        let pretty = r.context_json;
+        try { pretty = JSON.stringify(JSON.parse(r.context_json), null, 2); }
+        catch (e) {}
+        html += `<div class="raw-json">${escapeHtml(pretty)}</div>`;
+      }
+      return html;
     }
 
     async function load() {
@@ -319,13 +837,22 @@
       const params = new URLSearchParams({ limit: String(limit) });
       if (since > 0) params.set("since_ms", String(since));
       if (event) params.set("event_type", event);
+      // admin + target 지정 시 /admin/trades, 아니면 /ict/trades
+      let url;
+      if (isAdmin && targetCode) {
+        params.set("user_code", targetCode);
+        url = "/admin/trades?" + params.toString();
+      } else {
+        url = "/ict/trades?" + params.toString();
+      }
       try {
-        const data = await api("/ict/trades?" + params.toString());
+        const data = await api(url);
         renderStats(data.stats || {});
         renderRows(data.trades || []);
       } catch (e) {
         $("rows").innerHTML = `<tr><td colspan="8" class="empty">` +
-          `로딩 실패 — ${e.message}</td></tr>`;
+          `로딩 실패 — ${escapeHtml(e.message)}</td></tr>`;
+        toast(e.message, true);
       }
     }
 
@@ -340,8 +867,13 @@
       const params = new URLSearchParams();
       if (since > 0) params.set("since_ms", String(since));
       if (event) params.set("event_type", event);
-      const url = "/ict/trades/export?" + params.toString();
-      // a 태그 동적 생성 → Content-Disposition 헤더로 파일명 자동 적용.
+      let url;
+      if (isAdmin && targetCode) {
+        params.set("user_code", targetCode);
+        url = "/admin/trades/export?" + params.toString();
+      } else {
+        url = "/ict/trades/export?" + params.toString();
+      }
       const a = document.createElement("a");
       a.href = url;
       a.download = "trades.csv";
@@ -350,7 +882,11 @@
       document.body.removeChild(a);
     };
 
-    load();
+    // 부팅
+    (async () => {
+      await checkAdminSession();
+      await load();
+    })();
   </script>
 </body>
 </html>
