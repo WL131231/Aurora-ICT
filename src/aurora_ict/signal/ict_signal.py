@@ -121,6 +121,31 @@ def generate_ict_signal(
         # anchor_idx 순 정렬 — 가장 최근 setup 이 마지막에 오게
         setups.sort(key=lambda s: s.anchor_idx)
 
+    # 2026-05-29 #MIN-SL-EXTRA fix: build_extra_source_setups (turtle/mitigation/
+    # implied/rejection) 가 min_sl_distance_pct 인자를 받지 않아 SL 거리 가드
+    # 우회됐던 버그. 새벽~오후 5건 매매 모두 source = turtle_soup / mitigation_block /
+    # implied_fvg → SL 거리 검사 자체를 받지 않아 0.13~0.18% 타이트 SL setup
+    # 통과 → 풀히트 100%. 합친 후 한 곳에서 SL 거리 가드 필터링으로 두 source
+    # 경로 모두 일관 적용.
+    if min_sl_distance_pct > 0 and setups:
+        before_n = len(setups)
+        kept = []
+        for s in setups:
+            entry_v = float(getattr(s, "entry", 0.0) or 0.0)
+            sl_v = float(getattr(s, "stop_loss", 0.0) or 0.0)
+            if entry_v <= 0 or sl_v <= 0:
+                continue
+            if (abs(entry_v - sl_v) / entry_v) >= min_sl_distance_pct:
+                kept.append(s)
+        setups = kept
+        if len(setups) != before_n:
+            # 운영 로그 — 어떤 source 가 필터링됐는지 다음 단계 grep 가능.
+            import logging as _log
+            _log.getLogger(__name__).info(
+                "min_sl_distance_pct=%.4f 가드로 %d→%d setup 필터링",
+                min_sl_distance_pct, before_n, len(setups),
+            )
+
     if not setups:
         return ICTSignal(
             action=SignalAction.NO_ACTION,
