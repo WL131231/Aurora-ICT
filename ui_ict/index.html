@@ -476,9 +476,11 @@
   }
 
   /* 우상단 햄버거 토글 — 우측 P&L 패널 접기/펴기
-     2026-05-27: 파트너 피드백 — 햄버거가 좌측 사이드바가 아니라 우측 P&L 패널을 토글해야 함 */
+     2026-05-27: 파트너 피드백 — 햄버거가 좌측 사이드바가 아니라 우측 P&L 패널을 토글해야 함
+     2026-05-29 v2: position absolute → fixed 로 변경 (파트너 요청: 화면 진짜 우상단).
+     parent (chart-wrap) 의 우상단이 아니라 viewport 우상단 (P&L 패널 너머). */
   .sidebar-toggle {
-    position: absolute; top: 10px; right: 12px;
+    position: fixed; top: 10px; right: 12px;
     width: 32px; height: 28px;
     background: rgba(20,20,25,0.85);
     border: 1px solid var(--line);
