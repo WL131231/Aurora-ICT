@@ -507,6 +507,14 @@ function renderStatus(s) {
   document.querySelectorAll("#trade-tf-toggle button").forEach((b) => {
     b.classList.toggle("active", b.dataset.tradeTf === s.timeframe);
   });
+
+  // 2026-05-29 PR C: 페어 토글 active = status.running_symbols 기준.
+  // PR B 에서 status 응답에 running_symbols 필드 추가. fetchAndRender 가
+  // status 갱신할 때마다 페어 토글도 즉시 동기화 → 다른 탭 / fly 재시작 후에도
+  // 정확한 가동 상태 표시.
+  if (Array.isArray(s.running_symbols)) {
+    _updatePairButtonsFromRunning(new Set(s.running_symbols));
+  }
 }
 
 // ============================================================
@@ -789,14 +797,35 @@ $("btn-start").onclick = async () => {
   // 2026-05-27: 즉시 시각 응답 — fetchAndRender 까지 기다리지 않고 클릭 직후 active.
   $("btn-start").classList.add("active");
   $("btn-stop").classList.remove("active");
-  try { await api("/ict/start", "POST"); toast("봇 시작됨"); await fetchAndRender(); }
+  // 2026-05-29 PR C: START = "현재 차트에 보이는 페어" 가동 (default BTC).
+  // 다른 페어 (ETH 등) 도 가동하려면 사이드바 페어 토글로 별도 클릭.
+  try { await api("/ict/start", "POST"); toast("봇 시작됨"); await fetchAndRender(); await refreshRunningPairs(); }
   catch (e) { toast(e.message, true); }
 };
 $("btn-stop").onclick = async () => {
   // 2026-05-27: STOP 클릭 즉시 빨간 glow 표시. /ict/stop 가 pending 미체결 자동 취소.
   $("btn-stop").classList.add("active");
   $("btn-start").classList.remove("active");
-  try { await api("/ict/stop", "POST"); toast("봇 중지됨"); await fetchAndRender(); }
+  // 2026-05-29 PR C: STOP = 사용자의 모든 가동 중 페어 일괄 정지. BTC + ETH 동시
+  // 가동 중이었어도 한 번에 정지. 부분 정지는 페어 토글 사용.
+  try {
+    const r = await api("/ict/running-pairs");
+    const running = (r.running_symbols || []);
+    if (running.length === 0) {
+      // 가동 중 페어 없으면 BTC default 로 stop 호출 (멱등, DB 정리만).
+      await api("/ict/stop", "POST");
+    } else {
+      // 페어별 정지 — 동시 발사 (Promise.all 로 빠르게).
+      await Promise.all(
+        running.map((sym) =>
+          api(`/ict/stop?symbol=${encodeURIComponent(sym)}`, "POST"),
+        ),
+      );
+    }
+    toast("봇 중지됨");
+    await fetchAndRender();
+    await refreshRunningPairs();
+  }
   catch (e) { toast(e.message, true); }
 };
 
@@ -1326,53 +1355,76 @@ $("viz-toggle").addEventListener("click", _handleVizClick);
 const _vizToggleSide = $("viz-toggle-side");
 if (_vizToggleSide) _vizToggleSide.addEventListener("click", _handleVizClick);
 
-// 2026-05-29 v2: 사이드바 페어 선택 (BTC/ETH 복수 가능).
-// 현재는 UI 상태만 — 백엔드 multi-pair 지원은 PR B (다음 라운드).
-// 적어도 1개는 active 유지 (둘 다 끄면 마지막 클릭 무시).
-const _SELECTED_PAIRS_KEY = "aurora_ict_selected_pairs";
-function _loadSelectedPairs() {
-  try {
-    const raw = localStorage.getItem(_SELECTED_PAIRS_KEY);
-    if (!raw) return ["BTCUSDT"];
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr) && arr.length > 0) return arr;
-  } catch (e) {}
-  return ["BTCUSDT"];
-}
-function _saveSelectedPairs(arr) {
-  try { localStorage.setItem(_SELECTED_PAIRS_KEY, JSON.stringify(arr)); }
-  catch (e) {}
-}
-function _updatePairButtons() {
-  const sel = new Set(_loadSelectedPairs());
+// 2026-05-29 PR C: 사이드바 페어 토글 — 즉시 가동/정지.
+//
+// 동작:
+//   - active 표시는 백엔드의 running_symbols 가 진실값. localStorage 의 cache 만.
+//   - 클릭 → 가동 중이면 /ict/stop?symbol=... 으로 정지, 미가동이면 /ict/start?symbol=...
+//   - 가동 실패 (LIVE 키 미등록 등) 시 active 안 박힘 (백엔드 status 따라감).
+//   - 페어 토글로 모든 페어 끌 수 있음 — 봇 자체 정지와 동일 효과 (마지막 1개 보호 X).
+//
+// UI 페어 ID (data-pair="BTCUSDT") ↔ ccxt symbol (BTC/USDT:USDT) 매핑.
+// 백엔드는 ccxt unified format 사용, UI 는 깔끔하게 표시하기 위해 별도.
+const _PAIR_TO_SYMBOL = {
+  "BTCUSDT": "BTC/USDT:USDT",
+  "ETHUSDT": "ETH/USDT:USDT",
+};
+
+function _updatePairButtonsFromRunning(runningSet) {
   document.querySelectorAll("#pair-toggle button[data-pair]").forEach((b) => {
-    b.classList.toggle("active", sel.has(b.dataset.pair));
+    const sym = _PAIR_TO_SYMBOL[b.dataset.pair];
+    b.classList.toggle("active", runningSet.has(sym));
   });
 }
+
+/** 백엔드 running-pairs 로 페어 토글 active 동기화. */
+async function refreshRunningPairs() {
+  try {
+    const r = await api("/ict/running-pairs");
+    const running = new Set(r.running_symbols || []);
+    _updatePairButtonsFromRunning(running);
+    return running;
+  } catch (e) {
+    // 인증 게이트 등 — 토글은 그대로 둠.
+    return new Set();
+  }
+}
+
 const _pairToggle = $("pair-toggle");
 if (_pairToggle) {
-  _updatePairButtons();
-  _pairToggle.addEventListener("click", (e) => {
+  // bootstrap 1회 동기화 — 페이지 로드 직후 화면에 정확한 active 표시.
+  refreshRunningPairs();
+  _pairToggle.addEventListener("click", async (e) => {
     const btn = e.target.closest("button[data-pair]");
     if (!btn) return;
-    const sel = new Set(_loadSelectedPairs());
     const pair = btn.dataset.pair;
-    if (sel.has(pair)) {
-      // 마지막 1개 보호 — 둘 다 끄지 못하게.
-      if (sel.size <= 1) {
-        toast("페어는 최소 1개 선택 — 다른 페어를 먼저 활성화", true);
-        return;
+    const symbol = _PAIR_TO_SYMBOL[pair];
+    if (!symbol) return;
+    const isActive = btn.classList.contains("active");
+    // 즉시 시각 응답 — 백엔드 응답 기다리지 않고 토글 상태 반영.
+    // 실패 시 refreshRunningPairs() 가 진실값으로 되돌림.
+    btn.classList.toggle("active");
+    try {
+      if (isActive) {
+        await api(
+          `/ict/stop?symbol=${encodeURIComponent(symbol)}`,
+          "POST",
+        );
+        toast(`${pair} 정지`);
+      } else {
+        await api(
+          `/ict/start?symbol=${encodeURIComponent(symbol)}`,
+          "POST",
+        );
+        toast(`${pair} 가동`);
       }
-      sel.delete(pair);
-    } else {
-      sel.add(pair);
+    } catch (e2) {
+      toast(`${pair} ${isActive ? "정지" : "가동"} 실패: ${e2.message}`, true);
     }
-    _saveSelectedPairs([...sel]);
-    _updatePairButtons();
-    // TODO PR B: 선택된 페어로 백엔드 봇 인스턴스 매핑 호출.
-    toast(
-      `페어 선택: ${[...sel].join(", ")} (백엔드 multi-pair 는 다음 PR)`,
-    );
+    // 백엔드 진실값으로 토글 재동기화 (성공·실패 무관).
+    await refreshRunningPairs();
+    // 차트가 보고 있는 페어 status 도 갱신.
+    await fetchAndRender();
   });
 }
 
