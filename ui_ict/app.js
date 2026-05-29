@@ -1700,6 +1700,11 @@ if (_btnSidebarToggle) {
     } else {
       // 데스크탑 — 기존 접기/펴기.
       document.body.classList.toggle("pnl-collapsed");
+      // 2026-05-29 파트너 보고: P&L 패널 닫혀도 차트 영역에 공백.
+      // lightweight-charts 가 자체 width 가지고 있어 CSS flex 만으론 resize X.
+      // fit() 강제 호출로 chart-wrap 현재 폭에 맞춰 재계산.
+      // (CSS transition 후 호출되도록 next frame 에서.)
+      requestAnimationFrame(() => { try { fit(); } catch (e) {} });
     }
   };
 }
