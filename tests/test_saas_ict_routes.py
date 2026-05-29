@@ -601,3 +601,97 @@ def test_two_users_isolated_status(client: TestClient, mu) -> None:
 
     # c1 stop 정리.
     c1.post("/ict/stop")
+
+
+# ============================================================
+# 13. PR C — 멀티 페어 endpoint (?symbol + /ict/running-pairs)
+# ============================================================
+
+
+def test_start_with_symbol_query_starts_specified_pair(
+    client: TestClient,
+) -> None:
+    """/ict/start?symbol=ETH/USDT:USDT — ETH 슬롯 가동, BTC 는 영향 X."""
+    _register_user(client)
+    # ETH 단독 가동.
+    r = client.post("/ict/start?symbol=ETH/USDT:USDT")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["state"] == "running"
+    assert body["symbol"] == "ETH/USDT:USDT"
+
+    # running-pairs 에 ETH 만.
+    r = client.get("/ict/running-pairs")
+    assert r.status_code == 200
+    assert r.json()["running_symbols"] == ["ETH/USDT:USDT"]
+
+    # BTC status 조회 — 아직 stopped.
+    r = client.get("/ict/status?symbol=BTC/USDT:USDT")
+    assert r.status_code == 200
+    assert r.json()["state"] == "stopped"
+
+    # cleanup
+    client.post("/ict/stop?symbol=ETH/USDT:USDT")
+
+
+def test_running_pairs_lists_all_active_symbols(
+    client: TestClient,
+) -> None:
+    """/ict/running-pairs — BTC + ETH 동시 가동 시 둘 다 반환."""
+    _register_user(client)
+    # 둘 다 가동.
+    assert client.post("/ict/start?symbol=BTC/USDT:USDT").status_code == 200
+    assert client.post("/ict/start?symbol=ETH/USDT:USDT").status_code == 200
+
+    r = client.get("/ict/running-pairs")
+    assert r.status_code == 200
+    syms = set(r.json()["running_symbols"])
+    assert syms == {"BTC/USDT:USDT", "ETH/USDT:USDT"}
+
+    # BTC 만 정지 — ETH 는 그대로.
+    assert client.post("/ict/stop?symbol=BTC/USDT:USDT").status_code == 200
+    r = client.get("/ict/running-pairs")
+    assert r.json()["running_symbols"] == ["ETH/USDT:USDT"]
+
+    # cleanup
+    client.post("/ict/stop?symbol=ETH/USDT:USDT")
+
+
+def test_stop_with_symbol_query_does_not_affect_other_pair(
+    client: TestClient,
+) -> None:
+    """/ict/stop?symbol=BTC 만 정지하고 ETH 는 계속 가동."""
+    _register_user(client)
+    client.post("/ict/start?symbol=BTC/USDT:USDT")
+    client.post("/ict/start?symbol=ETH/USDT:USDT")
+
+    # BTC 만 정지.
+    r = client.post("/ict/stop?symbol=BTC/USDT:USDT")
+    assert r.status_code == 200
+
+    # BTC status = stopped, ETH status = running 유지.
+    btc = client.get("/ict/status?symbol=BTC/USDT:USDT").json()
+    eth = client.get("/ict/status?symbol=ETH/USDT:USDT").json()
+    assert btc["state"] == "stopped"
+    assert eth["state"] == "running"
+
+    # cleanup
+    client.post("/ict/stop?symbol=ETH/USDT:USDT")
+
+
+def test_running_pairs_requires_auth(client: TestClient) -> None:
+    """미인증 → 401."""
+    r = client.get("/ict/running-pairs")
+    assert r.status_code == 401
+
+
+def test_status_includes_running_symbols_field(
+    client: TestClient,
+) -> None:
+    """status 응답에 running_symbols 배열 노출 — UI 페어 토글 동기화용."""
+    _register_user(client)
+    r = client.get("/ict/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert "running_symbols" in body
+    assert isinstance(body["running_symbols"], list)

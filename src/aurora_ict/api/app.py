@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, SecretStr
@@ -247,21 +247,60 @@ def _register_multi_user_routes(
         return {"status": "ok"}
 
     @app.get("/ict/status")
-    async def status_mu(user_code: str = Depends(require_auth)) -> dict[str, Any]:
-        return await mu_manager.status(user_code)
+    async def status_mu(
+        symbol: str = Query(default=_DEFAULT_SYMBOL),
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        # 2026-05-29 PR C: ?symbol= 쿼리 — 멀티 페어 UI 가 페어별 상태 조회.
+        # 미지정 시 BTC default (기존 UI 흐름 그대로 작동).
+        return await mu_manager.status(user_code, symbol)
 
     @app.post("/ict/start")
-    async def start_mu(user_code: str = Depends(require_auth)) -> dict[str, Any]:
+    async def start_mu(
+        symbol: str = Query(default=_DEFAULT_SYMBOL),
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        # 2026-05-29 PR C: ?symbol= 쿼리 — 사용자가 BTC + ETH 등 여러 페어를
+        # 각각 가동할 수 있게. 한 사용자가 BTC 가동 중에도 ETH 별도 가동 가능.
         try:
-            await mu_manager.start(user_code)
+            await mu_manager.start(user_code, symbol)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
-        return await mu_manager.status(user_code)
+        return await mu_manager.status(user_code, symbol)
 
     @app.post("/ict/stop")
-    async def stop_mu(user_code: str = Depends(require_auth)) -> dict[str, Any]:
-        await mu_manager.stop(user_code)
-        return await mu_manager.status(user_code)
+    async def stop_mu(
+        symbol: str = Query(default=_DEFAULT_SYMBOL),
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        # 2026-05-29 PR C: ?symbol= 쿼리 — 사용자가 BTC 만 정지하고 ETH 는
+        # 계속 가동하는 부분 정지 가능. 미지정 시 BTC default.
+        await mu_manager.stop(user_code, symbol)
+        return await mu_manager.status(user_code, symbol)
+
+    @app.get("/ict/running-pairs")
+    async def running_pairs_mu(
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """사용자의 가동 중인 모든 페어 list — UI 페어 토글 동기화용.
+
+        2026-05-29 PR C: UI 가 페어 토글 active 상태를 백엔드 진실값과 맞추기 위해
+        호출. fly 재시작/다른 탭에서 가동 변경된 경우에도 정확히 반영.
+
+        Returns:
+            ``{"running_symbols": ["BTC/USDT:USDT", "ETH/USDT:USDT"]}``.
+        """
+        from aurora_ict.auth import users_db as _users_db_local
+        try:
+            syms = _users_db_local.get_bot_running_symbols(
+                mu_manager.db_path, user_code,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "running-pairs 조회 실패 — %s: %s", user_code, e,
+            )
+            syms = []
+        return {"running_symbols": syms}
 
     # ------------------------------------------------------------------
     # 2026-05-28: SaaS 1차 출시 — UI 가 호출하는 /ict/* 전체를 multi-user 분기에도
