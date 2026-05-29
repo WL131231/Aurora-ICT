@@ -322,6 +322,21 @@ class BotIctInstance:
     # prefetch background task 핸들 (취소용).
     _prefetch_task: asyncio.Task[None] | None = field(default=None)
 
+    # 2026-05-29 #SILENT-1~5: 조용한 오류 가시화 — 운영 중 어디가 실패하는지
+    # judgment 응답 / 로그에서 즉시 확인 가능하게.
+    # recovery_failed: 봇 시작 시 거래소 측 fetch_position 실패 (포지션 복원 불가).
+    # 다음 step 에서 재시도 가능하도록 flag 유지. True 인 동안은 신규 진입 차단.
+    _recovery_failed: bool = field(default=False)
+    # 연속 fetch_position 실패 카운트 — 5회 누적 시 ERROR (네트워크/API 장애 의심).
+    _sync_failure_streak: int = field(default=0)
+    # 진입 주문 실패 카운트 (place_order) — 누적 시 운영자 점검 신호.
+    _order_failure_count: int = field(default=0)
+    # SL/TP 박기 실패 카운트 — 무SL 상태 가시화. step 마다 재시도.
+    _tpsl_failure_streak: int = field(default=0)
+    # 가장 최근 진입 setup direction 들 (recent 10) — judgment 응답에 노출하여
+    # "long 비율 우세인데 short 만 진입" 같은 의문을 즉시 해소.
+    _recent_setup_directions: list[str] = field(default_factory=list)
+
     async def start(self) -> None:
         """봇 기동 (background task 생성).
 
@@ -368,12 +383,23 @@ class BotIctInstance:
 
         fetch_position 호출 → contracts > 0 이면 active_position 채움.
         ts_ms / entry / SL / TP 박은 거 거래소 응답에서 추출 (없으면 추정값).
+
+        2026-05-29 #SILENT-1: 실패 시 ``_recovery_failed=True`` 박음.
+        다음 step 의 ``_sync_position_state`` 가 자동 재시도하고, 그동안 신규
+        진입은 ``step()`` 에서 차단 (중복 진입 위험 회피).
         """
         try:
             pos = await self.client.fetch_position(self.symbol)
         except Exception as e:  # noqa: BLE001
-            logger.warning("recover fetch_position 실패: %s — skip", e)
+            # 단순 warning 이었으나 — 복원 실패는 봇 재시작 후 중복 진입 위험.
+            logger.error(
+                "recover fetch_position 실패 (포지션 복원 불가, 신규 진입 차단): %s",
+                e,
+            )
+            self._recovery_failed = True
             return
+        # 정상 호출 됐으면 flag 해제 (정상 복원 또는 contracts=0 모두 OK).
+        self._recovery_failed = False
         if pos is None:
             return
         contracts = float(pos.get("contracts", 0) or 0)
@@ -568,6 +594,15 @@ class BotIctInstance:
             else str(signal.setup.source),
             signal.setup.window,
         )
+
+        # 2026-05-29 #SILENT-1: 복원 실패 상태에서는 신규 진입 차단.
+        # 거래소 측 활성 포지션이 있는데 봇이 인식 못 하면 중복 진입 위험.
+        # _sync_position_state 가 성공하면 _recovery_failed 가 False 로 풀린다.
+        if self._recovery_failed:
+            logger.warning(
+                "setup skip — 거래소 측 포지션 복원 실패 상태. sync 성공 전까지 신규 진입 차단.",
+            )
+            return signal
 
         # 동일 setup으로 재진입 방지 (중복 주문 X)
         if signal.setup.ts_ms == self._last_setup_ts_ms:
@@ -927,6 +962,11 @@ class BotIctInstance:
             self.symbol, side, setup.entry, setup.stop_loss,
             setup.take_profit, qty, setup.risk_reward,
         )
+        # 2026-05-29: judgment 응답 인지 — 최근 setup direction 분포 추적.
+        # "long 비율 우세인데 short 만 진입" 의문 해소용 (UI 가 보여줌).
+        self._recent_setup_directions.append(setup.direction.value)
+        if len(self._recent_setup_directions) > 10:
+            self._recent_setup_directions = self._recent_setup_directions[-10:]
 
         # #LIVE-3 fix: entry = setup.entry (계획가 — FVG mean 등) 에 limit. 가격이 거기
         # retrace 하면 체결. SL/TP 가 setup 기준이라 RR 보존. use_market_entry=True 면
@@ -946,7 +986,15 @@ class BotIctInstance:
                 price=entry_price,
             )
         except Exception as e:  # noqa: BLE001 — 주문 실패도 봇은 계속 돌아야 함
-            logger.exception("place_order 실패: %s", e)
+            # 2026-05-29 #SILENT-3: 진입 주문 실패 가시화.
+            # 거래소 reject / API 키 권한 / 잔고 부족 / Bybit 시스템 점검 등 다양한
+            # 원인 가능. 봇 자체는 계속 돌아야 하지만 운영자가 즉시 인지해야 한다.
+            self._order_failure_count += 1
+            logger.error(
+                "place_order 실패 #%d — side=%s qty=%.4f price=%s setup_ts=%d: %s",
+                self._order_failure_count, side, qty, entry_price,
+                setup.ts_ms if hasattr(setup, "ts_ms") else 0, e,
+            )
             return
 
         # 체결 여부 — filled_qty / avg_fill_price 로 즉시 체결 판정.
@@ -1228,7 +1276,14 @@ class BotIctInstance:
         return False
 
     async def _emergency_close(self) -> None:
-        """위험(무SL 등) 상황에서 active_position 을 시장가 reduce_only 로 청산."""
+        """위험(무SL 등) 상황에서 active_position 을 시장가 reduce_only 로 청산.
+
+        2026-05-29 #SILENT-4: 비상청산 자체가 실패하면 active_position 을 None
+        으로 만들면 안 된다 — 거래소에 포지션이 남아있는데 봇이 "닫혔다고 인식"
+        하면 더 큰 risk (중복 진입 / SL 없는 포지션 방치). 실패 시 ERROR 로
+        알람 + active_position 유지 → 다음 step 의 sync 에서 재확인 + 필요 시
+        재시도 가능.
+        """
         pos = self.active_position
         if pos is None:
             return
@@ -1249,9 +1304,15 @@ class BotIctInstance:
                 "비상청산 완료 — %s %s qty=%.4f",
                 self.symbol, pos.direction.value, pos.qty,
             )
+            self.active_position = None
         except Exception as e:  # noqa: BLE001
-            logger.error("비상청산 실패: %s — 수동 확인 필요", e)
-        self.active_position = None
+            # 비상청산 실패 — 거래소에 포지션 남아있을 가능성 매우 큼.
+            # active_position 유지로 다음 step 에서 _sync_position_state 가
+            # 거래소 상태와 다시 맞춰보도록 한다.
+            logger.error(
+                "비상청산 실패: %s — active_position 유지, 수동 확인 + 다음 step 재시도",
+                e,
+            )
 
     def _log_step_market_snapshot(
         self, df: pd.DataFrame, bias: TrendDirection | None,
@@ -1629,6 +1690,13 @@ class BotIctInstance:
             logger.warning("closed-pnl 조회 실패: %s", e)
             return None
         if not closed:
+            # 2026-05-29 #PNL-MATCH: 진단 로그 — 매칭 실패의 가장 흔한 원인 1.
+            # since_ms 가 너무 늦거나 거래소 측 응답 propagation 지연.
+            logger.info(
+                "closed-pnl 빈 응답 — since_ms=%d (last_setup_ts=%d) want=%s/%s",
+                since_ms, last_known.setup_ts_ms,
+                self.symbol, last_known.direction.value,
+            )
             return None
         want_dir = "long" if last_known.direction is Direction.LONG else "short"
         for cp in closed:
@@ -1636,7 +1704,23 @@ class BotIctInstance:
             cp_dir = getattr(cp, "direction", None)
             if cp_sym != self.symbol or cp_dir != want_dir:
                 continue
+            # 매칭 성공 — 정확한 PnL/exit 기록 가능. 진단용 한 줄.
+            logger.info(
+                "closed-pnl 매칭 — symbol=%s dir=%s exit=%.4f pnl=%.4f USDT",
+                cp_sym, cp_dir,
+                float(getattr(cp, "exit_price", 0.0) or 0.0),
+                float(getattr(cp, "pnl_usd", 0.0) or 0.0),
+            )
             return cp  # 가장 최근(신→구 정렬) 매칭
+        # 응답은 있는데 want_dir / symbol 매칭이 안 됨 — 다른 사용자 거래 / 형식 차이.
+        # 응답 첫 cp 의 symbol/direction 까지 보여 운영자가 패턴 파악 가능.
+        first = closed[0]
+        logger.info(
+            "closed-pnl 매칭 실패 — got=%d cps, want=%s/%s, first=%s/%s",
+            len(closed),
+            self.symbol, want_dir,
+            getattr(first, "symbol", "?"), getattr(first, "direction", "?"),
+        )
         return None
 
     async def _sync_position_state(self) -> None:
@@ -1649,8 +1733,26 @@ class BotIctInstance:
         try:
             pos = await self.client.fetch_position(self.symbol)
         except Exception as e:  # noqa: BLE001
-            logger.warning("fetch_position 실패: %s", e)
+            # 2026-05-29 #SILENT-2: 연속 실패 누적 가시화.
+            # 1~4회: warning, 5회 누적: ERROR (네트워크/API 장애 알람).
+            self._sync_failure_streak += 1
+            if self._sync_failure_streak >= 5:
+                logger.error(
+                    "fetch_position 연속 %d회 실패 (sync_position_state): %s — "
+                    "거래소 측 상태와 봇 인식 어긋날 위험. 네트워크/API 키 점검 필요.",
+                    self._sync_failure_streak, e,
+                )
+            else:
+                logger.warning(
+                    "fetch_position 실패 (%d/5): %s",
+                    self._sync_failure_streak, e,
+                )
             return
+        # 성공 — streak reset + recovery_failed 도 해제 (사후 복원 효과).
+        self._sync_failure_streak = 0
+        if self._recovery_failed:
+            logger.info("recover_position 사후 복원 — sync 성공으로 신규 진입 재허용")
+            self._recovery_failed = False
         if pos is not None and float(pos.get("contracts", 0) or 0) != 0:
             return
         last_known = self.active_position
@@ -1778,11 +1880,17 @@ class BotIctInstance:
         if not htf_map:
             return None
         ltf_weight = TF_WEIGHT.get(self.timeframe, 1)
+        # 2026-05-29: HTF override threshold 강화 — 새벽 short bias 고착 회고.
+        # 기존: threshold = ltf_weight (5m=1) → 거의 모든 반대 FVG 가 override 트리거.
+        # ranging 시장에서 현재가 위/아래 FVG 분리 + threshold 낮음 → 진동 / 불안정.
+        # 개선: ltf_weight × 3 + max 6 (4h급 가중치 이상만 의미 있는 차단으로 판단).
+        # 효과: ranging 잡음 차단 ↓, 정말 큰 HTF 신호일 때만 override 트리거.
+        threshold = max(ltf_weight * 3, 6)
         cands = find_opposite_htf_fvg(
             htf_map,
             ltf_direction="buy" if setup.direction is Direction.LONG else "sell",
             current_price=current_price,
-            threshold_weight=ltf_weight,
+            threshold_weight=threshold,
             max_touch_count=self.htf_fvg_max_touch_count,
         )
         if not cands:
@@ -1925,7 +2033,23 @@ class BotIctInstance:
                 )
                 await asyncio.sleep(0.5)
         if not exit_ok:
-            logger.error("flip — 청산 최종 실패 — 신규 진입 중단 (포지션 유지)")
+            # 2026-05-29 #SILENT-5: flip 청산 최종 실패 가시화 강화.
+            # 단순 ERROR 로그 → 봇 일관성 위험 (HTF FVG flip 인식했는데 거래소
+            # 측 포지션은 유지 → 신호와 실제 상태 어긋남). 운영자가 즉시 인지
+            # 필요. 신규 진입 차단 + 사용자별 거래 기록에도 실패 이벤트 박음.
+            logger.error(
+                "flip 청산 최종 실패 — 신규 진입 중단 + 사용자 알람 필요. "
+                "거래소 상태와 봇 인식 어긋남: symbol=%s direction=%s qty=%.4f",
+                self.symbol, pos.direction.value, pos.qty,
+            )
+            # trades 기록에 alarm 이벤트 — UI / 텔레그램에서 즉시 검색 가능.
+            self._record_trade(
+                TradeEventType.SYNC_CLOSE,
+                direction=pos.direction,
+                price=pos.entry,  # placeholder
+                qty=pos.qty,
+                reason="ALARM: flip 청산 실패 — 거래소 측 포지션 유지 가능",
+            )
             return
 
         # #BUG-2: FLIP_CLOSE 기록 — trigger_price 가 실제 청산 가격에 가장 가까운 추정.

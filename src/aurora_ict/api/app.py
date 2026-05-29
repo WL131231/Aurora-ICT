@@ -830,13 +830,43 @@ def _register_multi_user_routes(
         else:
             ec_title = f"등급 {min_cf} 이상 & RR {min_rr} 이상 setup 대기"
             ec_detail = "현재 활성 setup 없음 (혹은 게이트 미달로 skip)"
+        # 2026-05-29: 진단 인지 보강. 파트너 의문 "long 비율 우세인데 short 만 진입"
+        # 직접 해소 — recent setup direction 분포 + 봇 내부 진단 카운터 노출.
+        recent_dirs = list(getattr(bot, "_recent_setup_directions", []) or [])
+        recent_long = sum(1 for d in recent_dirs if d == "long")
+        recent_short = sum(1 for d in recent_dirs if d == "short")
         return {
             "direction": {
                 "long_pct": long_pct, "short_pct": short_pct,
                 "label": dir_label, "bull_weight": bull_w, "bear_weight": bear_w,
+                # 사용자 직관 보정 — 위 비율은 HTF FVG 가중치 기준.
+                # 실제 진입은 LTF + HTF override + EMA + DOL + 등급 조합 결과로
+                # 위 비율과 다를 수 있다.
+                "hint": (
+                    "위 비율은 HTF FVG 가중치 기준 (장기 구조). "
+                    "실제 진입 방향은 LTF + HTF override + EMA + DOL + 등급 필터 "
+                    "조합 결과로 위 비율과 다를 수 있음."
+                ),
+                "recent_setups": {
+                    "long": recent_long, "short": recent_short,
+                    "last": recent_dirs[-1] if recent_dirs else None,
+                },
             },
             "reasons": reasons,
             "entry_condition": {"title": ec_title, "detail": ec_detail},
+            # 2026-05-29 #SILENT-*: 조용한 오류 가시화 — 운영 중 실패 위치 즉시 확인.
+            "diagnostics": {
+                "recovery_failed": bool(getattr(bot, "_recovery_failed", False)),
+                "sync_failure_streak": int(
+                    getattr(bot, "_sync_failure_streak", 0),
+                ),
+                "order_failure_count": int(
+                    getattr(bot, "_order_failure_count", 0),
+                ),
+                "tpsl_failure_streak": int(
+                    getattr(bot, "_tpsl_failure_streak", 0),
+                ),
+            },
         }
 
     @app.get("/ict/equity")
@@ -1578,13 +1608,43 @@ def create_app(
         else:
             ec_title = f"등급 {min_cf} 이상 & RR {min_rr} 이상 setup 대기"
             ec_detail = "현재 활성 setup 없음 (혹은 게이트 미달로 skip)"
+        # 2026-05-29: 진단 인지 보강. 파트너 의문 "long 비율 우세인데 short 만 진입"
+        # 직접 해소 — recent setup direction 분포 + 봇 내부 진단 카운터 노출.
+        recent_dirs = list(getattr(bot, "_recent_setup_directions", []) or [])
+        recent_long = sum(1 for d in recent_dirs if d == "long")
+        recent_short = sum(1 for d in recent_dirs if d == "short")
         return {
             "direction": {
                 "long_pct": long_pct, "short_pct": short_pct,
                 "label": dir_label, "bull_weight": bull_w, "bear_weight": bear_w,
+                # 사용자 직관 보정 — 위 비율은 HTF FVG 가중치 기준.
+                # 실제 진입은 LTF + HTF override + EMA + DOL + 등급 조합 결과로
+                # 위 비율과 다를 수 있다.
+                "hint": (
+                    "위 비율은 HTF FVG 가중치 기준 (장기 구조). "
+                    "실제 진입 방향은 LTF + HTF override + EMA + DOL + 등급 필터 "
+                    "조합 결과로 위 비율과 다를 수 있음."
+                ),
+                "recent_setups": {
+                    "long": recent_long, "short": recent_short,
+                    "last": recent_dirs[-1] if recent_dirs else None,
+                },
             },
             "reasons": reasons,
             "entry_condition": {"title": ec_title, "detail": ec_detail},
+            # 2026-05-29 #SILENT-*: 조용한 오류 가시화 — 운영 중 실패 위치 즉시 확인.
+            "diagnostics": {
+                "recovery_failed": bool(getattr(bot, "_recovery_failed", False)),
+                "sync_failure_streak": int(
+                    getattr(bot, "_sync_failure_streak", 0),
+                ),
+                "order_failure_count": int(
+                    getattr(bot, "_order_failure_count", 0),
+                ),
+                "tpsl_failure_streak": int(
+                    getattr(bot, "_tpsl_failure_streak", 0),
+                ),
+            },
         }
 
     @app.get("/ict/equity")

@@ -132,7 +132,10 @@ class IctSettings(BaseSettings):
     entry_limit_ttl_sec: int = Field(default=600, ge=30, le=3600)
     # min_sl_distance_pct: SL 거리가 entry 의 이 비율 미만이면 setup skip.
     # 지난 12거래 분석 결과 SL 너무 짧은 setup 손실 비중 커서 0.0005 → 0.0007 상향.
-    min_sl_distance_pct: float = Field(default=0.0007, ge=0.0, le=0.05)
+    # 2026-05-29: 새벽 3연속 SL 풀히트 (실측 SL=0.32%) 회고 — ranging 시장에서
+    # 타이트 SL 이 풀히트되는 패턴 → 0.0007 (0.07%) → 0.0025 (0.25%) 상향.
+    # 효과: ranging noise setup 자동 차단 + 빈도 감소 + 풀히트 비율 개선.
+    min_sl_distance_pct: float = Field(default=0.0025, ge=0.0, le=0.05)
     # max_sl_distance_pct: SL 거리가 entry 의 이 비율 초과면 setup skip.
     # 0 = 비활성. default 0.005 (0.5%) — 비정상 큰 SL 차단.
     max_sl_distance_pct: float = Field(default=0.005, ge=0.0, le=0.1)
