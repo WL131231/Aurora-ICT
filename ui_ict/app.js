@@ -28,13 +28,51 @@ let lastBarTimeSec = null;
 // Chart
 // ============================================================
 const chartEl = document.getElementById("chart");
+// 2026-05-30 i18n: 차트 시간축을 사용자 timezone 으로 변환.
+// lightweight-charts 의 timeScale.tickMarkFormatter / localization.timeFormatter
+// 둘 다 사용 — tick mark (x축 라벨) + crosshair tooltip.
+function _userTzTickFormatter(time) {
+  const ms = (typeof time === "number") ? time * 1000 : time;
+  const tz = (window.AuroraI18n && window.AuroraI18n.getTz())
+    || "Asia/Seoul";
+  try {
+    return new Intl.DateTimeFormat("en-GB", {
+      timeZone: tz,
+      hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(new Date(ms));
+  } catch (e) {
+    return new Date(ms).toISOString().slice(11, 16);
+  }
+}
+function _userTzCrosshairFormatter(time) {
+  const ms = (typeof time === "number") ? time * 1000 : time;
+  const tz = (window.AuroraI18n && window.AuroraI18n.getTz())
+    || "Asia/Seoul";
+  try {
+    return new Intl.DateTimeFormat("sv-SE", {
+      timeZone: tz,
+      month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(new Date(ms));
+  } catch (e) {
+    return new Date(ms).toISOString().slice(5, 16).replace("T", " ");
+  }
+}
 const chart = LightweightCharts.createChart(chartEl, {
   layout: { background: { color: "#141316" }, textColor: "#8b8b90" },
   grid: {
     vertLines: { color: "rgba(219,219,222,0.04)" },
     horzLines: { color: "rgba(219,219,222,0.04)" },
   },
-  timeScale: { borderColor: "rgba(219,219,222,0.10)", timeVisible: true, secondsVisible: false },
+  timeScale: {
+    borderColor: "rgba(219,219,222,0.10)",
+    timeVisible: true,
+    secondsVisible: false,
+    tickMarkFormatter: _userTzTickFormatter,
+  },
+  localization: {
+    timeFormatter: _userTzCrosshairFormatter,
+  },
   rightPriceScale: {
     borderColor: "rgba(219,219,222,0.10)",
     autoScale: true,
@@ -1661,9 +1699,19 @@ _updateKillzoneBar();
 window.addEventListener("aurora-i18n-changed", () => {
   if (window.AuroraI18n) window.AuroraI18n.applyI18nToDOM();
   _updateKillzoneBar();
+  // 2026-05-30: 봇 판단 패널 즉시 재렌더 (롱/숏/해석 라벨 변경).
+  try { refreshJudgment(); } catch (e) {}
 });
 window.addEventListener("aurora-tz-changed", () => {
   _updateKillzoneBar();
+  // 2026-05-30: 차트 시간축도 새 tz 로 갱신. applyOptions 로 옵션 갱신 후
+  // timeScale 재그리기 강제.
+  try {
+    chart.applyOptions({
+      timeScale: { tickMarkFormatter: _userTzTickFormatter },
+      localization: { timeFormatter: _userTzCrosshairFormatter },
+    });
+  } catch (e) {}
 });
 
 // ============================================================
@@ -1679,13 +1727,18 @@ async function refreshJudgment() {
     $("jp-dir-label").textContent = j.direction?.label || "—";
     $("jp-dir-long").style.width = `${longPct}%`;
     $("jp-dir-short").style.width = `${shortPct}%`;
+    // 2026-05-30 i18n: 롱/숏 라벨 + 해석 prefix 사용자 언어.
+    const tLong = window.AuroraI18n ? window.AuroraI18n.t("judgment.long") : "롱";
+    const tShort = window.AuroraI18n ? window.AuroraI18n.t("judgment.short") : "숏";
+    const tInterp = window.AuroraI18n ? window.AuroraI18n.t("judgment.interpretation") : "해석";
+    const tAccum = window.AuroraI18n ? window.AuroraI18n.t("judgment.accumulating") : "분석 자료 누적 중…";
     $("jp-dir-pct").innerHTML =
-      `<span style="color:#34d399">롱 ${longPct.toFixed(1)}%</span>` +
-      `<span style="color:#fb7185">숏 ${shortPct.toFixed(1)}%</span>`;
+      `<span style="color:#34d399">${tLong} ${longPct.toFixed(1)}%</span>` +
+      `<span style="color:#fb7185">${tShort} ${shortPct.toFixed(1)}%</span>`;
     // Reasons
     const rs = Array.isArray(j.reasons) ? j.reasons : [];
     $("jp-reasons").innerHTML = rs.length === 0
-      ? '<div class="jp-reason-interp">분석 자료 누적 중…</div>'
+      ? `<div class="jp-reason-interp">${tAccum}</div>`
       : rs.map((r) => `
         <div class="jp-reason">
           <div class="jp-reason-top">
@@ -1693,7 +1746,7 @@ async function refreshJudgment() {
             <span class="jp-reason-term">${escapeHtml(r.term || '')}</span>
             <span class="jp-reason-range">${escapeHtml(r.range || '')}</span>
           </div>
-          <div class="jp-reason-interp">해석: ${escapeHtml(r.interpretation || '')}</div>
+          <div class="jp-reason-interp">${tInterp}: ${escapeHtml(r.interpretation || '')}</div>
         </div>
       `).join("");
     // 2026-05-29: 진단 인지 보강 — hint + recent setups + diagnostics.
@@ -1706,10 +1759,16 @@ async function refreshJudgment() {
     }
     if (recent.long != null || recent.short != null) {
       const l = recent.long || 0, s = recent.short || 0;
-      const lastDir = recent.last ? ` · 최근=${recent.last}` : "";
+      const tRecentLast = window.AuroraI18n
+        ? window.AuroraI18n.t("judgment.recentLast")
+        : "최근";
+      const tRecentTitle = window.AuroraI18n
+        ? window.AuroraI18n.t("judgment.recentEntries")
+        : "최근 진입 분포";
+      const lastDir = recent.last ? ` · ${tRecentLast}=${recent.last}` : "";
       hintHtml += `<div class="jp-dir-recent">` +
-        `최근 진입 분포 — <span style="color:#34d399">롱 ${l}</span> / ` +
-        `<span style="color:#fb7185">숏 ${s}</span>${escapeHtml(lastDir)}` +
+        `${tRecentTitle} — <span style="color:#34d399">${tLong} ${l}</span> / ` +
+        `<span style="color:#fb7185">${tShort} ${s}</span>${escapeHtml(lastDir)}` +
         `</div>`;
     }
     const dirHintEl = $("jp-dir-hint-area");

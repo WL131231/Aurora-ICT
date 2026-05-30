@@ -340,16 +340,22 @@
     .modal-box .err { color: var(--loss); font-size: 11px; margin-top: 6px; min-height: 14px; }
 
     .toast {
-      position: fixed; bottom: 20px; right: 20px;
-      padding: 10px 16px;
+      /* 2026-05-30 파트너 요청: 우하단 → 상단 중앙 (가시성 ↑). */
+      position: fixed;
+      top: 54px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 11px 22px;
       background: var(--surface);
       border: 1px solid var(--line-strong);
       color: var(--text-1);
       border-radius: 4px;
-      font-size: 11px;
+      font-size: 12px;
       letter-spacing: 0.05em;
       display: none;
-      z-index: 300;
+      z-index: 400;
+      max-width: 80vw;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
     }
     .toast.error {
       background: rgba(251, 113, 133, 0.12);
@@ -744,7 +750,9 @@
       let html = "";
 
       // 공통 — 이벤트 기본 정보
-      html += `<div class="detail-section-title">이벤트</div>`;
+      // 2026-05-30 i18n: section title 사용자 언어.
+      const tI = (k, fb) => (window.AuroraI18n ? window.AuroraI18n.t(k) : fb);
+      html += `<div class="detail-section-title">${tI("trades.sectionEvent", "이벤트")}</div>`;
       html += `<div class="detail-grid">`;
       html += dCell("시각 (KST)", fmtTs(r.ts_ms));
       html += dCell("유형", r.event_type);
@@ -766,7 +774,7 @@
 
       // 진입 컨텍스트 — _build_entry_context_json 결과
       if (isEntry && (ctx.entry != null || ctx.confluences)) {
-        html += `<div class="detail-section-title">진입 사유 (당시 봇 판단)</div>`;
+        html += `<div class="detail-section-title">${tI("trades.sectionEntryReason", "진입 사유 (당시 봇 판단)")}</div>`;
         html += `<div class="detail-grid">`;
         if (ctx.entry != null) html += dCell("진입가", fmt(ctx.entry, 2));
         if (ctx.sl != null) html += dCell("SL", fmt(ctx.sl, 2));
@@ -779,7 +787,7 @@
         if (ctx.window) html += dCell("Window", ctx.window);
         html += `</div>`;
         if (Array.isArray(ctx.confluences) && ctx.confluences.length) {
-          html += `<div class="detail-section-title">Confluences (작동한 지표)</div>`;
+          html += `<div class="detail-section-title">${tI("trades.sectionConfluences", "Confluences (작동한 지표)")}</div>`;
           html += `<div class="conf-chips">` +
             ctx.confluences.map((c) =>
               `<span class="conf-chip">${escapeHtml(c)}</span>`,
@@ -798,7 +806,7 @@
 
       // 청산 컨텍스트 — _build_close_context_json 결과
       if (isClose && (ctx.close_price != null || ctx.htf_fvg_bull_weight != null)) {
-        html += `<div class="detail-section-title">청산 시점 봇 판단 스냅샷</div>`;
+        html += `<div class="detail-section-title">${tI("trades.sectionCloseJudgment", "청산 시점 봇 판단 스냅샷")}</div>`;
         html += `<div class="detail-grid">`;
         if (ctx.entry_price != null) html += dCell("진입가", fmt(ctx.entry_price, 2));
         if (ctx.close_price != null) html += dCell("청산가", fmt(ctx.close_price, 2));
@@ -832,7 +840,7 @@
         html += `</div>`;
         if (ctx.diagnostics) {
           const d = ctx.diagnostics;
-          html += `<div class="detail-section-title">청산 시점 봇 진단 카운터</div>`;
+          html += `<div class="detail-section-title">${tI("trades.sectionCloseDiagnostics", "청산 시점 봇 진단 카운터")}</div>`;
           html += `<div class="detail-grid">`;
           html += dCell("recovery_failed", String(!!d.recovery_failed),
             d.recovery_failed ? "warn" : "");
