@@ -410,7 +410,7 @@
   }
   .equity-sub { font-size: 10px; color: var(--text-3); margin-top: 3px; }
 
-  /* 좌상단 세션 상태 배지 */
+  /* 좌상단 세션 상태 배지 (단일 — 2026-05-30 v2 에서 hidden, killzone-bar 가 대체) */
   .session-badge {
     position: absolute; top: 12px; left: 16px;
     padding: 5px 12px;
@@ -421,10 +421,59 @@
     border: 1px solid var(--line);
     background: rgba(20,20,25,0.85);
     z-index: 5;
+    display: none; /* killzone-bar 가 대체 — 파트너 요청 2026-05-30 */
   }
   .session-killzone { color: #fbbf24; border-color: #fbbf24; }
   .session-us_open  { color: #34d399; border-color: #34d399; }
   .session-none     { color: var(--text-3); }
+
+  /* 2026-05-30 파트너 요청: 4개 Killzone (Asian / London / NY AM / NY PM)
+     을 차트 상단 가로 배지로 표시. 현재 활성 = 노랑 outline + fill, 비활성
+     = 회색. 각 배지 아래 NY local 시간 범위. JS 가 30초마다 NY 시간 기준
+     활성 갱신. */
+  .killzone-bar {
+    position: absolute;
+    top: 10px;
+    left: 16px;
+    display: flex;
+    gap: 6px;
+    z-index: 30;
+  }
+  .kz-badge {
+    background: rgba(20, 20, 25, 0.85);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 4px 10px;
+    text-align: center;
+    min-width: 60px;
+    transition: border-color 0.18s, background 0.18s;
+  }
+  .kz-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--text-3);
+    line-height: 1.2;
+  }
+  .kz-time {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    color: var(--text-3);
+    margin-top: 2px;
+    opacity: 0.75;
+  }
+  .kz-badge.active {
+    background: rgba(251, 191, 36, 0.14);
+    border-color: #fbbf24;
+    box-shadow: 0 0 8px rgba(251, 191, 36, 0.30);
+  }
+  .kz-badge.active .kz-name,
+  .kz-badge.active .kz-time {
+    color: #fbbf24;
+    opacity: 1;
+  }
 
   /* 2026-05-28: 공지 banner — 우상단 (햄버거 옆), dismissible.
      관리자가 Telegram bot 또는 /admin/notice 로 등록 → 모든 로그인 사용자에게 표시. */
@@ -1870,6 +1919,25 @@
       <div id="chart"></div>
       <!-- 좌상단 세션 상태 (Killzone/미장/None) — /ict/equity.session_status 폴링 -->
       <div id="session-badge" class="session-badge session-none">None</div>
+      <!-- 2026-05-30 파트너 요청: 4개 Killzone 가로 배지 (현재 활성 노랑 강조). -->
+      <div class="killzone-bar" id="killzone-bar">
+        <div class="kz-badge" data-kz="asian">
+          <div class="kz-name">Asian</div>
+          <div class="kz-time">19:00-24:00</div>
+        </div>
+        <div class="kz-badge" data-kz="london">
+          <div class="kz-name">London</div>
+          <div class="kz-time">02:00-05:00</div>
+        </div>
+        <div class="kz-badge" data-kz="ny_am">
+          <div class="kz-name">NY AM</div>
+          <div class="kz-time">07:00-10:00</div>
+        </div>
+        <div class="kz-badge" data-kz="pm">
+          <div class="kz-name">NY PM</div>
+          <div class="kz-time">13:30-16:00</div>
+        </div>
+      </div>
       <!-- 2026-05-28: 공지 banner — JS 가 /ict/notice 응답에 따라 display:flex 토글 -->
       <div id="notice-banner" class="notice-banner" role="alert" aria-live="polite">
         <span class="notice-banner-msg" id="notice-banner-msg"></span>
