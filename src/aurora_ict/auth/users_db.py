@@ -481,6 +481,62 @@ def has_api_keys(db_path: Path | str, code: str, mode: str) -> bool:
     return get_api_keys(db_path, code, mode) is not None
 
 
+def delete_api_keys(
+    db_path: Path | str,
+    code: str,
+    mode: str,
+) -> bool:
+    """모드별 거래소 API 키 삭제 — 슬롯을 NULL 로 비움.
+
+    2026-05-30 파트너 요청: cred-slot UI 에 '삭제' 버튼 — 사용자가 등록한
+    DEMO/LIVE 키를 명시 제거. mode 별로 별도 처리, 다른 모드 키는 그대로.
+
+    ``mode='demo'`` 는 legacy ``api_key`` / ``api_secret_enc`` 컬럼도 함께
+    비움 (set_api_keys 와 같은 동기화 정책).
+
+    Args:
+        db_path: users.db 경로.
+        code: 대상 사용자 라이선스 코드.
+        mode: ``"demo"`` 또는 ``"live"``. 그 외 값은 ValueError.
+
+    Returns:
+        True 면 업데이트 성공 (row 존재), False 면 code 미존재.
+
+    Raises:
+        ValueError: ``mode`` 가 허용 외 값.
+    """
+    if mode not in ("demo", "live"):
+        raise ValueError(f"mode 는 'demo' 또는 'live' 여야 합니다: {mode!r}")
+    now = _utcnow_iso()
+    with _connect(db_path) as conn:
+        if mode == "demo":
+            cur = conn.execute(
+                """
+                UPDATE users
+                SET demo_api_key = NULL,
+                    demo_api_secret_enc = NULL,
+                    api_key = NULL,
+                    api_secret_enc = NULL,
+                    updated_at = ?
+                WHERE code = ?
+                """,
+                (now, code),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE users
+                SET live_api_key = NULL,
+                    live_api_secret_enc = NULL,
+                    updated_at = ?
+                WHERE code = ?
+                """,
+                (now, code),
+            )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def set_license(
     db_path: Path | str,
     code: str,
@@ -987,6 +1043,7 @@ __all__ = [
     "get_last_run_mode",
     "list_running_bots",
     "set_last_run_mode",
+    "delete_api_keys",
     "set_license",
     "set_pin",
     "update_last_login",

@@ -497,10 +497,19 @@ function renderStatus(s) {
       slotLive.classList.toggle("has-key", hasLive);
       slotLive.classList.toggle("no-key", !hasLive);
     }
+    // 2026-05-30 i18n: 버튼 라벨 사용자 언어. has-key 면 '재등록', no-key 면 '등록'.
     const btnDemo = $("btn-cred-demo");
     const btnLive = $("btn-cred-live");
-    if (btnDemo) btnDemo.textContent = hasDemo ? "재등록" : "등록";
-    if (btnLive) btnLive.textContent = hasLive ? "재등록" : "등록";
+    const tReg = window.AuroraI18n ? window.AuroraI18n.t("btn.register") : "등록";
+    const tReReg = window.AuroraI18n ? window.AuroraI18n.t("btn.reregister") : "재등록";
+    if (btnDemo) btnDemo.textContent = hasDemo ? tReReg : tReg;
+    if (btnLive) btnLive.textContent = hasLive ? tReReg : tReg;
+    // 삭제 버튼은 has-key 일 때만 의미 (no-key 면 어차피 비어있음) — 라벨 갱신.
+    const tDel = window.AuroraI18n ? window.AuroraI18n.t("btn.delete") : "삭제";
+    const btnDelDemo = $("btn-cred-delete-demo");
+    const btnDelLive = $("btn-cred-delete-live");
+    if (btnDelDemo) btnDelDemo.textContent = tDel;
+    if (btnDelLive) btnDelLive.textContent = tDel;
   }
 
   // 2026-05-27: Bot Enable 버튼 제거됨 — Start/Stop 으로만 제어.
@@ -682,7 +691,11 @@ function renderPositions(pos) {
   _syncPositionsFab(!!(pos && pos.active));
 
   if (!pos || !pos.active) {
-    tbody.innerHTML = '<tr><td colspan="8" class="pos-empty">포지션 없음 — 봇 가동 후 진입 시 표시됩니다</td></tr>';
+    const emptyMsg = window.AuroraI18n
+      ? window.AuroraI18n.t("positions.empty")
+      : "포지션 없음 — 봇 가동 후 진입 시 표시됩니다";
+    tbody.innerHTML = '<tr><td colspan="8" class="pos-empty">' +
+      emptyMsg + '</td></tr>';
     count.textContent = "0 open";
     return;
   }
@@ -1475,6 +1488,39 @@ if ($("btn-cred-reenter")) {
     $("cred-api-key").focus();
   };
 }
+
+// 2026-05-30 파트너 요청: 등록/재등록 (cred-action) 클릭 → 입력 폼 표시 (mode 자동).
+document.querySelectorAll("[data-cred-reenter]").forEach((btn) => {
+  btn.onclick = () => {
+    const mode = btn.getAttribute("data-cred-reenter");
+    $("cred-form-block").style.display = "flex";
+    $("cred-saved-block").style.display = "none";
+    // mode 토글도 그쪽으로.
+    document.querySelectorAll("[data-cred-mode]").forEach((b) => {
+      b.classList.toggle("active", b.dataset.credMode === mode);
+    });
+    $("cred-api-key").focus();
+  };
+});
+
+// 2026-05-30 파트너 요청: 삭제 버튼 → DELETE /auth/api-keys?mode=demo|live.
+document.querySelectorAll("[data-cred-delete]").forEach((btn) => {
+  btn.onclick = async () => {
+    const mode = btn.getAttribute("data-cred-delete");
+    const modeLabel = mode.toUpperCase();
+    const tConfirm = window.AuroraI18n
+      ? window.AuroraI18n.t("confirm.deleteKey").replace("{mode}", modeLabel)
+      : `${modeLabel} API 키를 삭제할까요?`;
+    if (!confirm(tConfirm)) return;
+    try {
+      await api(`/auth/api-keys?mode=${mode}`, "DELETE");
+      toast(`${modeLabel} ${tConfirm.includes("Delete") ? "deleted" : "삭제됨"}`);
+      await fetchAndRender();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  };
+});
 
 // 2026-05-27: ENABLE/DISABLE 토글 제거. Start/Stop 만 사용.
 
