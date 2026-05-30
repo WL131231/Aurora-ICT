@@ -149,8 +149,10 @@ class IctSettings(BaseSettings):
     # 지난 12거래 분석 결과 SL 너무 짧은 setup 손실 비중 커서 0.0005 → 0.0007 상향.
     # 2026-05-29: 새벽 3연속 SL 풀히트 (실측 SL=0.32%) 회고 — ranging 시장에서
     # 타이트 SL 이 풀히트되는 패턴 → 0.0007 (0.07%) → 0.0025 (0.25%) 상향.
-    # 효과: ranging noise setup 자동 차단 + 빈도 감소 + 풀히트 비율 개선.
-    min_sl_distance_pct: float = Field(default=0.0025, ge=0.0, le=0.05)
+    # 2026-05-30: 0.25% 가드가 너무 빡빡해 setup 의 ~75% 차단 → 매매 0건 보고.
+    # 0.25% → 0.20% 완화 (파트너 결정). 0.20% 이상이면 통과, 0.25% 도 자동 통과.
+    # 단기 fresh setup 살리되 노이즈에 즉시 stop 당하는 정도의 SL 은 여전히 차단.
+    min_sl_distance_pct: float = Field(default=0.002, ge=0.0, le=0.05)
     # max_sl_distance_pct: SL 거리가 entry 의 이 비율 초과면 setup skip.
     # 0 = 비활성. default 0.005 (0.5%) — 비정상 큰 SL 차단.
     max_sl_distance_pct: float = Field(default=0.005, ge=0.0, le=0.1)
