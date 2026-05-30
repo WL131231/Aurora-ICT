@@ -410,6 +410,40 @@
   }
   .equity-sub { font-size: 10px; color: var(--text-3); margin-top: 3px; }
 
+  /* 2026-05-30 파트너 요청: 사이드바 언어/시간대 prefs. */
+  .i18n-prefs {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 4px;
+    margin-bottom: 8px;
+  }
+  .i18n-prefs-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .i18n-prefs-label {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    color: var(--text-3);
+    text-transform: uppercase;
+  }
+  .i18n-select {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    color: var(--text-1);
+    font-family: inherit;
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+    max-width: 60%;
+  }
+  .i18n-select:hover { border-color: var(--line-strong); }
+
   /* 좌상단 세션 상태 배지 (단일 — 2026-05-30 v2 에서 hidden, killzone-bar 가 대체) */
   .session-badge {
     position: absolute; top: 12px; left: 16px;
@@ -1794,21 +1828,34 @@
             - Active Position → positions-panel (차트 하단)
          renderStatus 의 $('s-state') 등 참조는 null-safe 로 보호. -->
 
-    <h2>Mode</h2>
-    <button id="btn-demo" class="active">DEMO</button>
-    <button id="btn-live" class="danger">LIVE</button>
+    <!-- 2026-05-30 파트너 요청: 언어 + 시간대 선택 (사이드바 최상단). -->
+    <h2 data-i18n="sidebar.preferences">설정</h2>
+    <div class="i18n-prefs">
+      <div class="i18n-prefs-row">
+        <span class="i18n-prefs-label" data-i18n="label.language">언어</span>
+        <span id="i18n-lang-mount"></span>
+      </div>
+      <div class="i18n-prefs-row">
+        <span class="i18n-prefs-label" data-i18n="label.timezone">시간대</span>
+        <span id="i18n-tz-mount"></span>
+      </div>
+    </div>
+
+    <h2 data-i18n="sidebar.mode">Mode</h2>
+    <button id="btn-demo" class="active" data-i18n="btn.demo">DEMO</button>
+    <button id="btn-live" class="danger" data-i18n="btn.live">LIVE</button>
 
     <!-- 2026-05-29 파트너 결정: Visualization 토글은 차트 toolbar 에 살아있고
          사이드바 에선 페어 선택으로 대체. BTC + ETH 복수 선택 가능 (백엔드 multi
          pair 지원은 다음 PR). 한 번에 1개 또는 양쪽 동시 = 동시 진입 옵션. -->
-    <h2>Trading Pair</h2>
+    <h2 data-i18n="sidebar.tradingPair">Trading Pair</h2>
     <div class="pair-toggle" id="pair-toggle">
       <button type="button" data-pair="BTCUSDT" class="active">BTC</button>
       <button type="button" data-pair="ETHUSDT">ETH</button>
     </div>
-    <p class="pair-hint">선택한 페어만 매매 — 복수 선택 시 동시 진입 가능</p>
+    <p class="pair-hint" data-i18n="hint.pairSelect">선택한 페어만 매매 — 복수 선택 시 동시 진입 가능</p>
 
-    <h2>Trade Timeframe</h2>
+    <h2 data-i18n="sidebar.tradeTimeframe">Trade Timeframe</h2>
     <div class="trade-tf-toggle" id="trade-tf-toggle">
       <button data-trade-tf="5m">5m</button>
       <button data-trade-tf="15m">15m</button>
@@ -1819,9 +1866,9 @@
       <button data-trade-tf="1d">1d</button>
       <button data-trade-tf="1w">1w</button>
     </div>
-    <p class="trade-tf-hint">진입 봉 단위 — 선택한 TF 이상 봉으로 매매 결정 (1m 은 노이즈로 제외)</p>
+    <p class="trade-tf-hint" data-i18n="hint.tradeTf">진입 봉 단위 — 선택한 TF 이상 봉으로 매매 결정 (1m 은 노이즈로 제외)</p>
 
-    <h2>API Credentials</h2>
+    <h2 data-i18n="sidebar.apiCredentials">API Credentials</h2>
     <!-- 2026-05-29: demo/live 슬롯 분리. 라디오로 저장 대상 모드 선택.
          Bybit 은 Demo / Live 가 별도 시스템 → 키도 별도 발급 필요. -->
     <div class="cred-form" id="cred-form-block">
@@ -1855,32 +1902,32 @@
       </div>
     </div>
 
-    <h2>Equity</h2>
+    <h2 data-i18n="sidebar.equity">Equity</h2>
     <div class="equity-card">
       <div class="equity-value" id="equity-value">—</div>
-      <div class="equity-sub" id="equity-sub">봇 시작 후 실시간 표시</div>
+      <div class="equity-sub" id="equity-sub">—</div>
     </div>
 
-    <h2>Daily Loss Limit</h2>
+    <h2 data-i18n="sidebar.dailyLossLimit">Daily Loss Limit</h2>
     <!-- 2026-05-29 v3: 파트너 피드백 "아까가 더 낫네" — 인라인 style 복귀. -->
     <div class="row" style="margin-top:4px">
-      <span class="k">Limit %</span>
+      <span class="k" data-i18n="label.limitPct">Limit %</span>
       <input id="dll-input" type="number" step="0.1" min="0" max="50" placeholder="0 = off"
              style="width:78px;background:#1a1a1a;border:1px solid #333;color:#ddd;padding:3px 6px;border-radius:3px"/>
-      <button id="btn-dll-set" style="margin-left:4px;padding:3px 10px">SET</button>
+      <button id="btn-dll-set" data-i18n="btn.set" style="margin-left:4px;padding:3px 10px">SET</button>
     </div>
-    <div class="row"><span class="k">Today PnL</span><span id="dll-today" class="v">—</span></div>
-    <div class="row"><span class="k">Status</span><span id="dll-status" class="v">—</span></div>
+    <div class="row"><span class="k" data-i18n="label.todayPnl">Today PnL</span><span id="dll-today" class="v">—</span></div>
+    <div class="row"><span class="k" data-i18n="label.status">Status</span><span id="dll-status" class="v">—</span></div>
 
-    <h2>Control</h2>
-    <button id="btn-start">START</button>
-    <button id="btn-stop" class="danger">STOP</button>
+    <h2 data-i18n="sidebar.control">Control</h2>
+    <button id="btn-start" data-i18n="btn.start">START</button>
+    <button id="btn-stop" class="danger" data-i18n="btn.stop">STOP</button>
 
     <!-- 2026-05-29: 매매 기록 별도 페이지 링크. 본인 거래 표 + CSV 다운로드.
          확장자 명시 (.html) — StaticFiles 의 html=True 가 확장자 없는 경로를
          자동 변환하지 않아 /ui/trades 가 404 나던 문제 해소. -->
     <a href="/ui/trades.html" class="trades-link" id="trades-link">
-      📋 매매 기록 보기
+      <span data-i18n="btn.viewTrades">매매 기록 보기</span>
     </a>
 
     <!-- SaaS 사용자 식별 + 로그아웃 — single-user 모드에선 hidden (.show 클래스로 토글) -->
@@ -1919,23 +1966,28 @@
       <div id="chart"></div>
       <!-- 좌상단 세션 상태 (Killzone/미장/None) — /ict/equity.session_status 폴링 -->
       <div id="session-badge" class="session-badge session-none">None</div>
-      <!-- 2026-05-30 파트너 요청: 4개 Killzone 가로 배지 (현재 활성 노랑 강조). -->
+      <!-- 2026-05-30 파트너 요청: 4개 Killzone 가로 배지 (현재 활성 노랑 강조).
+           라벨 / 시간은 i18n.js + app.js 가 사용자 언어/timezone 으로 동적 갱신. -->
       <div class="killzone-bar" id="killzone-bar">
-        <div class="kz-badge" data-kz="asian">
-          <div class="kz-name">Asian</div>
-          <div class="kz-time">19:00-24:00</div>
+        <div class="kz-badge" data-kz="asian"
+             data-ny-start="19:00" data-ny-end="23:59">
+          <div class="kz-name" data-i18n="kz.asian">Asian</div>
+          <div class="kz-time">—</div>
         </div>
-        <div class="kz-badge" data-kz="london">
-          <div class="kz-name">London</div>
-          <div class="kz-time">02:00-05:00</div>
+        <div class="kz-badge" data-kz="london"
+             data-ny-start="02:00" data-ny-end="05:00">
+          <div class="kz-name" data-i18n="kz.london">London</div>
+          <div class="kz-time">—</div>
         </div>
-        <div class="kz-badge" data-kz="ny_am">
-          <div class="kz-name">NY AM</div>
-          <div class="kz-time">07:00-10:00</div>
+        <div class="kz-badge" data-kz="ny_am"
+             data-ny-start="07:00" data-ny-end="10:00">
+          <div class="kz-name" data-i18n="kz.ny_am">NY AM</div>
+          <div class="kz-time">—</div>
         </div>
-        <div class="kz-badge" data-kz="pm">
-          <div class="kz-name">NY PM</div>
-          <div class="kz-time">13:30-16:00</div>
+        <div class="kz-badge" data-kz="pm"
+             data-ny-start="13:30" data-ny-end="16:00">
+          <div class="kz-name" data-i18n="kz.pm">NY PM</div>
+          <div class="kz-time">—</div>
         </div>
       </div>
       <!-- 2026-05-28: 공지 banner — JS 가 /ict/notice 응답에 따라 display:flex 토글 -->
@@ -2106,7 +2158,20 @@
 
 <div id="toast" class="toast"></div>
 
+<!-- 2026-05-30 파트너 요청: 4개어 i18n + 4시간대 select. app.js 보다 먼저
+     로드해야 app.js 가 window.AuroraI18n.t() / nyTimeToUserTz() 사용 가능. -->
+<script src="i18n.js"></script>
 <script>
+  // 사이드바 select 마운트 + 초기 적용.
+  (function () {
+    if (!window.AuroraI18n) return;
+    const langMount = document.getElementById("i18n-lang-mount");
+    const tzMount = document.getElementById("i18n-tz-mount");
+    if (langMount) langMount.appendChild(window.AuroraI18n.makeLangSelect());
+    if (tzMount) tzMount.appendChild(window.AuroraI18n.makeTzSelect());
+    window.AuroraI18n.applyI18nToDOM();
+  })();
+
   // 2026-05-28 파트너 피드백 — SaaS 첫 배포 후 START / TF 무응답 + 강제 로그아웃.
   // 원인: 브라우저가 옛 app.js 캐싱. 매 페이지 로드마다 timestamp query → cache-bust.
   (function(){

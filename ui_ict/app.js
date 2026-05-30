@@ -1570,10 +1570,36 @@ function _updateKillzoneBar() {
   const active = _getActiveKillzoneNY();
   document.querySelectorAll("#killzone-bar .kz-badge").forEach((el) => {
     el.classList.toggle("active", el.dataset.kz === active);
+    // 2026-05-30 i18n: data-ny-start / data-ny-end (NY local "HH:mm") 를
+    // window.AuroraI18n.nyTimeToUserTz 로 사용자 timezone 으로 변환.
+    if (window.AuroraI18n && window.AuroraI18n.nyTimeToUserTz) {
+      const tEl = el.querySelector(".kz-time");
+      if (!tEl) return;
+      const nyStart = el.dataset.nyStart || "";
+      const nyEnd = el.dataset.nyEnd || "";
+      try {
+        const [sH, sM] = nyStart.split(":").map(Number);
+        const [eH, eM] = nyEnd.split(":").map(Number);
+        const startUser = window.AuroraI18n.nyTimeToUserTz(sH, sM);
+        const endUser = window.AuroraI18n.nyTimeToUserTz(eH, eM);
+        tEl.textContent = `${startUser}-${endUser}`;
+      } catch (e) {
+        tEl.textContent = `${nyStart}-${nyEnd}`;
+      }
+    }
   });
 }
 setInterval(_updateKillzoneBar, 30_000);
 _updateKillzoneBar();
+
+// 2026-05-30 i18n: 언어/시간대 변경 시 killzone 배지 즉시 갱신.
+window.addEventListener("aurora-i18n-changed", () => {
+  if (window.AuroraI18n) window.AuroraI18n.applyI18nToDOM();
+  _updateKillzoneBar();
+});
+window.addEventListener("aurora-tz-changed", () => {
+  _updateKillzoneBar();
+});
 
 // ============================================================
 // 봇 판단 시각화 (좌하단 패널) — 2026-05-27 추가
