@@ -1905,7 +1905,7 @@
     <h2 data-i18n="sidebar.equity">Equity</h2>
     <div class="equity-card">
       <div class="equity-value" id="equity-value">—</div>
-      <div class="equity-sub" id="equity-sub">—</div>
+      <div class="equity-sub" id="equity-sub" data-i18n="equity.realtimeNote">—</div>
     </div>
 
     <h2 data-i18n="sidebar.dailyLossLimit">Daily Loss Limit</h2>
@@ -1932,7 +1932,7 @@
 
     <!-- SaaS 사용자 식별 + 로그아웃 — single-user 모드에선 hidden (.show 클래스로 토글) -->
     <div class="logout-row" id="logout-row">
-      <h2>Session</h2>
+      <h2 data-i18n="session.title">Session</h2>
       <div class="user-code-display" id="user-code-display">—</div>
       <button id="btn-logout" class="danger">로그아웃</button>
     </div>
@@ -2111,14 +2111,14 @@
 
     <!-- (2) 라이선스 정보 카드 (중간) — /auth/status 응답 기반 -->
     <section class="license-card" id="license-card">
-      <div class="lc-header">LICENSE</div>
+      <div class="lc-header" data-i18n="license.title">LICENSE</div>
       <div class="lc-row">
-        <span class="lc-k">Type</span>
+        <span class="lc-k" data-i18n="license.type">Type</span>
         <span class="lc-v" id="lc-type">—</span>
       </div>
       <div class="lc-period">
         <div class="lc-row" style="padding:0">
-          <span class="lc-k">Period</span>
+          <span class="lc-k" data-i18n="license.period">Period</span>
           <span class="lc-v" id="lc-days-left">—</span>
         </div>
         <div id="lc-period-text" style="margin-top:4px">

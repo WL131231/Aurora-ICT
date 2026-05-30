@@ -365,7 +365,7 @@
 </head>
 <body>
   <header>
-    <h1>매매 기록 · Aurora-ICT</h1>
+    <h1><span data-i18n="trades.title">매매 기록</span> · Aurora-ICT</h1>
     <div class="head-right">
       <span class="admin-state" id="admin-state">user</span>
       <button class="head-btn" id="btn-admin-login">Admin 로그인</button>
@@ -393,16 +393,16 @@
     <div class="stats" id="stats"></div>
 
     <div class="controls">
-      <label style="color:var(--text-3);font-size:11px">기간</label>
+      <label style="color:var(--text-3);font-size:11px" data-i18n="trades.range">기간</label>
       <select id="f-period">
-        <option value="86400000">24시간</option>
-        <option value="604800000">최근 7일</option>
-        <option value="2592000000">최근 30일</option>
-        <option value="0" selected>전체</option>
+        <option value="86400000">24h</option>
+        <option value="604800000">7d</option>
+        <option value="2592000000">30d</option>
+        <option value="0" selected data-i18n="trades.all">전체</option>
       </select>
-      <label style="color:var(--text-3);font-size:11px">유형</label>
+      <label style="color:var(--text-3);font-size:11px" data-i18n="trades.colType">유형</label>
       <select id="f-event">
-        <option value="">전체</option>
+        <option value="" data-i18n="trades.all">전체</option>
         <option value="entry">진입 (entry)</option>
         <option value="sl_hit">손절 (SL hit)</option>
         <option value="tp_hit">익절 (TP hit)</option>
@@ -419,27 +419,27 @@
         <option value="500">500</option>
         <option value="2000" selected>2000</option>
       </select>
-      <button id="btn-refresh">새로고침</button>
-      <button id="btn-csv" class="accent">CSV 다운로드</button>
+      <button id="btn-refresh" data-i18n="trades.refresh">새로고침</button>
+      <button id="btn-csv" class="accent" data-i18n="trades.csv">CSV 다운로드</button>
     </div>
 
     <table>
       <thead>
         <tr>
-          <th>시각 (KST)</th>
-          <th>유형</th>
+          <th data-i18n="trades.colTime">시각 (KST)</th>
+          <th data-i18n="trades.colType">유형</th>
           <!-- 2026-05-29 파트너 요청: DEMO/LIVE 구분 컬럼 추가. -->
-          <th>모드</th>
-          <th>방향</th>
-          <th>심볼</th>
-          <th>가격</th>
-          <th>수량</th>
-          <th>PnL (USDT)</th>
-          <th>사유</th>
+          <th data-i18n="trades.colMode">모드</th>
+          <th data-i18n="trades.colDirection">방향</th>
+          <th data-i18n="trades.colSymbol">심볼</th>
+          <th data-i18n="trades.colPrice">가격</th>
+          <th data-i18n="trades.colQty">수량</th>
+          <th data-i18n="trades.colPnl">PnL (USDT)</th>
+          <th data-i18n="trades.colReason">사유</th>
         </tr>
       </thead>
       <tbody id="rows">
-        <tr><td colspan="9" class="empty">로딩 중…</td></tr>
+        <tr><td colspan="9" class="empty" data-i18n="trades.loading">로딩 중…</td></tr>
       </tbody>
     </table>
   </div>
@@ -465,6 +465,9 @@
 
   <div class="toast" id="toast"></div>
 
+  <!-- 2026-05-30 i18n: 페이지 텍스트 다국어. localStorage 의 사용자 언어 따름. -->
+  <script src="i18n.js"></script>
+
   <script>
     // ============================================================
     // 매매 기록 페이지 v2 (2026-05-29)
@@ -476,12 +479,24 @@
 
     const $ = (id) => document.getElementById(id);
     const fmt = (n, d = 2) => (n == null || isNaN(n)) ? "—" : Number(n).toFixed(d);
+    // 2026-05-30 i18n: 사용자 timezone 으로 시각 표시 (KST 고정 → 사용자 tz).
     const fmtTs = (ms) => {
       if (!ms) return "—";
-      const d = new Date(ms);
-      const pad = (n) => String(n).padStart(2, "0");
-      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
-             `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      const tz = (window.AuroraI18n && window.AuroraI18n.getTz())
+        || "Asia/Seoul";
+      try {
+        return new Intl.DateTimeFormat("sv-SE", {
+          timeZone: tz,
+          year: "numeric", month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit", second: "2-digit",
+          hour12: false,
+        }).format(new Date(ms)).replace("T", " ");
+      } catch (e) {
+        const d = new Date(ms);
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+               `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      }
     };
     const escapeHtml = (s) => String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
