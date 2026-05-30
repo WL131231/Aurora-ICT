@@ -1536,6 +1536,46 @@ setInterval(refreshEquityAndSession, 5000);
 refreshEquityAndSession();
 
 // ============================================================
+// 2026-05-30 파트너 요청: 4개 Killzone 가로 배지 활성 갱신.
+// NY local 시간 기준 — backend session_status 무관하게 client 가 직접 계산
+// (zoneinfo 없어도 Intl API 로 NY tz 변환 OK).
+//
+// Killzone 시간 (NY EST/EDT, DST 자동):
+//   Asian:  19:00 ~ 24:00
+//   London: 02:00 ~ 05:00
+//   NY AM:  07:00 ~ 10:00
+//   NY PM:  13:30 ~ 16:00
+//
+// London Close (10:00~12:00) 는 UI 4-배지 정책 (파트너 결정) 으로 표시 X.
+// ============================================================
+function _getActiveKillzoneNY() {
+  const now = new Date();
+  // NY local "HH:mm" 추출 (DST 자동 처리).
+  const nyStr = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(now);
+  // "24:30" → "00:30" 정규화 (Intl 가 가끔 24 반환).
+  const [hRaw, mRaw] = nyStr.split(":").map(Number);
+  const h = hRaw === 24 ? 0 : hRaw;
+  const mins = h * 60 + mRaw;
+  if (mins >= 19 * 60) return "asian";          // 19:00 ~ 24:00
+  if (mins >= 2 * 60 && mins < 5 * 60) return "london";   // 02:00 ~ 05:00
+  if (mins >= 7 * 60 && mins < 10 * 60) return "ny_am";   // 07:00 ~ 10:00
+  if (mins >= 13 * 60 + 30 && mins < 16 * 60) return "pm"; // 13:30 ~ 16:00
+  return null;
+}
+
+function _updateKillzoneBar() {
+  const active = _getActiveKillzoneNY();
+  document.querySelectorAll("#killzone-bar .kz-badge").forEach((el) => {
+    el.classList.toggle("active", el.dataset.kz === active);
+  });
+}
+setInterval(_updateKillzoneBar, 30_000);
+_updateKillzoneBar();
+
+// ============================================================
 // 봇 판단 시각화 (좌하단 패널) — 2026-05-27 추가
 // 약어 + 한글 해석 병기 — 모르는 사람도 이해 가능
 // ============================================================
