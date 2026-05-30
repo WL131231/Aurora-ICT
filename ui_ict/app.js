@@ -728,13 +728,65 @@ function renderPositions(pos) {
   // 2026-05-28: 모바일 가로 positions fab badge / 강조 — 활성 포지션 유무 동기화.
   _syncPositionsFab(!!(pos && pos.active));
 
-  if (!pos || !pos.active) {
+  // 2026-05-30 파트너 요청: 대기 포지션 (limit 미체결) 도 표시.
+  // active=False 라도 pending 있으면 그것만 row 1개로 표시.
+  if (!pos || (!pos.active && !pos.pending)) {
     const emptyMsg = window.AuroraI18n
       ? window.AuroraI18n.t("positions.empty")
       : "포지션 없음 — 봇 가동 후 진입 시 표시됩니다";
     tbody.innerHTML = '<tr><td colspan="8" class="pos-empty">' +
       emptyMsg + '</td></tr>';
     count.textContent = "0 open";
+    return;
+  }
+
+  // 대기 포지션만 (active 없음) — pending row 1개.
+  if (!pos.active && pos.pending) {
+    const pe = pos.pending;
+    const sideClass = pe.direction === "long" ? "pos-side-long" : "pos-side-short";
+    const sideLabel = pe.direction === "long" ? "LONG" : "SHORT";
+    const tPending = window.AuroraI18n ? window.AuroraI18n.t("positions.pending") : "대기 중";
+    const placedMs = pe.placed_ts_ms || 0;
+    const tz = (window.AuroraI18n && window.AuroraI18n.getTz()) || "Asia/Seoul";
+    let placedStr = "—";
+    if (placedMs) {
+      try {
+        placedStr = new Intl.DateTimeFormat("sv-SE", {
+          timeZone: tz, month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit", hour12: false,
+        }).format(new Date(placedMs));
+      } catch (e) {}
+    }
+    tbody.innerHTML = `
+      <tr class="pos-pending">
+        <td>
+          <div>${pos.symbol || "—"}</div>
+          <div class="${sideClass}" style="font-size:9px; letter-spacing:0.15em">${sideLabel} · LIMIT · ${tPending}</div>
+        </td>
+        <td>${_fmt(pe.qty, 4)}</td>
+        <td>${_fmt(pe.entry, 2)}</td>
+        <td>—</td>
+        <td>—</td>
+        <td>SL ${_fmt(pe.stop_loss, 2)}<br/>TP ${_fmt(pe.take_profit, 2)}</td>
+        <td style="color:var(--text-3)">${placedStr}</td>
+        <td>
+          <div class="pos-actions">
+            <button class="pos-btn-close-full" id="btn-cancel-pending">CANCEL</button>
+          </div>
+        </td>
+      </tr>`;
+    count.textContent = "1 pending";
+    // Cancel 버튼 핸들러 — 2026-05-30: 신규 /ict/pending/cancel endpoint.
+    const cancelBtn = $("btn-cancel-pending");
+    if (cancelBtn) {
+      cancelBtn.onclick = async () => {
+        try {
+          await api("/ict/pending/cancel", "POST");
+          toast("Pending order cancelled");
+          await fetchAndRender();
+        } catch (e) { toast(e.message, true); }
+      };
+    }
     return;
   }
 

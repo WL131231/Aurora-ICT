@@ -754,6 +754,22 @@ def _register_multi_user_routes(
             "pending": pending,
         }
 
+    @app.post("/ict/pending/cancel")
+    async def cancel_pending_mu(
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """대기 중인 지정가 entry 주문 즉시 취소 (사용자 명령, 2026-05-30).
+
+        UI 의 positions 표 'CANCEL' 버튼이 호출. 봇이 거래소 cancel_all_orders
+        + 내부 ``_pending_entry`` 비움. active 포지션엔 영향 X.
+        """
+        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
+        bot = slot.bot if slot is not None else None
+        if bot is None:
+            return {"ok": False, "reason": "bot_not_running"}
+        ok = await bot.cancel_pending_entry()
+        return {"ok": ok}
+
     @app.get("/ict/judgment")
     async def get_judgment_mu(
         user_code: str = Depends(require_auth),

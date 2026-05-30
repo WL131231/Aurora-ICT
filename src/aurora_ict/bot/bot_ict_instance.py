@@ -1210,6 +1210,29 @@ class BotIctInstance:
             return False
         return True
 
+    async def cancel_pending_entry(self) -> bool:
+        """사용자 명령 — pending limit entry 즉시 취소 (TTL 만료 기다리지 않음).
+
+        2026-05-30 파트너 요청: UI 에 'CANCEL' 버튼 — 사용자가 대기 중인
+        지정가 주문을 명시적으로 포기. 거래소 cancel_all_orders + 봇 측
+        ``_pending_entry`` 비움. active 포지션엔 영향 X (있어도 따로).
+
+        Returns:
+            True: pending 있었고 취소함. False: pending 없었음 (no-op).
+        """
+        if self._pending_entry is None:
+            return False
+        try:
+            await self.client.cancel_all_orders(self.symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("pending entry 수동 취소 — cancel_all_orders 실패: %s", e)
+        logger.info(
+            "pending entry 사용자 취소 (setup_ts=%d)",
+            self._pending_entry.setup_ts_ms,
+        )
+        self._pending_entry = None
+        return True
+
     async def _tick_trail(self, df: pd.DataFrame) -> None:
         """진입 중 새 swing 형성 시 SL 을 그 자리로 이동 (structure-based trail).
 
