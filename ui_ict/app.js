@@ -1765,14 +1765,33 @@ if (_btnSidebarToggle) {
       _setMobilePanel(_currentMobilePanel() === "pnl" ? null : "pnl");
     } else {
       // 데스크탑 — 기존 접기/펴기.
+      // 2026-05-30 파트너 보고: 두 번째 토글 시 사이드바 압축 + 차트 깨짐 버그.
+      // 원인: chart 가 옛 큰 width 그대로 유지 → chart-wrap 이 viewport 초과
+      // → flex layout 사이드바 압축. 단발성 raf+fit 만으론 timing 부족.
+      // Fix: chart 를 즉시 0 으로 압축 → flex 가 자유롭게 재계산 → 두 번
+      // raf 후 chart-wrap 새 폭으로 정확히 적용. ResizeObserver 가 추가로
+      // 모든 layout 변화 자동 캐치 (chart-wrap 부착 — 아래 별도 등록).
       document.body.classList.toggle("pnl-collapsed");
-      // 2026-05-29 파트너 보고: P&L 패널 닫혀도 차트 영역에 공백.
-      // lightweight-charts 가 자체 width 가지고 있어 CSS flex 만으론 resize X.
-      // fit() 강제 호출로 chart-wrap 현재 폭에 맞춰 재계산.
-      // (CSS transition 후 호출되도록 next frame 에서.)
-      requestAnimationFrame(() => { try { fit(); } catch (e) {} });
+      try { chart.applyOptions({ width: 0 }); } catch (e) {}
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => { try { fit(); } catch (e) {} });
+      });
     }
   };
+}
+
+// 2026-05-30: chart-wrap 의 모든 layout 변화 자동 감지 → fit() 호출.
+// 햄버거 토글 외 다른 경로 (창 크기, font 로딩 등) 에서도 chart 가 정확히
+// 따라옴. ResizeObserver fallback 처리 — 옛 브라우저는 window resize 만 의존.
+if (typeof ResizeObserver !== "undefined") {
+  const _chartWrap = document.querySelector(".chart-wrap");
+  if (_chartWrap) {
+    const _ro = new ResizeObserver(() => {
+      // 동기 호출하면 ResizeObserver loop 경고 → next frame.
+      requestAnimationFrame(() => { try { fit(); } catch (e) {} });
+    });
+    _ro.observe(_chartWrap);
+  }
 }
 
 // 좌상단 모바일 사이드바 햄버거 — 가로 모드에서만 활성 (CSS).
