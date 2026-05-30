@@ -7,7 +7,10 @@ requires-python = ">=3.11"
 readme = "README.md"
 
 dependencies = [
-    "ccxt>=4.4.0",
+    # 2026-05-30 상한 핀: ccxt latest 가 build 마다 install 되며 Bybit demo
+    # enableDemoTrading 후 place_order 가 'Permission denied' (retCode 10005)
+    # 반환하는 회귀 발견. 직전 안정 라인 (4.4.x) 안에서만 install 되도록 상한.
+    "ccxt>=4.4.0,<4.5.0",
     "pandas>=2.2.0,<3.0",
     "numpy>=1.26.0",
     "fastapi>=0.115.0",
