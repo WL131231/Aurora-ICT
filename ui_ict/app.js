@@ -1153,12 +1153,24 @@ function renderLicenseCard(status) {
     return;
   }
   const lt = status.license_type || "referral";
-  typeEl.textContent = LICENSE_KO[lt] || lt;
+  // 2026-05-30 i18n: 라이선스 type 라벨 사용자 언어.
+  const ltLabel = window.AuroraI18n
+    ? window.AuroraI18n.t("license." + lt)
+    : (LICENSE_KO[lt] || lt);
+  typeEl.textContent = ltLabel;
   startEl.textContent = _fmtDateYmd(status.created_at);
+
+  // "남음" 라벨도 i18n.
+  const tDaysLeft = window.AuroraI18n
+    ? window.AuroraI18n.t("license.daysLeft")
+    : "남음";
+  const tUnlimited = window.AuroraI18n
+    ? window.AuroraI18n.t("license.unlimited")
+    : "무기한";
 
   if (!status.expires_at) {
     // referral — 무기한.
-    endEl.textContent = "무기한";
+    endEl.textContent = tUnlimited;
     daysEl.textContent = "—";
     daysEl.className = "lc-v";
   } else {
@@ -1171,7 +1183,7 @@ function renderLicenseCard(status) {
       daysEl.className = "lc-v";
     } else {
       const days = Math.max(0, Math.ceil((exp - now) / (24 * 60 * 60 * 1000)));
-      daysEl.textContent = `${days}일 남음`;
+      daysEl.textContent = `${days} ${tDaysLeft}`;
       // 7일 미만 critical, 30일 미만 warn.
       daysEl.className = "lc-v";
       if (days < 7) daysEl.classList.add("lc-days-crit");
@@ -1179,6 +1191,12 @@ function renderLicenseCard(status) {
     }
   }
 }
+
+// 2026-05-30 i18n: 언어 변경 시 라이선스 카드도 다시 그리기 (캐시된 status 사용).
+let _lastAuthStatus = null;
+window.addEventListener("aurora-i18n-changed", () => {
+  if (_lastAuthStatus) renderLicenseCard(_lastAuthStatus);
+});
 
 // ============================================================
 // UI 자동 버전 갱신 — /auth/status.app_version 비교 (2026-05-28)
@@ -1221,6 +1239,7 @@ async function refreshLicenseCard() {
     const resp = await fetch(`${API}/auth/status`, opts);
     if (!resp.ok) return;
     const s = await resp.json();
+    _lastAuthStatus = s;  // i18n 변경 시 재렌더용.
     renderLicenseCard(s);
     // 버전 drift 감지 — SaaS 재배포 직후 사용자 새로고침 없이 자동 reload.
     _checkVersionDrift(s);
