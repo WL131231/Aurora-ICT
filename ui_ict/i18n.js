@@ -24,6 +24,15 @@
     "Asia/Shanghai": "중국 (CST)",
   };
 
+  // 2026-05-30 파트너 요청: 언어 변경 시 해당 국가 시간대 자동 설정.
+  // 사용자가 별도로 시간대 select 로 override 가능.
+  const LANG_TO_TZ = {
+    "ko": "Asia/Seoul",
+    "en": "America/New_York",
+    "zh": "Asia/Shanghai",
+    "ja": "Asia/Tokyo",
+  };
+
   // ============================================================
   // 번역 dictionary
   // ============================================================
@@ -285,6 +294,15 @@
     sel.value = getLang();
     sel.addEventListener("change", () => {
       setLang(sel.value);
+      // 2026-05-30 파트너 요청: 언어 변경 시 해당 국가 시간대 자동 설정.
+      const autoTz = LANG_TO_TZ[sel.value];
+      if (autoTz) {
+        setTz(autoTz);
+        // tz select element 도 동기화.
+        const tzSel = document.getElementById("i18n-tz-select");
+        if (tzSel) tzSel.value = autoTz;
+        window.dispatchEvent(new CustomEvent("aurora-tz-changed"));
+      }
       applyI18nToDOM();
       // killzone 라벨도 즉시 갱신.
       window.dispatchEvent(new CustomEvent("aurora-i18n-changed"));
