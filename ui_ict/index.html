@@ -1554,17 +1554,23 @@
     border-color: var(--accent);
   }
   .toast {
+    /* 2026-05-30 파트너 요청: 우하단 → 상단 중앙 (가시성 ↑). 햄버거 / 공지
+       배너와 겹치지 않게 top:54 (햄버거 top:10 + 32 + 12 여백). */
     position: fixed;
-    bottom: 20px;
-    right: 20px;
-    padding: 10px 16px;
+    top: 54px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 11px 22px;
     background: var(--surface);
     border: 1px solid var(--line-strong);
     color: var(--text-1);
     border-radius: 4px;
-    font-size: 11px;
-    letter-spacing: 0.1em;
+    font-size: 12px;
+    letter-spacing: 0.08em;
     display: none;
+    z-index: 400;
+    max-width: 80vw;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   }
   .toast.error {
     background: rgba(251, 113, 133, 0.10);
