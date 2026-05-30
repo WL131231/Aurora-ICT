@@ -323,6 +323,42 @@ def create_auth_router(
             )
         return {"ok": True, "mode": req.mode}
 
+    @router.delete("/api-keys")
+    async def delete_api_keys_endpoint(
+        request: Request,
+        mode: str,
+    ) -> dict[str, object]:
+        """거래소 API 키 삭제 — 슬롯 NULL 로 비움 (2026-05-30 파트너 요청).
+
+        UI 의 cred-slot '삭제' 버튼이 호출. 현재 모드와 무관하게 지정 모드의
+        키만 삭제. 다른 모드 키는 그대로.
+
+        Args:
+            mode: ``demo`` 또는 ``live``. 쿼리 파라미터.
+
+        Returns:
+            ``{"ok": True, "mode": ...}``.
+        """
+        if mode not in ("demo", "live"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"mode 는 'demo' 또는 'live' 여야 합니다: {mode!r}",
+            )
+        token = extract_session_token(request)
+        user_code = pin.get_user_from_session(token) if token else None
+        if user_code is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="로그인이 필요합니다.",
+            )
+        ok = users_db.delete_api_keys(db_path, user_code, mode)
+        if not ok:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="해당 사용자가 존재하지 않습니다.",
+            )
+        return {"ok": True, "mode": mode}
+
     return router
 
 

@@ -47,9 +47,13 @@
   ::-webkit-scrollbar-thumb:hover { background: rgba(219, 219, 222, 0.28); }
   ::-webkit-scrollbar-corner { background: var(--bg-2); }
   * { scrollbar-width: thin; scrollbar-color: rgba(219, 219, 222, 0.14) #1C1C1C; }
-  .wrap { display: flex; height: 100vh; }
+  .wrap { display: flex; height: 100vh; overflow: hidden; }
   .sidebar {
     width: 260px;
+    /* 2026-05-30: PNL 토글 시 chart 가 옛 큰 width 유지하면 사이드바가
+       압축되던 버그 (PR #181 의 ResizeObserver 만으론 부족). flex-shrink:0
+       으로 사이드바는 절대 줄어들지 않게 명시 — chart-wrap 만 reflow. */
+    flex-shrink: 0;
     background: var(--bg-2);
     border-right: 1px solid var(--line);
     padding: 20px;
@@ -152,7 +156,10 @@
     color: #fb7185;
     box-shadow: 0 0 12px rgba(251, 113, 133, 0.45);
   }
-  .main { flex: 1; display: flex; flex-direction: column; background: var(--bg); }
+  /* 2026-05-30: PNL 토글 다시 펼칠 때 사이드바 깨짐 — flex 자식 main 이
+     기본 min-width:auto (자식 content 크기) 라 chart 가 큰 width 유지 시
+     main 이 못 줄어듦 → 사이드바 압축. min-width:0 으로 chart 폭 무시. */
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
   .chart-wrap {
     flex: 1;
     position: relative;
@@ -410,7 +417,9 @@
   }
   .equity-sub { font-size: 10px; color: var(--text-3); margin-top: 3px; }
 
-  /* 2026-05-30 파트너 요청: 사이드바 언어/시간대 prefs. */
+  /* 2026-05-30 파트너 요청: 사이드바 언어/시간대 prefs.
+     v2: select 폭 부족으로 '한국 (KST)' 글자 잘리던 버그 — max-width 제거,
+     라벨 좁게 + select 가 남은 공간 모두 차지. */
   .i18n-prefs {
     display: flex;
     flex-direction: column;
@@ -421,26 +430,32 @@
   .i18n-prefs-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 8px;
   }
   .i18n-prefs-label {
+    flex: 0 0 42px;
     font-size: 10px;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.05em;
     color: var(--text-3);
     text-transform: uppercase;
   }
+  /* select 가 들어있는 span — flex 로 늘어남. */
+  #i18n-lang-mount,
+  #i18n-tz-mount {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: block;
+  }
   .i18n-select {
-    flex: 1;
+    width: 100%;
     background: var(--surface);
     border: 1px solid var(--line);
     color: var(--text-1);
     font-family: inherit;
     font-size: 11px;
-    padding: 4px 8px;
+    padding: 4px 6px;
     border-radius: 3px;
     cursor: pointer;
-    max-width: 60%;
   }
   .i18n-select:hover { border-color: var(--line-strong); }
 
@@ -1446,6 +1461,66 @@
     background: rgba(255, 255, 255, 0.10);
     border-color: rgba(255, 255, 255, 0.80);
   }
+
+  /* 2026-05-30 파트너 재요청: 신규 cred-slot 구조 (라벨 칸 + 하단 두 버튼).
+     활성화 시 라벨 칸만 초록 fill + glow. 미등록 시 라벨 칸 회색 outline.
+     하단 버튼은 항상 어두운 박스 — 재등록 (흰 글자) / 삭제 (빨강 글자). */
+  .cred-slot {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .cred-slot-head {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 9px 12px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    transition: background 0.18s, border-color 0.18s, box-shadow 0.18s;
+  }
+  .cred-slot.has-key .cred-slot-head {
+    background: rgba(52, 211, 153, 0.18);
+    border-color: #34d399;
+    box-shadow: 0 0 12px rgba(52, 211, 153, 0.45);
+  }
+  .cred-slot.has-key .cred-slot-label {
+    color: var(--text-1);
+  }
+  .cred-slot.has-key .cred-slot-label.cred-slot-live {
+    color: #fb7185;
+  }
+  .cred-slot-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+  }
+  .cred-action {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    color: var(--text-1);
+    font-size: 10px;
+    padding: 5px 0;
+    letter-spacing: 0.12em;
+    border-radius: 3px;
+    cursor: pointer;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
+  .cred-action:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: var(--line-strong);
+  }
+  .cred-action-danger {
+    color: #fb7185;
+  }
+  .cred-action-danger:hover {
+    background: rgba(251, 113, 133, 0.10);
+    border-color: rgba(251, 113, 133, 0.55);
+    color: #fb7185;
+  }
   /* 로그인 후 키 등록 페이지에도 동일 토글 */
   .auth-mode-toggle {
     display: flex;
@@ -1891,14 +1966,32 @@
          배경색 + 버튼 라벨 (등록 시 "재등록", 미등록 시 "등록") 만으로 시각화.
          2026-05-29 v6 파트너 재요청: '활성화' 텍스트 제거. 라벨 (DEMO/LIVE)
          + 우측 작은 [재등록]/[등록] 버튼만. 글자 깨짐 해결 — 라벨 flex:1. -->
+    <!-- 2026-05-30 v2 파트너 재요청: 라벨 칸 (DEMO/LIVE) + 하단 두 버튼
+         (등록/재등록 + 삭제) 로 재구조화. 활성화 시 라벨 칸만 초록 fill,
+         버튼은 흰/빨강 그대로. 미등록 시 라벨 칸 회색 outline + 첫 등록 버튼
+         라벨이 '등록'. -->
     <div class="cred-saved" id="cred-saved-block" style="display:none">
-      <div class="cred-slot-row no-key" id="cred-slot-demo">
-        <span class="cred-slot-label">DEMO</span>
-        <button data-cred-reenter="demo" id="btn-cred-demo" class="cred-reenter-mini">등록</button>
+      <div class="cred-slot no-key" id="cred-slot-demo">
+        <div class="cred-slot-head">
+          <span class="cred-slot-label">DEMO</span>
+        </div>
+        <div class="cred-slot-actions">
+          <button data-cred-reenter="demo" id="btn-cred-demo"
+                  class="cred-action">등록</button>
+          <button data-cred-delete="demo" id="btn-cred-delete-demo"
+                  class="cred-action cred-action-danger">삭제</button>
+        </div>
       </div>
-      <div class="cred-slot-row no-key" id="cred-slot-live">
-        <span class="cred-slot-label cred-slot-live">LIVE</span>
-        <button data-cred-reenter="live" id="btn-cred-live" class="cred-reenter-mini">등록</button>
+      <div class="cred-slot no-key" id="cred-slot-live">
+        <div class="cred-slot-head">
+          <span class="cred-slot-label cred-slot-live">LIVE</span>
+        </div>
+        <div class="cred-slot-actions">
+          <button data-cred-reenter="live" id="btn-cred-live"
+                  class="cred-action">등록</button>
+          <button data-cred-delete="live" id="btn-cred-delete-live"
+                  class="cred-action cred-action-danger">삭제</button>
+        </div>
       </div>
     </div>
 
@@ -2019,7 +2112,7 @@
       <div id="positions-mobile-host" class="positions-mobile-host"></div>
       <!-- 좌하단 판단 패널 (2026-05-27) — 봇이 시장을 어떻게 보는지 시각화 -->
       <div id="judgment-panel" class="judgment-panel">
-        <div class="jp-header">봇의 현재 판단</div>
+        <div class="jp-header" data-i18n="judgment.title">봇의 현재 판단</div>
         <div class="jp-direction">
           <div class="jp-dir-label" id="jp-dir-label">—</div>
           <div class="jp-dir-bar">
