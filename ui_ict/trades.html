@@ -776,15 +776,15 @@
       if (isEntry && (ctx.entry != null || ctx.confluences)) {
         html += `<div class="detail-section-title">${tI("trades.sectionEntryReason", "진입 사유 (당시 봇 판단)")}</div>`;
         html += `<div class="detail-grid">`;
-        if (ctx.entry != null) html += dCell("진입가", fmt(ctx.entry, 2));
-        if (ctx.sl != null) html += dCell("SL", fmt(ctx.sl, 2));
-        if (ctx.tp != null) html += dCell("TP", fmt(ctx.tp, 2));
-        if (ctx.qty != null) html += dCell("수량", fmt(ctx.qty, 4));
-        if (ctx.leverage != null) html += dCell("레버리지", ctx.leverage + "x");
-        if (ctx.rr != null) html += dCell("RR", fmt(ctx.rr, 2));
-        if (ctx.score != null) html += dCell("Confluence Score", String(ctx.score));
-        if (ctx.source) html += dCell("Source", ctx.source);
-        if (ctx.window) html += dCell("Window", ctx.window);
+        if (ctx.entry != null) html += dCell(tI("td.entryPrice", "진입가"), fmt(ctx.entry, 2));
+        if (ctx.sl != null) html += dCell(tI("td.sl", "SL"), fmt(ctx.sl, 2));
+        if (ctx.tp != null) html += dCell(tI("td.tp", "TP"), fmt(ctx.tp, 2));
+        if (ctx.qty != null) html += dCell(tI("td.qty", "수량"), fmt(ctx.qty, 4));
+        if (ctx.leverage != null) html += dCell(tI("td.leverage", "레버리지"), ctx.leverage + "x");
+        if (ctx.rr != null) html += dCell(tI("td.rr", "RR"), fmt(ctx.rr, 2));
+        if (ctx.score != null) html += dCell(tI("td.confluenceScore", "Confluence Score"), String(ctx.score));
+        if (ctx.source) html += dCell(tI("td.source", "Source"), ctx.source);
+        if (ctx.window) html += dCell(tI("td.window", "Window"), ctx.window);
         html += `</div>`;
         if (Array.isArray(ctx.confluences) && ctx.confluences.length) {
           html += `<div class="detail-section-title">${tI("trades.sectionConfluences", "Confluences (작동한 지표)")}</div>`;
@@ -808,32 +808,32 @@
       if (isClose && (ctx.close_price != null || ctx.htf_fvg_bull_weight != null)) {
         html += `<div class="detail-section-title">${tI("trades.sectionCloseJudgment", "청산 시점 봇 판단 스냅샷")}</div>`;
         html += `<div class="detail-grid">`;
-        if (ctx.entry_price != null) html += dCell("진입가", fmt(ctx.entry_price, 2));
-        if (ctx.close_price != null) html += dCell("청산가", fmt(ctx.close_price, 2));
+        if (ctx.entry_price != null) html += dCell(tI("td.entryPrice", "진입가"), fmt(ctx.entry_price, 2));
+        if (ctx.close_price != null) html += dCell(tI("td.closePrice", "청산가"), fmt(ctx.close_price, 2));
         if (ctx.move_pct != null) {
           html += dCell(
-            "가격 변화 (%)",
+            tI("td.movePct", "가격 변화 (%)"),
             (ctx.move_pct >= 0 ? "+" : "") + fmt(ctx.move_pct, 4) + "%",
             ctx.move_pct >= 0 ? "pos" : "neg",
           );
         }
         if (ctx.pnl_usd != null) {
           html += dCell(
-            "실현 PnL",
+            tI("td.realizedPnl", "실현 PnL"),
             (ctx.pnl_usd >= 0 ? "+" : "") + fmt(ctx.pnl_usd, 2),
             ctx.pnl_usd >= 0 ? "pos" : "neg",
           );
         }
-        if (ctx.close_reason) html += dCell("청산 사유", ctx.close_reason);
-        if (ctx.killzone) html += dCell("Killzone", ctx.killzone);
+        if (ctx.close_reason) html += dCell(tI("td.closeReason", "청산 사유"), ctx.close_reason);
+        if (ctx.killzone) html += dCell(tI("td.killzone", "Killzone"), ctx.killzone);
         if (ctx.ema_bias_last) html += dCell("EMA bias", ctx.ema_bias_last);
-        if (ctx.dol_draw_last) html += dCell("DOL draw", ctx.dol_draw_last);
+        if (ctx.dol_draw_last) html += dCell(tI("td.dolDraw", "DOL draw"), ctx.dol_draw_last);
         if (ctx.htf_fvg_bull_weight != null) {
-          html += dCell("HTF FVG bull weight", String(ctx.htf_fvg_bull_weight),
+          html += dCell(tI("td.htfBullWeight", "HTF FVG bull weight"), String(ctx.htf_fvg_bull_weight),
             ctx.htf_fvg_bull_weight > (ctx.htf_fvg_bear_weight || 0) ? "pos" : "");
         }
         if (ctx.htf_fvg_bear_weight != null) {
-          html += dCell("HTF FVG bear weight", String(ctx.htf_fvg_bear_weight),
+          html += dCell(tI("td.htfBearWeight", "HTF FVG bear weight"), String(ctx.htf_fvg_bear_weight),
             ctx.htf_fvg_bear_weight > (ctx.htf_fvg_bull_weight || 0) ? "neg" : "");
         }
         if (ctx.htf_fvg_n != null) html += dCell("HTF FVG 개수", String(ctx.htf_fvg_n));
