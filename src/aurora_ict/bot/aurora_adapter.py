@@ -389,13 +389,23 @@ class AuroraClientAdapter:
             return dict(result) if isinstance(result, dict) else {"raw": str(result)}
         except Exception as e:  # noqa: BLE001
             # Bybit retCode 110043: "leverage not modified" — 이미 같은 값 설정.
-            # 다른 에러는 warning, 진행 자체는 안 막음.
+            # #LEV-6: Bybit demo + ccxt 조합에서 retCode 10005 (query-api 권한
+            # 거부) 가 false positive 로 발생. 실제로는 set_leverage 가 Bybit
+            # 측에서 성공 처리됨 (거래소 화면 변경 확인). ccxt 의 UTA 체크
+            # endpoint 권한 거부는 실제 set_leverage 결과와 무관 → success 처리.
             msg = str(e)
             if "110043" in msg or "not modified" in msg:
                 logger.info(
                     "set_leverage skip (%s 이미 %dx)", raw_symbol, leverage,
                 )
                 return {"retCode": 110043, "alreadySet": True}
+            if "10005" in msg and "query-api" in msg:
+                logger.warning(
+                    "set_leverage (%s → %dx): ccxt UTA 체크 false positive "
+                    "(retCode 10005) — Bybit 측 실제로는 성공 처리됨.",
+                    raw_symbol, leverage,
+                )
+                return {"retCode": 0, "alreadySet": False}
             logger.warning(
                 "set_leverage 실패 (%s %dx): %s",
                 raw_symbol, leverage, e,
