@@ -266,11 +266,13 @@ class AuroraClientAdapter:
         except Exception as e:  # noqa: BLE001
             logger.warning("fetch_actual_leverage 실패 (%s): %s", symbol, e)
             return None
-        # 디버그 — 응답의 모든 position 항목 가시화.
+        # 디버그 — 응답의 모든 position 항목 가시화. WARNING level (#LEV-5)
+        # 파트너 fly redirect filter 가 INFO 안 잡아 임시 WARNING. 디버그 끝나면
+        # info 로 되돌리거나 제거.
         for idx, p in enumerate(positions or []):
             info = p.get("info") or {}
-            logger.info(
-                "fetch_actual_leverage[%s] #%d: sym=%s side=%s "
+            logger.warning(
+                "LEV_DEBUG[%s] #%d: sym=%s side=%s "
                 "lev=%s marginMode=%s contracts=%s | info: lev=%s "
                 "leverage_buy=%s leverage_sell=%s tradeMode=%s",
                 symbol, idx, p.get("symbol"), p.get("side"),
