@@ -382,6 +382,9 @@ class MultiUserBotManager:
                     "사용자 %s/%s set_leverage 실패: %s", user_code, symbol, e,
                 )
             if not leverage_synced:
+                # #LEV-3: ccxt fetch_positions 의 leverage 가 거래소 실제값과
+                # 다른 케이스 발견 (BTC 거래소 20x 인데 10x 보고 등).
+                # 자동 보정은 잘못된 size 계산 위험 → WARNING 만 표시.
                 try:
                     actual = await slot.client.fetch_actual_leverage(  # type: ignore[union-attr]
                         slot.settings.symbol,
@@ -392,13 +395,13 @@ class MultiUserBotManager:
                         user_code, symbol, e,
                     )
                     actual = None
-                if actual is not None and actual != bot.leverage:
-                    logger.warning(
-                        "사용자 %s/%s leverage mismatch — 의도 %dx, 거래소 %dx. "
-                        "size 계산 보정 (수동 변경 권장).",
-                        user_code, symbol, bot.leverage, actual,
-                    )
-                    bot.leverage = actual
+                logger.warning(
+                    "사용자 %s/%s set_leverage 실패 — 봇 의도 %dx, "
+                    "ccxt 보고 %sx. 거래소 화면에서 직접 확인 + 수동 설정 권장 "
+                    "(자동 보정 미적용).",
+                    user_code, symbol, bot.leverage,
+                    str(actual) if actual is not None else "?",
+                )
             await bot.start()
             # 봇 실제 가동 성공 직후에만 DB 영속화 — start() 가 예외 던지면 이 줄 도달 X
             # → DB 는 stale 한 0 유지 (보수적 안전).

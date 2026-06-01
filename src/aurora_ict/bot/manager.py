@@ -139,14 +139,17 @@ class BotManager:
         except Exception as e:  # noqa: BLE001
             logger.warning("set_leverage 호출 자체 실패: %s", e)
         if not leverage_synced:
+            # #LEV-3: ccxt fetch_positions 의 leverage 필드가 거래소 실제값과
+            # 다른 케이스 발견 (BTC 거래소 20x 인데 ccxt 10x 반환 등).
+            # 자동 보정은 잘못된 값으로 size 계산 오차 유발 위험 → WARNING 만
+            # 표시. 사용자가 거래소 화면에서 직접 확인 + 수동 일치 권장.
             actual = await client.fetch_actual_leverage(self.settings.symbol)
-            if actual is not None and actual != self._bot.leverage:
-                logger.warning(
-                    "leverage mismatch — 의도 %dx, 거래소 실제 %dx. "
-                    "size 계산을 거래소 값으로 보정 (수동 변경 권장).",
-                    self._bot.leverage, actual,
-                )
-                self._bot.leverage = actual
+            logger.warning(
+                "set_leverage 실패 — 봇 의도 %dx, ccxt 보고 %sx. "
+                "거래소 화면에서 직접 확인 + 수동 설정 권장 (자동 보정 미적용).",
+                self._bot.leverage,
+                str(actual) if actual is not None else "?",
+            )
         await self._bot.start()
         logger.info(
             "BotManager started — mode=%s symbol=%s leverage=%dx",
