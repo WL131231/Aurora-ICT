@@ -475,11 +475,18 @@ class MultiUserBotManager:
         """ccxt async exchange 의 aiohttp ClientSession 명시 close.
 
         BotManager._close_client 와 동일 패턴 — 누수 방지.
+
+        #LEV-7: slot.bot 도 None 박음. 이걸 안 박으면 다음 start 시
+        get_or_create_bot 의 ``slot.bot is not None`` 조건에 걸려 기존 bot
+        그대로 반환 → 새 client 생성 안 됨 → slot.client 영원히 None →
+        모든 호출 'NoneType' AttributeError.
         """
         if slot.client is None:
+            slot.bot = None
             return
         client = slot.client
         slot.client = None
+        slot.bot = None
         inner = getattr(client, "_client", client)
         ex = getattr(inner, "_ex", None)
         if ex is None:
