@@ -112,6 +112,14 @@ class CcxtClient:
         # Bybit perpetual = USDT-margined 명시 (USDC/inverse 분리, PR-2 #31 패턴)
         if exchange_id == "bybit":
             options["defaultSubType"] = "linear"
+            # #LEV-4: Bybit demo 환경에서 ccxt 가 set_leverage 호출 전 자동
+            # query-api (/user/v3/private/query-api) 로 UTA 체크 → demo 키 권한
+            # 거부 (retCode 10005) → set_leverage 자체 실패. 아래 옵션으로
+            # ccxt 가 query-api 호출 skip → set_leverage 통과 시도.
+            # (Bybit V5 unified account 가 디폴트이므로 명시해도 안전.)
+            options["enableUnifiedAccount"] = True
+            options["enableUnifiedMargin"] = True
+            options["accountType"] = "UNIFIED"
 
         config: dict[str, Any] = {
             "apiKey": api_key,
