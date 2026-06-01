@@ -365,12 +365,18 @@ class MultiUserBotManager:
             # 거래소 측 leverage 셋업 — 실패해도 봇 자체는 진행. 다만 실패 시
             # 실제 leverage 조회해서 bot.leverage 보정 (#LEV-1) — size 계산이
             # 거래소 값과 일치하게.
+            # set_leverage 반환값으로 성공 판정 — aurora_adapter 가 실패 시 빈 dict
+            # 또는 {"retCode": 110043} (이미 같은 값) 반환 (exception 안 던짐).
             leverage_synced = False
             try:
-                await slot.client.set_leverage(  # type: ignore[union-attr]
+                result = await slot.client.set_leverage(  # type: ignore[union-attr]
                     slot.settings.symbol, slot.settings.leverage,
                 )
-                leverage_synced = True
+                if isinstance(result, dict) and (
+                    result.get("alreadySet") is True
+                    or int(result.get("retCode", -1)) == 0
+                ):
+                    leverage_synced = True
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "사용자 %s/%s set_leverage 실패: %s", user_code, symbol, e,
