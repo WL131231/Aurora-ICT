@@ -247,6 +247,10 @@ class AuroraClientAdapter:
         set_leverage 실패 시 fallback 으로 호출. ccxt fetch_positions 가 빈
         포지션도 leverage 필드 포함해 반환 (Bybit V5 position/list endpoint).
 
+        #LEV-5: ccxt 가 같은 symbol 의 cross+isolated 양쪽 또는 long/short
+        side 별로 여러 position dict 반환 → 첫 번째 hit 가 잘못된 항목일 수
+        있음. 명시적 symbol 매칭 + 디버그 로그 추가.
+
         Args:
             symbol: ccxt unified symbol (예: "BTC/USDT:USDT").
 
@@ -262,7 +266,33 @@ class AuroraClientAdapter:
         except Exception as e:  # noqa: BLE001
             logger.warning("fetch_actual_leverage 실패 (%s): %s", symbol, e)
             return None
+        # 디버그 — 응답의 모든 position 항목 가시화.
+        for idx, p in enumerate(positions or []):
+            info = p.get("info") or {}
+            logger.info(
+                "fetch_actual_leverage[%s] #%d: sym=%s side=%s "
+                "lev=%s marginMode=%s contracts=%s | info: lev=%s "
+                "leverage_buy=%s leverage_sell=%s tradeMode=%s",
+                symbol, idx, p.get("symbol"), p.get("side"),
+                p.get("leverage"), p.get("marginMode"), p.get("contracts"),
+                info.get("leverage"), info.get("buyLeverage"),
+                info.get("sellLeverage"), info.get("tradeMode"),
+            )
+        # 명시적 symbol 매칭 — 다른 심볼 무시.
         for p in positions or []:
+            if p.get("symbol") != symbol:
+                continue
+            # info dict 의 buyLeverage 가 가장 신뢰할 수 있는 raw 값 (Bybit V5).
+            info = p.get("info") or {}
+            for field in ("buyLeverage", "leverage"):
+                raw = info.get(field)
+                if raw is None:
+                    continue
+                try:
+                    return int(float(raw))
+                except (TypeError, ValueError):
+                    continue
+            # ccxt 표준 leverage fallback.
             lev = p.get("leverage")
             if lev is not None:
                 try:
