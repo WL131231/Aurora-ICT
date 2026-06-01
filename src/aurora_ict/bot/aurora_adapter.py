@@ -241,6 +241,36 @@ class AuroraClientAdapter:
         return None
         return None
 
+    async def fetch_actual_leverage(self, symbol: str) -> int | None:
+        """거래소 측 현재 leverage 조회 (포지션 무관).
+
+        set_leverage 실패 시 fallback 으로 호출. ccxt fetch_positions 가 빈
+        포지션도 leverage 필드 포함해 반환 (Bybit V5 position/list endpoint).
+
+        Args:
+            symbol: ccxt unified symbol (예: "BTC/USDT:USDT").
+
+        Returns:
+            정수 leverage. 조회 실패 시 None.
+        """
+        ex = getattr(self._client, "_ex", None)
+        if ex is None:
+            return None
+        try:
+            await self._ensure_time_sync()
+            positions = await ex.fetch_positions([symbol])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("fetch_actual_leverage 실패 (%s): %s", symbol, e)
+            return None
+        for p in positions or []:
+            lev = p.get("leverage")
+            if lev is not None:
+                try:
+                    return int(float(lev))
+                except (TypeError, ValueError):
+                    continue
+        return None
+
     async def fetch_balance(self) -> dict[str, Any]:
         """ccxt fetch_balance를 그대로 호출.
 

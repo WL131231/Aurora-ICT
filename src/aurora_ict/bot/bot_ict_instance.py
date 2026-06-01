@@ -115,6 +115,10 @@ class ExchangeClientProtocol(Protocol):
         self, symbol: str, leverage: int,
     ) -> dict[str, Any]: ...
 
+    async def fetch_actual_leverage(
+        self, symbol: str,
+    ) -> int | None: ...
+
 
 class BotState(StrEnum):
     """봇 상태."""

@@ -121,11 +121,23 @@ class BotManager:
             daily_loss_limit_pct=self.settings.daily_loss_limit_pct,
         )
         # 거래소 측 leverage 를 settings 에 맞춤 — qty 계산 일치 보장.
-        # 실패해도 봇 시작 자체는 진행 (warning 만, 사용자가 수동 박은 거 박혀있을 수 있음).
+        # 실패해도 봇 시작 자체는 진행. 다만 실패 시 실제 leverage 조회해서
+        # bot.leverage 보정 (#LEV-1) — size 계산이 실제 거래소 값과 일치하게.
+        leverage_synced = False
         try:
             await client.set_leverage(self.settings.symbol, self.settings.leverage)
+            leverage_synced = True
         except Exception as e:  # noqa: BLE001
             logger.warning("set_leverage 호출 자체 실패: %s", e)
+        if not leverage_synced:
+            actual = await client.fetch_actual_leverage(self.settings.symbol)
+            if actual is not None and actual != self._bot.leverage:
+                logger.warning(
+                    "leverage mismatch — 의도 %dx, 거래소 실제 %dx. "
+                    "size 계산을 거래소 값으로 보정 (수동 변경 권장).",
+                    self._bot.leverage, actual,
+                )
+                self._bot.leverage = actual
         await self._bot.start()
         logger.info(
             "BotManager started — mode=%s symbol=%s leverage=%dx",
