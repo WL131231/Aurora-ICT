@@ -362,15 +362,37 @@ class MultiUserBotManager:
                     )
                 return
             slot = self._slots[(user_code, symbol)]
-            # 거래소 측 leverage 셋업 — 실패해도 봇 자체는 진행 (warning).
+            # 거래소 측 leverage 셋업 — 실패해도 봇 자체는 진행. 다만 실패 시
+            # 실제 leverage 조회해서 bot.leverage 보정 (#LEV-1) — size 계산이
+            # 거래소 값과 일치하게.
+            leverage_synced = False
             try:
                 await slot.client.set_leverage(  # type: ignore[union-attr]
                     slot.settings.symbol, slot.settings.leverage,
                 )
+                leverage_synced = True
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "사용자 %s/%s set_leverage 실패: %s", user_code, symbol, e,
                 )
+            if not leverage_synced:
+                try:
+                    actual = await slot.client.fetch_actual_leverage(  # type: ignore[union-attr]
+                        slot.settings.symbol,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "사용자 %s/%s fetch_actual_leverage 실패: %s",
+                        user_code, symbol, e,
+                    )
+                    actual = None
+                if actual is not None and actual != bot.leverage:
+                    logger.warning(
+                        "사용자 %s/%s leverage mismatch — 의도 %dx, 거래소 %dx. "
+                        "size 계산 보정 (수동 변경 권장).",
+                        user_code, symbol, bot.leverage, actual,
+                    )
+                    bot.leverage = actual
             await bot.start()
             # 봇 실제 가동 성공 직후에만 DB 영속화 — start() 가 예외 던지면 이 줄 도달 X
             # → DB 는 stale 한 0 유지 (보수적 안전).
