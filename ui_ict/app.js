@@ -13,6 +13,10 @@ let currentTimeframe = localStorage.getItem("aurora_ict_tf") || "5m";
 const VALID_TFS = ["1m", "5m", "15m", "1h", "2h", "4h", "1d", "1w"];
 if (!VALID_TFS.includes(currentTimeframe)) currentTimeframe = "5m";
 
+// 첫 로드 또는 TF 변경 시만 차트 zoom 강제. 이후 refresh 는 사용자 view 유지.
+let _chartViewInitialized = false;
+const CHART_INIT_VISIBLE_BARS = 180;
+
 // 시각화 토글 (BOS / EQH-EQL / PD Zones) — localStorage 영속화
 const VIZ_KEYS = ["bos", "eql", "zones"];
 const vizEnabled = {};
@@ -856,8 +860,15 @@ async function fetchAndRender() {
       api("/ict/closed_pnl?limit=200"),
     ]);
     candleSeries.setData(ohlcv.candles);
-    // 2026-05-27: 차트 좌측 공백 제거 — 모든 봉 보이게 맞춤.
-    try { chart.timeScale().fitContent(); } catch (e) { /* noop */ }
+    // 첫 로드/TF 변경 시만 최근 N봉 zoom — 이후 refresh 는 사용자 view 유지.
+    if (!_chartViewInitialized && ohlcv.candles && ohlcv.candles.length > 0) {
+      _chartViewInitialized = true;
+      const total = ohlcv.candles.length;
+      const from = Math.max(0, total - CHART_INIT_VISIBLE_BARS);
+      try {
+        chart.timeScale().setVisibleLogicalRange({ from, to: total });
+      } catch (e) { /* noop */ }
+    }
     // 마지막 봉 시간 — PD Zone area 끝점에 사용
     if (ohlcv.candles && ohlcv.candles.length > 0) {
       lastBarTimeSec = ohlcv.candles[ohlcv.candles.length - 1].time;
@@ -1565,6 +1576,7 @@ $("tf-toggle").addEventListener("click", async (ev) => {
   currentTimeframe = tf;
   localStorage.setItem("aurora_ict_tf", tf);
   _updateTfButtons();
+  _chartViewInitialized = false;  // TF 바뀌면 다시 최근 N봉 zoom
   await fetchAndRender();
 });
 
