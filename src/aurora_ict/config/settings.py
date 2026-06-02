@@ -159,6 +159,10 @@ class IctSettings(BaseSettings):
     # max_sl_distance_pct: SL 거리가 entry 의 이 비율 초과면 setup skip.
     # 0 = 비활성. default 0.005 (0.5%) — 비정상 큰 SL 차단.
     max_sl_distance_pct: float = Field(default=0.005, ge=0.0, le=0.1)
+    # max_entry_distance_pct: setup.entry 가 현재가에서 이 비율 초과면 setup skip.
+    # 너무 멀리 박힌 limit 은 미체결 + ttl 만료까지 대기 시간 길어 setup 변형 위험.
+    # 0 = 비활성. default 0.005 (0.5%) — 파트너 결정 2026-06-03.
+    max_entry_distance_pct: float = Field(default=0.005, ge=0.0, le=0.1)
     # heartbeat_interval_sec: bot loop 살아있음 INFO 로그 주기 (0 = 비활성).
     heartbeat_interval_sec: int = Field(default=900, ge=0)
     # daily_loss_limit_pct (#SAFETY-1, 2026-05-21 사용자 결정):
