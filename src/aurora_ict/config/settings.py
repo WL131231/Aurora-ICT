@@ -152,7 +152,10 @@ class IctSettings(BaseSettings):
     # 2026-05-30: 0.25% 가드가 너무 빡빡해 setup 의 ~75% 차단 → 매매 0건 보고.
     # 0.25% → 0.20% 완화 (파트너 결정). 0.20% 이상이면 통과, 0.25% 도 자동 통과.
     # 단기 fresh setup 살리되 노이즈에 즉시 stop 당하는 정도의 SL 은 여전히 차단.
-    min_sl_distance_pct: float = Field(default=0.002, ge=0.0, le=0.05)
+    # 2026-06-02: 0.20% 도 여전히 setup 대부분 차단 (실측 setup found 1086건
+    # 진입 0건) → 0.20% → 0.12% 추가 완화 (파트너 결정). PR #147 직전 (0.07%)
+    # 보다는 여전히 보수적이지만, 진입 빈도 회복.
+    min_sl_distance_pct: float = Field(default=0.0012, ge=0.0, le=0.05)
     # max_sl_distance_pct: SL 거리가 entry 의 이 비율 초과면 setup skip.
     # 0 = 비활성. default 0.005 (0.5%) — 비정상 큰 SL 차단.
     max_sl_distance_pct: float = Field(default=0.005, ge=0.0, le=0.1)
