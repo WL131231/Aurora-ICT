@@ -248,6 +248,9 @@ class BotIctInstance:
     # max_sl_distance_pct: SL 거리 / entry 가 이 비율 초과면 setup skip (비정상 큰 SL 차단).
     # 0 = 비활성.
     max_sl_distance_pct: float = 0.0
+    # max_entry_distance_pct: setup.entry 와 현재가 차이가 이 비율 초과면 setup skip.
+    # 0 = 비활성. 너무 멀리 박힌 limit 의 미체결 대기 시간 회피.
+    max_entry_distance_pct: float = 0.0
     # heartbeat_interval_sec: step loop 살아있음 INFO 로그 주기. 0 = 비활성.
     heartbeat_interval_sec: int = 0
     # #SAFETY-1: 자본 대비 % 일일 손실 한도. 0 = 비활성. NY local 자정 reset.
@@ -998,6 +1001,34 @@ class BotIctInstance:
                 )
                 return
 
+        # 2026-06-03: setup.entry 가 현재가에서 max_entry_distance_pct 초과로
+        # 멀리 박혀있으면 entry 가격을 현재가 ±max_entry_distance_pct 안으로
+        # 보정해서 진입 진행 (skip X). 너무 멀리 박힌 limit 의 미체결 대기
+        # 시간 회피. SL/TP/qty 는 setup 기준 그대로 (RR 약간 변형).
+        # adjusted_entry 가 None 이면 보정 안 함 (setup.entry 그대로 사용).
+        adjusted_entry: float | None = None
+        if self.max_entry_distance_pct > 0 and setup.entry > 0:
+            try:
+                current_price = await self.client.fetch_ticker(self.symbol)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "max_entry_distance 체크용 fetch_ticker 실패 (무시, 보정 미적용): %s", e,
+                )
+                current_price = None
+            if current_price is not None and current_price > 0:
+                max_dist = current_price * self.max_entry_distance_pct
+                if abs(setup.entry - current_price) > max_dist:
+                    if setup.entry < current_price:
+                        adjusted_entry = current_price - max_dist
+                    else:
+                        adjusted_entry = current_price + max_dist
+                    logger.info(
+                        "entry 가격 보정 — setup.entry %.4f → %.4f "
+                        "(현재가 %.4f, max %.4f%%)",
+                        setup.entry, adjusted_entry, current_price,
+                        self.max_entry_distance_pct * 100,
+                    )
+
         equity = await self._fetch_equity()
         qty = self._calc_qty(setup, equity)
         if qty <= 0:
@@ -1018,7 +1049,10 @@ class BotIctInstance:
         # #LIVE-3 fix: entry = setup.entry (계획가 — FVG mean 등) 에 limit. 가격이 거기
         # retrace 하면 체결. SL/TP 가 setup 기준이라 RR 보존. use_market_entry=True 면
         # 레거시 즉시 시장가 (slippage, 비권장).
-        entry_price = None if self.use_market_entry else setup.entry
+        # 2026-06-03: max_entry_distance_pct 가드로 보정된 adjusted_entry 가 있으면
+        # 그 값 사용 (setup.entry 대체).
+        effective_entry = adjusted_entry if adjusted_entry is not None else setup.entry
+        entry_price = None if self.use_market_entry else effective_entry
 
         # #LIVE-4 fix: SL/TP 는 entry 주문에 동봉하지 않는다. 계획가(limit) 가 현재가에서
         # 벗어나면 Bybit 가 동봉 SL/TP 의 현재가 기준 방향 검증 (10001 "StopLoss should
