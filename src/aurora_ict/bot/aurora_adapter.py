@@ -151,7 +151,11 @@ class AuroraClientAdapter:
             )
         except Exception as e:  # noqa: BLE001
             msg = str(e)
-            if "10005" in msg and "query-api" in msg:
+            # #LEV-8b: query-api 메시지 없이 단순 retCode 10005 만 응답하는
+            # 케이스도 false positive (실측 2026-06-03 KST 00:02 — Bybit limit
+            # 들어간 상태에서 ERROR). retCode 10005 모두 false positive 처리,
+            # 다음 sync_position_state 가 거래소 상태와 reconcile.
+            if "10005" in msg:
                 logger.warning(
                     "place_order (%s %s qty=%s): ccxt UTA 체크 false positive "
                     "(retCode 10005) — Bybit 측 실제 처리 확인 중...",
