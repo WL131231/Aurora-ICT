@@ -113,7 +113,10 @@ class IctSettings(BaseSettings):
     # 진입 skip → 빈도↓·품질↑. 등급 C0~1/B2~3/B+4~5/A6+.
     # 4(B+) → 35h 가동 중 체결 3건(~2/일)으로 너무 빡빡 → 2026-05-26 **3(B 이상)** 으로 완화.
     # 데모 보고 빈도 4~5/일 맞도록 3~5 사이 튜닝 (env: AURORA_ICT_MIN_CONFLUENCE).
-    min_confluence: int = Field(default=3, ge=0, le=10)
+    # 2026-06-03: 횡보 시장에서 score 3 도 못 채워 매매 0건 (실측 setup found
+    # 1749건 진입 31건). 3 → 2 추가 완화 (파트너 결정, 테스트). score 2 = "C/B"
+    # 등급 — 빈도 ↑, 품질 ↓ trade-off.
+    min_confluence: int = Field(default=2, ge=0, le=10)
     # FVG 최소 % size — 지난 12거래 분석 결과 작은 FVG 노이즈 비중 커서 0.0004 → 0.0006 상향.
     fvg_min_size_pct: float = Field(default=0.0006, ge=0)
     step_interval_sec: int = Field(default=60, ge=10)
