@@ -2147,11 +2147,14 @@ class BotIctInstance:
             return
         total_weight = sum(e.weight for e in cands)
         # 계단식 A — 사용자 결정 2026-05-20.
+        # 2026-06-04: 최저 임계 4 → 2 완화 (파트너 결정). 작은 HTF FVG 만
+        # 잡히는 시장에서도 boost +1 받게 → score 2 분포 회복 목적.
+        # 상위 단계 (20/10) 는 그대로 — 강한 setup 만 큰 boost.
         if total_weight >= 20:
             boost = 3
         elif total_weight >= 10:
             boost = 2
-        elif total_weight >= 4:
+        elif total_weight >= 2:
             boost = 1
         else:
             boost = 0
