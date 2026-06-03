@@ -120,7 +120,10 @@ class IctSettings(BaseSettings):
     ohlcv_limit: int = Field(default=1000, ge=50, le=1000)
     # setup stale threshold — FVG 이후 N 봉 안에 retest 없으면 진입 안 함.
     # 30봉 = 5m TF 에서 2.5시간 / 1h TF 에서 30시간. limit retest 시간 넉넉히 확보.
-    setup_stale_bars: int = Field(default=30, ge=1, le=100)
+    # 2026-06-03: 30봉 (2.5h) 가드 너무 짧아 진입 빈도 낮음 → 120봉 (10h) 완화
+    # (파트너 결정). ICT 정통 (fvg.filled / ob.mitigated) 가드가 별도 작동하므로
+    # 시간 가드만 풀어도 안전.
+    setup_stale_bars: int = Field(default=120, ge=1, le=500)
     # disable_time_filter: True 면 Silver Bullet / Killzone 시간 윈도우 무시 (24h 매매).
     # 라이선스 정책 (model_validator):
     #   - referral: 사용자 설정 따름 (default True = 24h)
