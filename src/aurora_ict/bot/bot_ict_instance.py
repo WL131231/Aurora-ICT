@@ -1029,10 +1029,11 @@ class BotIctInstance:
 
         # 2026-06-03: setup.entry 가 현재가에서 max_entry_distance_pct 초과로
         # 멀리 박혀있으면 entry 가격을 현재가 ±max_entry_distance_pct 안으로
-        # 보정해서 진입 진행 (skip X). 너무 멀리 박힌 limit 의 미체결 대기
-        # 시간 회피. SL/TP/qty 는 setup 기준 그대로 (RR 약간 변형).
-        # adjusted_entry 가 None 이면 보정 안 함 (setup.entry 그대로 사용).
-        adjusted_entry: float | None = None
+        # 보정해서 진입 진행 (skip X). 너무 멀리 박힌 limit 의 미체결 대기 회피.
+        # 2026-06-05 fix(#ENTRY-ADJ-RR): entry 만 당기면 SL/TP 와의 거리가 비대칭
+        # 으로 바뀌어 RR 이 붕괴된다(실측 2.65 → 0.55). SL/TP 도 같은 delta 로
+        # 평행 이동해 risk/reward 거리를 보존 → RR 유지. setup 자체를 보정하므로
+        # 이후 active_position/set_position_tpsl/qty 가 모두 보정값을 따른다.
         if self.max_entry_distance_pct > 0 and setup.entry > 0:
             try:
                 current_price = await self.client.fetch_ticker(self.symbol)
@@ -1048,11 +1049,15 @@ class BotIctInstance:
                         adjusted_entry = current_price - max_dist
                     else:
                         adjusted_entry = current_price + max_dist
+                    delta = adjusted_entry - setup.entry
+                    setup.entry = adjusted_entry
+                    setup.stop_loss += delta       # SL/TP 평행 이동 → RR 보존
+                    setup.take_profit += delta
                     logger.info(
-                        "entry 가격 보정 — setup.entry %.4f → %.4f "
-                        "(현재가 %.4f, max %.4f%%)",
-                        setup.entry, adjusted_entry, current_price,
-                        self.max_entry_distance_pct * 100,
+                        "entry 가격 보정 — entry/SL/TP 평행 이동 %.4f "
+                        "(현재가 %.4f, max %.4f%%, RR 보존 %.2f)",
+                        delta, current_price,
+                        self.max_entry_distance_pct * 100, setup.risk_reward,
                     )
 
         equity = await self._fetch_equity()
@@ -1075,10 +1080,9 @@ class BotIctInstance:
         # #LIVE-3 fix: entry = setup.entry (계획가 — FVG mean 등) 에 limit. 가격이 거기
         # retrace 하면 체결. SL/TP 가 setup 기준이라 RR 보존. use_market_entry=True 면
         # 레거시 즉시 시장가 (slippage, 비권장).
-        # 2026-06-03: max_entry_distance_pct 가드로 보정된 adjusted_entry 가 있으면
-        # 그 값 사용 (setup.entry 대체).
-        effective_entry = adjusted_entry if adjusted_entry is not None else setup.entry
-        entry_price = None if self.use_market_entry else effective_entry
+        # setup.entry 는 위 max_entry_distance 보정에서 이미 갱신됨(보정 시 SL/TP 도
+        # 평행 이동해 RR 보존). 계획가 limit 으로 그대로 사용.
+        entry_price = None if self.use_market_entry else setup.entry
 
         # #LIVE-4 fix: SL/TP 는 entry 주문에 동봉하지 않는다. 계획가(limit) 가 현재가에서
         # 벗어나면 Bybit 가 동봉 SL/TP 의 현재가 기준 방향 검증 (10001 "StopLoss should
