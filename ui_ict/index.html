@@ -2044,6 +2044,12 @@
 
   <main class="main">
     <div class="chart-toolbar">
+      <!-- 차트 전용 페어 선택 — 좌측 TRADING PAIR(매매)와 별개로 "어느 페어
+           차트를 볼지"만 전환. 매매/상태는 그대로, 차트 데이터만 심볼 교체. -->
+      <div class="tf-toggle" id="chart-pair-toggle">
+        <button data-chart-pair="BTCUSDT" class="active">BTC</button>
+        <button data-chart-pair="ETHUSDT">ETH</button>
+      </div>
       <div class="tf-toggle" id="tf-toggle">
         <button data-tf="1m">1m</button>
         <button data-tf="5m">5m</button>
