@@ -100,9 +100,12 @@ class IctSettings(BaseSettings):
     # 단점: SL 거리 가변 → 실제 손실 폭도 가변. min_rr 2.0 / FVG / bias 필터로 보완.
     leverage: int = Field(default=20, ge=1, le=50)
     position_pct_base: float = Field(default=40.0, ge=1.0, le=100.0)
-    position_pct_max: float = Field(default=90.0, ge=1.0, le=100.0)
+    # 2026-06-05 파트너 결정: 90→80. margin=equity*90% 면 Bybit 개시수수료+
+    # 청산버퍼(남은 10%)를 못 감당해 110007 "ab not enough" 거부됨. 80% 로
+    # 낮춰 ~20% 여유 확보.
+    position_pct_max: float = Field(default=80.0, ge=1.0, le=100.0)
     # confluence_score 0 → base, 1/2/3+ → base + step * score (max capped).
-    # 사용자 정책: 0→40, 1→55, 2→70, 3+→90 (step=15).
+    # 사용자 정책: 0→40, 1→55, 2→70, 3+→80 (step=15, max 80 cap).
     position_pct_step: float = Field(default=15.0, ge=0.0, le=50.0)
     # min_rr — v0.4.60 정통화 시 2.0 → v0.4.61 빈도 우려로 1.5 rollback → 2026-05-27
     # 데모 (v0.4.82 22h, 1W 5L, -843 USDT, 평균이익<평균손실 비대칭) 후 **2.0 복원**.
