@@ -24,7 +24,7 @@ import pandas as pd
 
 from aurora_ict.indicators.fvg import FVG, FVGType, detect_fvgs
 from aurora_ict.indicators.implied_fvg import ImpliedFVG, ImpliedFVGType, detect_implied_fvgs
-from aurora_ict.indicators.liquidity import detect_liquidity_sweeps
+from aurora_ict.indicators.liquidity import LiquiditySweep, detect_liquidity_sweeps
 from aurora_ict.indicators.mitigation_block import MitigationBlock, detect_mitigation_blocks
 from aurora_ict.indicators.order_block import (
     OrderBlock,
@@ -234,8 +234,8 @@ def _ob_confluence(
 
 
 def _sweep_confluence(
+    sweeps: list[LiquiditySweep],
     df: pd.DataFrame,
-    swings: list[SwingPoint],
     direction: Direction,
     setup_ts_ms: int,
     lookback_bars: int = 12,
@@ -245,10 +245,16 @@ def _sweep_confluence(
     LONG → bullish sweep (SSL, 저점 sweep 후 반등)
     SHORT → bearish sweep (BSL, 고점 sweep 후 하락)
 
-    detect_liquidity_sweeps 는 in-place 로 swing.swept 도 갱신하지만 본 함수는
-    검출 결과 list 만 사용한다.
+    Args:
+        sweeps: 호출처에서 루프 전 1회 검출해 주입한 sweep list.
+
+    Why:
+        과거엔 본 함수가 매 호출마다 ``detect_liquidity_sweeps(df, swings)`` 를
+        다시 돌렸는데, 그게 공유 ``swings`` 를 in-place 로 ``swept=True`` 오염시켜
+        뒤쪽 fvg 의 TP 후보(``_next_liquidity_target`` 는 unswept 만 채택)가
+        사라지는 fvg 루프 순서 의존을 만들었다. sweep 을 루프 전 1회만 검출해
+        주입받도록 바꿔 모든 fvg 가 동일 스냅샷을 보게 한다.
     """
-    sweeps = detect_liquidity_sweeps(df, swings)
     from aurora_ict.indicators.liquidity import SweepType
 
     target = SweepType.BULLISH if direction is Direction.LONG else SweepType.BEARISH
@@ -329,6 +335,11 @@ def detect_silver_bullet_setups(
 
     # OB 는 setup 검출 후 confluence 평가에서 사용 — 1회만 계산.
     obs = detect_order_blocks(df, displacement_bars=3, mark_mitigation=True)
+
+    # sweep 을 fvg 루프 전 1회만 검출 — swing.swept 상태를 확정해 모든 fvg 가
+    # 동일 스냅샷을 본다. (매 fvg 마다 재검출하면 공유 swings 가 in-place 로
+    # 오염돼 뒤쪽 fvg 의 TP 후보가 사라지는 순서 의존 발생 — #SWEEP-POLLUTION)
+    all_sweeps = detect_liquidity_sweeps(df, swings)
 
     # 각 (day, window) 조합에 대해 첫 valid FVG 한 건만 setup으로 채택
     setups: list[SilverBulletSetup] = []
@@ -422,7 +433,7 @@ def detect_silver_bullet_setups(
                 score += 1
                 confluences.append(f"macro={macro_name}")
 
-        if _sweep_confluence(df, swings, direction, fvg.ts_ms):
+        if _sweep_confluence(all_sweeps, df, direction, fvg.ts_ms):
             score += 1
             confluences.append("sweep")
 
