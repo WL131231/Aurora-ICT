@@ -48,9 +48,14 @@ primary_region = "sin"
     port = 443
 
   [[services.http_checks]]
+    # 봇 step 의 동기 indicator 계산(swing/fvg/ob/sweep + HTF FVG map, 2심볼)이
+    # asyncio 이벤트루프를 잠깐 블록 → /ict/health(초경량)조차 응답이 밀린다.
+    # timeout 5s 는 그 부하엔 빡빡해 Fly 가 unhealthy 오판 → 머신 replacing 반복.
+    # 봇 매매는 정상이므로 timeout/grace 를 늘려 과민반응만 완화한다.
+    # (근본 해결 = step CPU 작업을 run_in_executor 로 빼는 것 — 별도 작업)
     interval = "30s"
-    timeout = "5s"
-    grace_period = "10s"
+    timeout = "20s"
+    grace_period = "45s"
     method = "get"
     path = "/ict/health"
     protocol = "http"
