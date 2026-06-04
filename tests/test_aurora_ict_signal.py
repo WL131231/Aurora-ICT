@@ -184,7 +184,9 @@ def test_signal_require_retrace_allows_retraced() -> None:
         (99, 105, 98, 104),
         (104, 106, 100, 101),
         (101, 105, 99, 100),
-        (100, 102, 99, 101),
+        (100, 108, 99, 101),     # idx=10: high 102→108 — #SWEEP-POLLUTION 수정 후
+                                 # idx=11 경쟁 FVG(mean 105) 가 복구돼 retrace FVG 를
+                                 # seen_windows 로 가리는 것 방지(bar10.high≥bar12.low).
         (101, 110, 100, 109),
         (109, 119, 108, 118),    # FVG idx=12 (low=108, high=118 → mean=113), 1봉 high=110, 3봉 low=115
         (118, 122, 115, 121),    # idx=13 FVG anchor 의 3봉
