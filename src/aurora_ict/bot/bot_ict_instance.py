@@ -2325,11 +2325,6 @@ class BotIctInstance:
             )
             self.active_position = None
             return
-        # SL 별도 박기 (place_order 가 inline 으로 못 받는 경우 보강).
-        try:
-            await self.client.modify_stop_loss(self.symbol, new_sl)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("flip — SL 적용 실패 (%.4f): %s — 포지션은 유지", new_sl, e)
 
         # 2026-05-28: flip 케이스도 진입 컨텍스트 박음 — 학습/복기 dataset 정합.
         _flip_entry_equity = 0.0
@@ -2359,6 +2354,11 @@ class BotIctInstance:
             setup_ts_ms=last_ts,
             reason=f"htf flip into {target.tf} (weight={target.weight})",
         )
+        # #FLIP-TP: flip 진입도 일반 진입과 동일하게 SL+TP 를 거래소에 함께 박는다.
+        # 기존엔 modify_stop_loss 로 SL 만 걸어 TP conditional 이 거래소에 없었음 →
+        # 봇이 죽으면 TP 미실현 + SYNC_CLOSE 분류 오차. _ensure_protective_sl 가
+        # set_position_tpsl 로 SL+TP 동시 적용, 실패 시 무SL 방치 금지로 비상청산.
+        await self._ensure_protective_sl(new_tp, sl_dist)
 
     # ============================================================
     # 2026-05-28: 거래 학습/복기 dataset — per-trade JSON sidecar
