@@ -436,7 +436,7 @@ class BotIctInstance:
         if entry_price <= 0:
             logger.warning("recover: entry_price 인식 실패 — skip")
             return
-        # SL/TP 박은 거 박은 거 박은 거 — Bybit V5 응답 stopLoss / takeProfit.
+        # SL/TP — Bybit V5 응답 stopLoss / takeProfit 에서 읽음.
         sl = float(pos.get("stopLossPrice") or pos.get("stop_loss") or 0) or 0.0
         tp = float(pos.get("takeProfitPrice") or pos.get("take_profit") or 0) or 0.0
         self.active_position = _ActivePosition(
@@ -445,7 +445,7 @@ class BotIctInstance:
             stop_loss=sl,
             take_profit=tp,
             qty=contracts,
-            setup_ts_ms=0,  # recovery 박은 거 박은 거 박은 거 박은 거 ts_ms 모름
+            setup_ts_ms=0,  # recovery — 원 setup ts_ms 알 수 없어 0
         )
         logger.info(
             "recover: 활성 포지션 복원 — %s %s entry=%.4f qty=%.4f sl=%.4f tp=%.4f",
