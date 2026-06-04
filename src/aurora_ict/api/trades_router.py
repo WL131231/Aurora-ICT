@@ -29,6 +29,7 @@ import hmac
 import io
 import logging
 import os
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -69,14 +70,31 @@ _CSV_HEADERS = (
 )
 
 
+# user_code 는 파일 경로(<data_dir>/users/<code>/...) 에 직접 들어간다. admin
+# endpoint 의 user_code 는 신뢰 경계 밖 입력이라, path traversal(../, 절대경로,
+# 경로 구분자)을 막기 위해 영숫자/하이픈/언더스코어만 허용한다.
+_SAFE_USER_CODE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _safe_user_code(user_code: str) -> str:
+    """user_code 안전성 검증 — 경로 탈출 문자 차단. 위반 시 400.
+
+    모든 경로 조립의 중앙 게이트 (admin/본인용 공통). Query pattern 과 함께
+    defense-in-depth.
+    """
+    if not _SAFE_USER_CODE.match(user_code):
+        raise HTTPException(status_code=400, detail="잘못된 user_code 형식입니다.")
+    return user_code
+
+
 def _trades_db_path(data_dir: Path, user_code: str) -> Path:
     """사용자별 trades.db 경로 — `<data_dir>/users/<code>/trades.db`."""
-    return data_dir / "users" / user_code / "trades.db"
+    return data_dir / "users" / _safe_user_code(user_code) / "trades.db"
 
 
 def _trades_jsonl_path(data_dir: Path, user_code: str) -> Path:
     """사용자별 trades.jsonl 경로."""
-    return data_dir / "users" / user_code / "trades.jsonl"
+    return data_dir / "users" / _safe_user_code(user_code) / "trades.jsonl"
 
 
 def _query_trades(
@@ -339,7 +357,7 @@ def create_trades_router(
 
     @router.get("/admin/trades")
     async def admin_list_trades(
-        user_code: str = Query(..., min_length=4, max_length=64),
+        user_code: str = Query(..., min_length=4, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
         limit: int = Query(default=500, ge=1, le=10000),
         since_ms: int | None = Query(default=None, ge=0),
         event_type: str | None = Query(default=None),
@@ -359,7 +377,7 @@ def create_trades_router(
 
     @router.get("/admin/trades/export")
     async def admin_export_trades_csv(
-        user_code: str = Query(..., min_length=4, max_length=64),
+        user_code: str = Query(..., min_length=4, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
         since_ms: int | None = Query(default=None, ge=0),
         x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
         cookie_token: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
@@ -473,7 +491,7 @@ def create_trades_router(
 
     @router.post("/admin/trades/rebuild")
     async def admin_rebuild_sqlite(
-        user_code: str = Query(..., min_length=4, max_length=64),
+        user_code: str = Query(..., min_length=4, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
         x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
         cookie_token: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
     ) -> dict[str, Any]:
@@ -508,7 +526,7 @@ def create_trades_router(
 
     @router.get("/admin/trades/backup", response_class=PlainTextResponse)
     async def admin_backup_jsonl(
-        user_code: str = Query(..., min_length=4, max_length=64),
+        user_code: str = Query(..., min_length=4, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
         x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
         cookie_token: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
     ) -> PlainTextResponse:
