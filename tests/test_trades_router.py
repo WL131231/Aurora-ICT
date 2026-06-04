@@ -896,3 +896,38 @@ def test_admin_license_requires_admin_auth(data_dir, tmp_path):
         },
     )
     assert r.status_code in (401, 503)  # 인증 실패 또는 admin 비활성
+
+
+# ============================================================
+# path traversal 방어 (#ADMIN-PATH-TRAVERSAL)
+# ============================================================
+
+
+def test_safe_user_code_blocks_traversal() -> None:
+    """user_code 경로 탈출 문자 차단 — path 함수 중앙 게이트.
+
+    admin endpoint 의 user_code 는 신뢰 경계 밖이라, ../ · 구분자 · 절대경로가
+    파일 경로 조립에 들어가면 디렉토리 밖 접근 위험. _safe_user_code 가 400.
+    """
+    from fastapi import HTTPException
+
+    from aurora_ict.api.trades_router import _safe_user_code, _trades_db_path
+
+    # 정상 코드(하이픈/언더스코어 포함)는 통과.
+    assert _safe_user_code("AICT-PERS-PERS-PERS") == "AICT-PERS-PERS-PERS"
+    assert _safe_user_code("user_01") == "user_01"
+
+    # 경로 탈출 시도는 전부 400 (forward slash / 상위참조 / 절대경로).
+    bad_codes = ["../etc", "a/b", "a/../b", "code/../../master", "/abs", "a.b/c"]
+    for bad in bad_codes:
+        with pytest.raises(HTTPException) as exc:
+            _safe_user_code(bad)
+        assert exc.value.status_code == 400
+
+    # 윈도우 구분자(역슬래시)도 차단.
+    with pytest.raises(HTTPException):
+        _safe_user_code("a" + chr(92) + "b")
+
+    # path 함수도 동일 방어 (중앙 게이트 경유).
+    with pytest.raises(HTTPException):
+        _trades_db_path(Path("/data"), "../../etc")
