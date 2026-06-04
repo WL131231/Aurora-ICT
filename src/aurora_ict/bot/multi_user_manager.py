@@ -252,6 +252,7 @@ class MultiUserBotManager:
             position_pct_step=settings.position_pct_step,
             min_rr=settings.min_rr,
             min_confluence=settings.min_confluence,
+            high_rr_bypass_min_rr=settings.high_rr_bypass_min_rr,
             fvg_min_size_pct=settings.fvg_min_size_pct,
             step_interval_sec=settings.step_interval_sec,
             ohlcv_limit=settings.ohlcv_limit,

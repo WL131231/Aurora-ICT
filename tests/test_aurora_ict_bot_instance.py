@@ -134,6 +134,50 @@ async def test_step_grade_gate_skips_low_confluence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_step_high_rr_bypass_passes_when_rr_above_threshold() -> None:
+    """고RR 예외(#high-rr-bypass) — confluence 미달이어도 rr >= bypass 임계면 진입.
+
+    파트너 결정 2026-06-04: 손익비 좋은 score>=1 셋업은 confluence 게이트 우회.
+    이 셋업은 boost 후 score>=1·rr≈1.43 → bypass 임계 1.0 이면 통과.
+    """
+    start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
+    rows = _ohlcv_rows(start, _bars_long_setup())
+    client = _mock_client(rows)
+    bot = BotIctInstance(
+        client=client,
+        symbol="BTCUSDT",
+        min_rr=1.0,
+        fvg_min_size_pct=0.001,
+        min_confluence=99,           # 등급 게이트 무조건 막힘
+        high_rr_bypass_min_rr=1.0,   # rr 1.43 >= 1.0 → 예외 통과
+    )
+    sig = await bot.step()
+    assert sig.action is SignalAction.ENTER_LONG
+    assert client.place_order.await_count == 1   # 고RR 예외로 진입
+    assert bot.active_position is not None
+
+
+@pytest.mark.asyncio
+async def test_step_high_rr_bypass_blocks_when_rr_below_threshold() -> None:
+    """고RR 예외 — rr 이 bypass 임계 미만이면 여전히 등급 미달 skip."""
+    start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
+    rows = _ohlcv_rows(start, _bars_long_setup())
+    client = _mock_client(rows)
+    bot = BotIctInstance(
+        client=client,
+        symbol="BTCUSDT",
+        min_rr=1.0,
+        fvg_min_size_pct=0.001,
+        min_confluence=99,
+        high_rr_bypass_min_rr=2.0,   # rr 1.43 < 2.0 → 예외 미적용
+    )
+    sig = await bot.step()
+    assert sig.action is SignalAction.ENTER_LONG
+    assert client.place_order.await_count == 0   # 임계 미달 → 진입 차단
+    assert bot.active_position is None
+
+
+@pytest.mark.asyncio
 async def test_step_skip_when_position_exists() -> None:
     """active position 박힘 → place_order 박힘 X (박힘 박힘 fetch_position 박힘)."""
     start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
