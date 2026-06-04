@@ -18,12 +18,47 @@
 
 from __future__ import annotations
 
+import logging
+from datetime import UTC, datetime
+
 from fastapi import HTTPException, Request, status
 
-from aurora_ict.auth.pin import get_user_from_session
+from aurora_ict.auth import users_db
+from aurora_ict.auth.pin import get_session_db_path, get_user_from_session
+
+logger = logging.getLogger(__name__)
 
 # cookie 이름 — router.py 와 단일 source of truth (서로 import 해 일관 유지).
 SESSION_COOKIE_NAME = "aurora_ict_session"
+
+
+def is_license_expired(expires_at: str | None) -> bool:
+    """라이선스 만료 여부 판정 (ISO 8601 UTC 문자열 기준).
+
+    Args:
+        expires_at: ``create_user`` 가 박은 만료 시각 (예: ``2026-12-31T23:59:59Z``).
+            ``None``/빈 문자열은 referral(무기한) → 만료 아님.
+
+    Returns:
+        ``True`` = 만료됨. ``False`` = 유효 / 무기한.
+
+    Why:
+        파싱 불가한 값이면 ``False`` (차단 안 함) — 손상된 데이터로 정상 사용자를
+        잠그는 것보다, 만료 미적용이 안전한 기본값. 잘못된 포맷은 로그로 남긴다.
+    """
+    if not expires_at:
+        return False
+    raw = expires_at.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        exp = datetime.fromisoformat(raw)
+    except ValueError:
+        logger.warning("expires_at 파싱 실패 — 만료 미적용: %r", expires_at)
+        return False
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=UTC)
+    return datetime.now(UTC) >= exp
 
 
 def extract_session_token(request: Request) -> str | None:
@@ -65,6 +100,18 @@ async def require_auth(request: Request) -> str:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="세션이 만료되었거나 유효하지 않습니다 — 다시 로그인해 주세요.",
         )
+    # 라이선스 만료 게이트 — DB 백엔드(SaaS) 에서만 적용. 메모리 모드(데스크탑
+    # 단일 사용자)는 _db_path 가 None 이라 skip. referral(expires_at None)은 무기한.
+    # 만료 시 403 — 세션/토큰은 유효하나 구독이 끝난 상태(401 재로그인과 구분).
+    # /auth/status 는 require_auth 의존성이 없어 만료돼도 조회 가능(UI 가 만료 안내).
+    db = get_session_db_path()
+    if db is not None:
+        user = users_db.get_user_by_code(db, user_code)
+        if user is not None and is_license_expired(user.get("expires_at")):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="구독이 만료되었습니다 — 갱신 후 이용 가능합니다.",
+            )
     return user_code
 
 
