@@ -567,7 +567,14 @@ class BotIctInstance:
         # 5s polling 기준 1줄 / 5s — 비용 적정 범위.
         self._log_step_market_snapshot(df, bias)
 
-        signal = generate_ict_signal(
+        # generate_ict_signal 은 모든 source 의 indicator(swing/fvg/ob/sweep +
+        # Phase B turtle/mitigation/implied/rejection) 를 동기 계산하는 CPU 바운드
+        # 핵심이다. 이벤트루프에서 직접 돌리면 그 구간 동안 /ict/health(초경량)
+        # 응답까지 밀려 Fly health check timeout → 머신 replacing 을 유발했다(#209).
+        # 순수 함수(df 읽기만, self/전역 무변경)라 to_thread 로 빼 이벤트루프를
+        # 양보 → health 가 항상 즉답하고 거래 step 간격도 안정된다.
+        signal = await asyncio.to_thread(
+            generate_ict_signal,
             df,
             self.symbol,
             bias=bias,
