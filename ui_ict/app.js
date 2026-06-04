@@ -13,6 +13,12 @@ let currentTimeframe = localStorage.getItem("aurora_ict_tf") || "5m";
 const VALID_TFS = ["1m", "5m", "15m", "1h", "2h", "4h", "1d", "1w"];
 if (!VALID_TFS.includes(currentTimeframe)) currentTimeframe = "5m";
 
+// 현재 보고 있는 차트 페어(ccxt symbol) — 좌측 TRADING PAIR(매매)와 별개로
+// "어느 페어 차트를 볼지"만 정한다. 차트 데이터(ohlcv/markers)에만 영향,
+// 매매/상태(position/equity 등)는 그대로. (localStorage 영속화)
+let currentChartSymbol =
+  localStorage.getItem("aurora_ict_chart_symbol") || "BTC/USDT:USDT";
+
 // 첫 로드 또는 TF 변경 시만 차트 zoom 강제. 이후 refresh 는 사용자 view 유지.
 let _chartViewInitialized = false;
 // 기본 줌 — 최근 N봉만 보이게(봉 크게). autoScale 가 보이는 봉 기준으로 가격축
@@ -583,10 +589,11 @@ function renderStatus(s) {
 
   // 2026-05-27: Bot Enable 버튼 제거됨 — Start/Stop 으로만 제어.
 
-  // 차트 상단 심볼 라벨 — 매매 TF 도 함께 표시
+  // 차트 상단 심볼 라벨 — 보고 있는 차트 페어 + 매매 TF 표시.
+  // symbol 은 currentChartSymbol(차트 선택) 기준 — 매매 상태(s.symbol)와 별개.
   const lbl = $("chart-symbol-label");
   const tradeTf = s.timeframe || "?";
-  if (lbl) lbl.textContent = `${s.symbol} · chart ${currentTimeframe} · trade ${tradeTf}`;
+  if (lbl) lbl.textContent = `${currentChartSymbol} · chart ${currentTimeframe} · trade ${tradeTf}`;
 
   // 사이드바 매매 TF 토글 active 동기화
   document.querySelectorAll("#trade-tf-toggle button").forEach((b) => {
@@ -881,8 +888,8 @@ async function fetchAndRender() {
     // 2026-05-28: P&L 누적 그래프 (전체기간) 용으로 limit=200 (백엔드 cap).
     // 리스트 화면은 상위 50건만 표시, 그래프는 전체를 활용.
     const [ohlcv, markers, position, pnl] = await Promise.all([
-      api(`/ict/ohlcv?timeframe=${tf}&limit=${candleLimit}`),
-      api(`/ict/markers?timeframe=${tf}&limit=${markerLimit}`),
+      api(`/ict/ohlcv?timeframe=${tf}&symbol=${encodeURIComponent(currentChartSymbol)}&limit=${candleLimit}`),
+      api(`/ict/markers?timeframe=${tf}&symbol=${encodeURIComponent(currentChartSymbol)}&limit=${markerLimit}`),
       api("/ict/position"),
       api("/ict/closed_pnl?limit=200"),
     ]);
@@ -1603,6 +1610,31 @@ if (_pairToggle) {
     // 백엔드 진실값으로 토글 재동기화 (성공·실패 무관).
     await refreshRunningPairs();
     // 차트가 보고 있는 페어 status 도 갱신.
+    await fetchAndRender();
+  });
+}
+
+// 차트 전용 페어 선택 — 좌측 #pair-toggle(매매 on/off)과 별개로 "어느 페어
+// 차트를 볼지"만 전환한다. 차트 데이터(ohlcv/markers)만 심볼 교체, 매매/상태는 그대로.
+function _updateChartPairButtons() {
+  document.querySelectorAll("#chart-pair-toggle button[data-chart-pair]").forEach((b) => {
+    b.classList.toggle(
+      "active", _PAIR_TO_SYMBOL[b.dataset.chartPair] === currentChartSymbol,
+    );
+  });
+}
+const _chartPairToggle = $("chart-pair-toggle");
+if (_chartPairToggle) {
+  _updateChartPairButtons();
+  _chartPairToggle.addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("button[data-chart-pair]");
+    if (!btn) return;
+    const sym = _PAIR_TO_SYMBOL[btn.dataset.chartPair];
+    if (!sym || sym === currentChartSymbol) return;
+    currentChartSymbol = sym;
+    localStorage.setItem("aurora_ict_chart_symbol", sym);
+    _updateChartPairButtons();
+    _chartViewInitialized = false;  // 페어 바뀌면 차트 다시 최근 N봉 zoom
     await fetchAndRender();
   });
 }
