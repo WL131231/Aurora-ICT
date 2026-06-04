@@ -155,9 +155,10 @@ class IctSettings(BaseSettings):
     # - True (레거시, 비권장): 즉시 시장가 — slippage 로 TP 가 fill 만큼 밀려 목표
     #   liquidity 못 먹던 #LIVE-1 원인.
     use_market_entry: bool = Field(default=False)
-    # marketable limit 미체결 TTL (초). 이 시간 지나면 pending 취소. 사용자 결정
-    # 2026-05-22: 600 (10분, 5m 2봉). 시장가처럼 거의 즉시 체결되되 슬리피지 0.
-    entry_limit_ttl_sec: int = Field(default=600, ge=30, le=3600)
+    # marketable limit 미체결 TTL (초). 이 시간 지나면 pending 취소 후 새 셋업 재탐색.
+    # 2026-05-22: 600(10분). 2026-06-05 파트너 결정: 300(5분, 5m 1봉) — 5분 안에
+    # 체결 안 되면 타점 포기하고 새로 잡기.
+    entry_limit_ttl_sec: int = Field(default=300, ge=30, le=3600)
     # min_sl_distance_pct: SL 거리가 entry 의 이 비율 미만이면 setup skip.
     # 지난 12거래 분석 결과 SL 너무 짧은 setup 손실 비중 커서 0.0005 → 0.0007 상향.
     # 2026-05-29: 새벽 3연속 SL 풀히트 (실측 SL=0.32%) 회고 — ranging 시장에서
