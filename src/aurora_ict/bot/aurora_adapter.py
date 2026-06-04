@@ -300,7 +300,6 @@ class AuroraClientAdapter:
                     p["qty"] = contracts
                 return p
         return None
-        return None
 
     async def fetch_actual_leverage(self, symbol: str) -> int | None:
         """거래소 측 현재 leverage 조회 (포지션 무관).
