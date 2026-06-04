@@ -29,6 +29,7 @@ def _make_event(
     pnl_usdt: float | None = None,
     setup_ts_ms: int | None = None,
     reason: str = "",
+    mode: str | None = None,
 ) -> TradeEvent:
     return TradeEvent(
         ts_ms=ts_ms,
@@ -40,6 +41,7 @@ def _make_event(
         pnl_usdt=pnl_usdt,
         setup_ts_ms=setup_ts_ms,
         reason=reason,
+        mode=mode,
     )
 
 
@@ -125,6 +127,28 @@ def test_rebuild_sqlite_from_jsonl(tmp_path: Path) -> None:
     assert n == 3
     count = store._conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
     assert count == 3
+    store.close()
+
+
+def test_rebuild_sqlite_preserves_mode(tmp_path: Path) -> None:
+    """rebuild 후에도 DEMO/LIVE mode 컬럼이 보존된다 (#REBUILD-MODE).
+
+    기존 버그: rebuild_sqlite 의 INSERT 가 mode 컬럼/값을 누락해, JSONL 엔
+    mode 가 있는데도 admin rebuild 시 모든 거래의 demo/live 구분이 NULL 로
+    소실됐다. record() 와 동일하게 mode 를 INSERT 하도록 수정.
+    """
+    store = TradesStore(tmp_path)
+    store.record(_make_event(ts_ms=1, mode="live"))
+    store.record(_make_event(ts_ms=2, mode="demo"))
+    store.record(_make_event(ts_ms=3, mode=None))  # legacy row
+
+    # JSONL(source of truth) 기준 rebuild
+    store.rebuild_sqlite()
+
+    conn = sqlite3.connect(tmp_path / "trades.db")
+    rows = conn.execute("SELECT ts_ms, mode FROM trades ORDER BY ts_ms").fetchall()
+    conn.close()
+    assert rows == [(1, "live"), (2, "demo"), (3, None)]
     store.close()
 
 

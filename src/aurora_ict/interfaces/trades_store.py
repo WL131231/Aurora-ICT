@@ -283,8 +283,8 @@ class TradesStore:
                 """
                 INSERT INTO trades
                 (ts_ms, event_type, symbol, direction, price, qty,
-                 pnl_usdt, setup_ts_ms, reason, context_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 pnl_usdt, setup_ts_ms, reason, context_json, mode)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -298,6 +298,7 @@ class TradesStore:
                         e.setup_ts_ms,
                         e.reason,
                         e.context_json,
+                        e.mode,
                     )
                     for e in events
                 ],
