@@ -19,6 +19,20 @@ if (!VALID_TFS.includes(currentTimeframe)) currentTimeframe = "5m";
 let currentChartSymbol =
   localStorage.getItem("aurora_ict_chart_symbol") || "BTC/USDT:USDT";
 
+// 차트 데이터 클라이언트 캐시 — key `${symbol}|${tf}` → {candles, markers}.
+// TF/페어 전환 시 캐시 hit 이면 즉시 표시(체감 즉답), fresh 는 백그라운드 갱신.
+// 페이지 로드 후 _prefetchAllCharts 가 모든 (심볼×TF) 조합을 미리 채운다.
+const _chartCache = new Map();
+
+// TF 별 fetch 봉 한도 — 큰 TF 는 history 전부, 작은 TF 는 메모리/시간 상한.
+// 2026-05-27 파트너 요청: 거래소 시작부터 현재까지 가능한 만큼.
+const CANDLE_LIMIT = {
+  "1m": 5000, "5m": 20000, "15m": 50000,
+  "1h": 60000, "2h": 30000, "4h": 15000,
+  "1d": 5000, "1w": 1500,
+};
+const MARKER_LIMIT = 2000;
+
 // 첫 로드 또는 TF 변경 시만 차트 zoom 강제. 이후 refresh 는 사용자 view 유지.
 let _chartViewInitialized = false;
 // 기본 줌 — 최근 N봉만 보이게(봉 크게). autoScale 가 보이는 봉 기준으로 가격축
@@ -862,6 +876,77 @@ function renderPositions(pos) {
 // ============================================================
 // OHLCV fetch + render (candles + markers + position)
 // ============================================================
+
+// 차트 데이터(candles + markers)를 차트에 적용 — setData + 뷰(첫 로드 줌 /
+// auto-scroll) + 마커. fetchAndRender(fresh)와 TF/페어 전환 시 캐시 즉시 표시가
+// 공용으로 호출한다.
+function _applyChartData(candles, markers) {
+  candleSeries.setData(candles || []);
+  const _newCount = (candles && candles.length) || 0;
+  // 첫 로드/전환 시만 최근 N봉 zoom — 이후 refresh 는 사용자 view 유지.
+  if (!_chartViewInitialized && _newCount > 0) {
+    _chartViewInitialized = true;
+    _lastCandleCount = _newCount;
+    resetChartView();
+  } else if (_newCount > 0) {
+    // 봉 움직임 따라 차트 이동(auto-scroll) — 우측 끝 근처(여백 3봉)일 때만 추적.
+    try {
+      const range = chart.timeScale().getVisibleLogicalRange();
+      if (range && range.to >= _lastCandleCount - 3) {
+        const width = range.to - range.from;
+        chart.timeScale().setVisibleLogicalRange({
+          from: Math.max(0, _newCount - width), to: _newCount,
+        });
+      }
+    } catch (e) { /* noop */ }
+    _lastCandleCount = _newCount;
+  }
+  if (candles && candles.length > 0) {
+    lastBarTimeSec = candles[candles.length - 1].time;
+    // markers 가 차트 첫 봉보다 옛 영역에 뜨는 것 방지 — first ts 이전 필터.
+    _filterMarkersByFirstBar(markers, candles[0].time);
+  }
+  renderMarkers(markers);
+}
+
+// 전환 시 캐시된 차트가 있으면 즉시 표시(체감 즉답). fresh 는 직후 fetchAndRender 가 갱신.
+function _showCachedChartIfAny() {
+  const c = _chartCache.get(`${currentChartSymbol}|${currentTimeframe}`);
+  if (c) _applyChartData(c.candles, c.markers);
+}
+
+let _prefetchStarted = false;
+
+// 페이지 로드 후 백그라운드로 모든 (심볼 × TF) 조합 차트를 미리 받아 캐시 →
+// TF/페어 전환이 거의 항상 즉답. 현재 보는 심볼·TF 부터(우선순위), 순차로
+// (서버/네트워크 부담 분산). 실패는 무시(다음 전환 때 fetch). 1회만 실행.
+async function _prefetchAllCharts() {
+  if (_prefetchStarted) return;
+  _prefetchStarted = true;
+  const symbols = [
+    currentChartSymbol,
+    ...Object.values(_PAIR_TO_SYMBOL).filter((s) => s !== currentChartSymbol),
+  ];
+  const tfs = [
+    currentTimeframe,
+    ...VALID_TFS.filter((t) => t !== currentTimeframe),
+  ];
+  for (const sym of symbols) {
+    for (const tf of tfs) {
+      const key = `${sym}|${tf}`;
+      if (_chartCache.has(key)) continue;
+      try {
+        const cl = CANDLE_LIMIT[tf] || 5000;
+        const [ohlcv, markers] = await Promise.all([
+          api(`/ict/ohlcv?timeframe=${tf}&symbol=${encodeURIComponent(sym)}&limit=${cl}`),
+          api(`/ict/markers?timeframe=${tf}&symbol=${encodeURIComponent(sym)}&limit=${MARKER_LIMIT}`),
+        ]);
+        _chartCache.set(key, { candles: ohlcv.candles, markers });
+      } catch (e) { /* prefetch 실패는 무시 — 전환 때 개별 fetch */ }
+    }
+  }
+}
+
 async function fetchAndRender() {
   try {
     const status = await api("/ict/status");
@@ -872,63 +957,24 @@ async function fetchAndRender() {
     }
 
     const tf = encodeURIComponent(currentTimeframe);
-    // 2026-05-27 파트너 요청 — "거래소 시작(2020-03) 부터 지금까지 봉 전부".
-    // TF 별 한도 — 큰 TF (1h~1w) 는 Bybit history 다 받기 가능, 작은 TF
-    // (1m/5m) 는 메모리·시간 부담으로 합리적 max. ccxt fetch_ohlcv 가 history
-    // 끝나면 자동 stop (max_pages=100, max 100,000봉).
-    const CANDLE_LIMIT = {
-      "1m": 5000, "5m": 20000, "15m": 50000,
-      "1h": 60000, "2h": 30000, "4h": 15000,
-      "1d": 5000, "1w": 1500,
-    };
-    // 마커 계산은 봉 수에 비례 → 5초 polling 부담 방지 위해 최근 2000봉만.
-    // (옛 봉에는 마커 표시 X — 가격 캔들만 보임. trade-off 안내됨)
     const candleLimit = CANDLE_LIMIT[currentTimeframe] || 5000;
-    const markerLimit = 2000;
+    const cacheKey = `${currentChartSymbol}|${currentTimeframe}`;
     // 2026-05-28: P&L 누적 그래프 (전체기간) 용으로 limit=200 (백엔드 cap).
-    // 리스트 화면은 상위 50건만 표시, 그래프는 전체를 활용.
     const [ohlcv, markers, position, pnl] = await Promise.all([
       api(`/ict/ohlcv?timeframe=${tf}&symbol=${encodeURIComponent(currentChartSymbol)}&limit=${candleLimit}`),
-      api(`/ict/markers?timeframe=${tf}&symbol=${encodeURIComponent(currentChartSymbol)}&limit=${markerLimit}`),
+      api(`/ict/markers?timeframe=${tf}&symbol=${encodeURIComponent(currentChartSymbol)}&limit=${MARKER_LIMIT}`),
       api("/ict/position"),
       api("/ict/closed_pnl?limit=200"),
     ]);
-    candleSeries.setData(ohlcv.candles);
-    const _newCount = (ohlcv.candles && ohlcv.candles.length) || 0;
-    // 첫 로드/TF 변경 시만 최근 N봉 zoom — 이후 refresh 는 사용자 view 유지.
-    if (!_chartViewInitialized && _newCount > 0) {
-      _chartViewInitialized = true;
-      _lastCandleCount = _newCount;
-      resetChartView();
-    } else if (_newCount > 0) {
-      // 봉 움직임 따라 차트 이동(auto-scroll) — 사용자가 우측 끝 근처(여백 3봉)를
-      // 보고 있을 때만 새 봉으로 추적. 과거를 보고 있으면 그대로 둔다(추적 X).
-      // 현재 보던 폭(width)을 유지한 채 우측 끝만 새 봉 수로 민다.
-      try {
-        const range = chart.timeScale().getVisibleLogicalRange();
-        if (range && range.to >= _lastCandleCount - 3) {
-          const width = range.to - range.from;
-          chart.timeScale().setVisibleLogicalRange({
-            from: Math.max(0, _newCount - width), to: _newCount,
-          });
-        }
-      } catch (e) { /* noop */ }
-      _lastCandleCount = _newCount;
-    }
-    // 마지막 봉 시간 — PD Zone area 끝점에 사용
-    if (ohlcv.candles && ohlcv.candles.length > 0) {
-      lastBarTimeSec = ohlcv.candles[ohlcv.candles.length - 1].time;
-    }
-    // 2026-05-28 fix — OHLCV cache miss 시 200봉 sync + background prefetch.
-    // markers 는 전체 cache 봉 영역 계산해 반환 → 차트 봉보다 옛 영역에 마커만 떠
-    // "봉 없는 라벨" 보임. ohlcv 의 first ts 이전 markers 전부 필터링.
-    if (ohlcv.candles && ohlcv.candles.length > 0) {
-      _filterMarkersByFirstBar(markers, ohlcv.candles[0].time);
-    }
-    renderMarkers(markers);
+    // fresh 데이터 캐시 갱신 — TF/페어 전환·prefetch 가 재사용해 즉시 표시.
+    _chartCache.set(cacheKey, { candles: ohlcv.candles, markers });
+    _applyChartData(ohlcv.candles, markers);
     renderPositions(position);
     renderPendingLimit(position);
     renderPnL(pnl);
+    // 첫 정상 렌더 후 백그라운드 prefetch 1회 시작 — 모든 심볼×TF 미리 캐시해
+    // 전환 즉답. 초기 렌더 안정화 후 시작(1.5s 지연).
+    if (!_prefetchStarted) setTimeout(_prefetchAllCharts, 1500);
   } catch (e) {
     toast(`API: ${e.message}`, true);
   }
@@ -1635,7 +1681,8 @@ if (_chartPairToggle) {
     localStorage.setItem("aurora_ict_chart_symbol", sym);
     _updateChartPairButtons();
     _chartViewInitialized = false;  // 페어 바뀌면 차트 다시 최근 N봉 zoom
-    await fetchAndRender();
+    _showCachedChartIfAny();  // 캐시 있으면 즉시 표시(체감 즉답)
+    await fetchAndRender();   // fresh 갱신
   });
 }
 
@@ -1648,7 +1695,8 @@ $("tf-toggle").addEventListener("click", async (ev) => {
   localStorage.setItem("aurora_ict_tf", tf);
   _updateTfButtons();
   _chartViewInitialized = false;  // TF 바뀌면 다시 최근 N봉 zoom
-  await fetchAndRender();
+  _showCachedChartIfAny();  // 캐시 있으면 즉시 표시(체감 즉답)
+  await fetchAndRender();   // fresh 갱신
 });
 
 // 2026-05-27: btn-test-conn / btn-toggle-enabled 제거됨. 실시간 잔고 + START/STOP 으로 대체.
