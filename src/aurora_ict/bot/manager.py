@@ -94,6 +94,7 @@ class BotManager:
             position_pct_step=self.settings.position_pct_step,
             min_rr=self.settings.min_rr,
             min_confluence=self.settings.min_confluence,
+            high_rr_bypass_min_rr=self.settings.high_rr_bypass_min_rr,
             fvg_min_size_pct=self.settings.fvg_min_size_pct,
             step_interval_sec=self.settings.step_interval_sec,
             ohlcv_limit=self.settings.ohlcv_limit,

@@ -209,6 +209,9 @@ class BotIctInstance:
     # B+ 등급 게이트 (#1/#8): HTF boost 까지 반영된 최종 confluence_score 가 이 값 미만이면
     # 진입 skip. 0=비활성(기존 동작). 등급 C0~1/B2~3/B+4~5/A6+ → 4 면 B+ 이상만.
     min_confluence: int = 0
+    # 고RR 예외 — confluence 미달이어도 rr 이 이 값 이상이고 score>=1 이면 통과.
+    # 0=비활성. 파트너 결정 2026-06-04 (손익비 좋은 1점 단일신호 셋업 진입 허용).
+    high_rr_bypass_min_rr: float = 0.0
     step_interval_sec: int = 60
     ohlcv_limit: int = 200
     fvg_min_size_pct: float = 0.0005
@@ -651,13 +654,29 @@ class BotIctInstance:
         # B+ 등급 게이트 (#1/#8) — HTF boost 까지 반영된 최종 score 가 기준 미만이면 skip.
         # 빈도↓·품질↑ (하루 ~4~5개 목표). min_confluence=0 이면 비활성(기존 동작).
         if signal.setup.confluence_score < self.min_confluence:
-            logger.info(
-                "등급 미달 skip — score=%d < min_confluence=%d (%s %s)",
-                signal.setup.confluence_score, self.min_confluence,
-                signal.setup.direction.value, signal.setup.window,
+            # 고RR 예외 구멍 — confluence 미달이어도 손익비가 충분히 높고
+            # (rr >= high_rr_bypass_min_rr) score>=1 이면 단일신호 셋업도 통과.
+            # (파트너 결정 2026-06-04: rr 2.5+ 1점 셋업 진입 허용)
+            high_rr_pass = (
+                self.high_rr_bypass_min_rr > 0
+                and signal.setup.confluence_score >= 1
+                and signal.setup.risk_reward >= self.high_rr_bypass_min_rr
             )
-            self._last_setup_ts_ms = signal.setup.ts_ms
-            return signal
+            if high_rr_pass:
+                logger.info(
+                    "고RR 예외 통과 — score=%d rr=%.2f >= %.2f (%s %s)",
+                    signal.setup.confluence_score, signal.setup.risk_reward,
+                    self.high_rr_bypass_min_rr,
+                    signal.setup.direction.value, signal.setup.window,
+                )
+            else:
+                logger.info(
+                    "등급 미달 skip — score=%d < min_confluence=%d (%s %s)",
+                    signal.setup.confluence_score, self.min_confluence,
+                    signal.setup.direction.value, signal.setup.window,
+                )
+                self._last_setup_ts_ms = signal.setup.ts_ms
+                return signal
         if self.htf_override_mode == "A" and htf_target is not None:
             logger.info(
                 "HTF override(A) 진입 차단 — setup=%s 반대 HTF FVG=%s",
