@@ -169,8 +169,10 @@ class IctSettings(BaseSettings):
     # (파트너 결정). PR #147 직전 (0.07%) 에 더 가깝게.
     min_sl_distance_pct: float = Field(default=0.001, ge=0.0, le=0.05)
     # max_sl_distance_pct: SL 거리가 entry 의 이 비율 초과면 setup skip.
-    # 0 = 비활성. default 0.005 (0.5%) — 비정상 큰 SL 차단.
-    max_sl_distance_pct: float = Field(default=0.005, ge=0.0, le=0.1)
+    # 0 = 비활성. 비정상 큰 SL 차단. 2026-06-04 파트너 결정: 0.5% 가 너무
+    # 타이트해 turtle_soup 등 rr 좋은(2.8~3.4) 셋업이 SL 0.65~0.72% 로 다 탈락
+    # → 0.75% 로 완화 (고RR 예외 게이트 #215 도달 가능하게).
+    max_sl_distance_pct: float = Field(default=0.0075, ge=0.0, le=0.1)
     # max_entry_distance_pct: setup.entry 가 현재가에서 이 비율 초과면 setup skip.
     # 너무 멀리 박힌 limit 은 미체결 + ttl 만료까지 대기 시간 길어 setup 변형 위험.
     # 0 = 비활성. default 0.005 (0.5%) — 파트너 결정 2026-06-03.
