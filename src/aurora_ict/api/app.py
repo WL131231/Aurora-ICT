@@ -1194,10 +1194,15 @@ def create_app(
         description="ICT (Inner Circle Trader) 매매 봇 REST API",
     )
 
-    # CORS — dev 편의를 위해 wildcard (production에서는 도메인 제한 필요)
+    # CORS — SaaS(multi_user)는 운영 도메인만 허용(쿠키 세션 + credentials 사용이라
+    # wildcard 와 함께 두면 위험). 데스크탑(.exe single)은 localhost/file 접속이라
+    # 편의상 wildcard 유지.
+    _cors_origins = (
+        ["https://aurora-ict-one.fly.dev"] if multi_user else ["*"]
+    )
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=_cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
