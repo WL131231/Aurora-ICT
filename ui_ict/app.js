@@ -15,7 +15,11 @@ if (!VALID_TFS.includes(currentTimeframe)) currentTimeframe = "5m";
 
 // 첫 로드 또는 TF 변경 시만 차트 zoom 강제. 이후 refresh 는 사용자 view 유지.
 let _chartViewInitialized = false;
-const CHART_INIT_VISIBLE_BARS = 180;
+// 기본 줌 — 최근 N봉만 보이게(봉 크게). autoScale 가 보이는 봉 기준으로 가격축
+// 자동 맞춤 → 최근 가격대에 집중된 뷰. (값 ↓ = 더 확대)
+const CHART_INIT_VISIBLE_BARS = 90;
+// 마지막 setData 봉 수 — 우측 가격축 클릭 리셋 + 봉 추적(auto-scroll) 판정용.
+let _lastCandleCount = 0;
 
 // 시각화 토글 (BOS / EQH-EQL / PD Zones) — localStorage 영속화
 const VIZ_KEYS = ["bos", "eql", "zones"];
@@ -101,6 +105,29 @@ const candleSeries = chart.addCandlestickSeries({
   upColor: "#34d399", downColor: "#fb7185",
   borderUpColor: "#34d399", borderDownColor: "#fb7185",
   wickUpColor: "#34d399", wickDownColor: "#fb7185",
+});
+
+// 차트를 기본 뷰로 복귀 — 최근 N봉 + 가격축 autoScale (우측 끝 정렬).
+// 사용자가 줌/스크롤로 흩뜨린 뒤 우측 가격축을 누르면 원위치.
+function resetChartView() {
+  if (_lastCandleCount <= 0) return;
+  const total = _lastCandleCount;
+  const from = Math.max(0, total - CHART_INIT_VISIBLE_BARS);
+  try {
+    chart.timeScale().setVisibleLogicalRange({ from, to: total });
+    chart.priceScale("right").applyOptions({ autoScale: true });
+  } catch (e) { /* noop */ }
+}
+
+// 우측 가격축 영역 클릭 → 기본 뷰 복귀. lightweight-charts 는 price scale
+// 클릭 이벤트를 직접 안 주므로 컨테이너 클릭 x좌표가 가격축 폭 안인지로 판정.
+chartEl.addEventListener("click", (ev) => {
+  try {
+    const rect = chartEl.getBoundingClientRect();
+    const x = ev.clientX - rect.left;
+    const psW = chart.priceScale("right").width() || 0;
+    if (psW > 0 && x >= rect.width - psW) resetChartView();
+  } catch (e) { /* noop */ }
 });
 
 // 지정가 미체결 라인 — bot.pending_entry 있으면 candleSeries.createPriceLine 으로 표시.
@@ -860,14 +887,26 @@ async function fetchAndRender() {
       api("/ict/closed_pnl?limit=200"),
     ]);
     candleSeries.setData(ohlcv.candles);
+    const _newCount = (ohlcv.candles && ohlcv.candles.length) || 0;
     // 첫 로드/TF 변경 시만 최근 N봉 zoom — 이후 refresh 는 사용자 view 유지.
-    if (!_chartViewInitialized && ohlcv.candles && ohlcv.candles.length > 0) {
+    if (!_chartViewInitialized && _newCount > 0) {
       _chartViewInitialized = true;
-      const total = ohlcv.candles.length;
-      const from = Math.max(0, total - CHART_INIT_VISIBLE_BARS);
+      _lastCandleCount = _newCount;
+      resetChartView();
+    } else if (_newCount > 0) {
+      // 봉 움직임 따라 차트 이동(auto-scroll) — 사용자가 우측 끝 근처(여백 3봉)를
+      // 보고 있을 때만 새 봉으로 추적. 과거를 보고 있으면 그대로 둔다(추적 X).
+      // 현재 보던 폭(width)을 유지한 채 우측 끝만 새 봉 수로 민다.
       try {
-        chart.timeScale().setVisibleLogicalRange({ from, to: total });
+        const range = chart.timeScale().getVisibleLogicalRange();
+        if (range && range.to >= _lastCandleCount - 3) {
+          const width = range.to - range.from;
+          chart.timeScale().setVisibleLogicalRange({
+            from: Math.max(0, _newCount - width), to: _newCount,
+          });
+        }
       } catch (e) { /* noop */ }
+      _lastCandleCount = _newCount;
     }
     // 마지막 봉 시간 — PD Zone area 끝점에 사용
     if (ohlcv.candles && ohlcv.candles.length > 0) {
