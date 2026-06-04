@@ -100,9 +100,12 @@ class IctSettings(BaseSettings):
     # 단점: SL 거리 가변 → 실제 손실 폭도 가변. min_rr 2.0 / FVG / bias 필터로 보완.
     leverage: int = Field(default=20, ge=1, le=50)
     position_pct_base: float = Field(default=40.0, ge=1.0, le=100.0)
-    position_pct_max: float = Field(default=90.0, ge=1.0, le=100.0)
+    # 2026-06-05 파트너 결정: 90→80. margin=equity*90% 면 Bybit 개시수수료+
+    # 청산버퍼(남은 10%)를 못 감당해 110007 "ab not enough" 거부됨. 80% 로
+    # 낮춰 ~20% 여유 확보.
+    position_pct_max: float = Field(default=80.0, ge=1.0, le=100.0)
     # confluence_score 0 → base, 1/2/3+ → base + step * score (max capped).
-    # 사용자 정책: 0→40, 1→55, 2→70, 3+→90 (step=15).
+    # 사용자 정책: 0→40, 1→55, 2→70, 3+→80 (step=15, max 80 cap).
     position_pct_step: float = Field(default=15.0, ge=0.0, le=50.0)
     # min_rr — v0.4.60 정통화 시 2.0 → v0.4.61 빈도 우려로 1.5 rollback → 2026-05-27
     # 데모 (v0.4.82 22h, 1W 5L, -843 USDT, 평균이익<평균손실 비대칭) 후 **2.0 복원**.
@@ -152,9 +155,10 @@ class IctSettings(BaseSettings):
     # - True (레거시, 비권장): 즉시 시장가 — slippage 로 TP 가 fill 만큼 밀려 목표
     #   liquidity 못 먹던 #LIVE-1 원인.
     use_market_entry: bool = Field(default=False)
-    # marketable limit 미체결 TTL (초). 이 시간 지나면 pending 취소. 사용자 결정
-    # 2026-05-22: 600 (10분, 5m 2봉). 시장가처럼 거의 즉시 체결되되 슬리피지 0.
-    entry_limit_ttl_sec: int = Field(default=600, ge=30, le=3600)
+    # marketable limit 미체결 TTL (초). 이 시간 지나면 pending 취소 후 새 셋업 재탐색.
+    # 2026-05-22: 600(10분). 2026-06-05 파트너 결정: 300(5분, 5m 1봉) — 5분 안에
+    # 체결 안 되면 타점 포기하고 새로 잡기.
+    entry_limit_ttl_sec: int = Field(default=300, ge=30, le=3600)
     # min_sl_distance_pct: SL 거리가 entry 의 이 비율 미만이면 setup skip.
     # 지난 12거래 분석 결과 SL 너무 짧은 setup 손실 비중 커서 0.0005 → 0.0007 상향.
     # 2026-05-29: 새벽 3연속 SL 풀히트 (실측 SL=0.32%) 회고 — ranging 시장에서
