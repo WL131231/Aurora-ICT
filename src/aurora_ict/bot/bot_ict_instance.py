@@ -205,6 +205,11 @@ class BotIctInstance:
     position_pct_base: float = 40.0
     position_pct_max: float = 90.0
     position_pct_step: float = 15.0
+    # 2026-06-06 리스크 기반 sizing — True 면 qty = risk금액 / SL거리 (손실 고정).
+    risk_based_sizing: bool = False
+    risk_per_trade_base: float = 1.0
+    risk_per_trade_step: float = 0.5
+    risk_per_trade_max: float = 2.0
     min_rr: float = 2.0
     # B+ 등급 게이트 (#1/#8): HTF boost 까지 반영된 최종 confluence_score 가 이 값 미만이면
     # 진입 skip. 0=비활성(기존 동작). 등급 C0~1/B2~3/B+4~5/A6+ → 4 면 B+ 이상만.
@@ -1028,8 +1033,12 @@ class BotIctInstance:
             )
             return
 
-        # max_sl_distance_pct skip (비정상 큰 SL 차단).
-        if self.max_sl_distance_pct > 0 and setup.entry > 0:
+        # max_sl_distance_pct skip (비정상 큰 SL 차단). 리스크 기반 sizing 이면
+        # SL 거리는 qty 로 관리(손실 고정)되므로 이 상한을 우회한다 → 진입 빈도↑.
+        if (
+            self.max_sl_distance_pct > 0 and setup.entry > 0
+            and not self.risk_based_sizing
+        ):
             sl_dist_pct = abs(setup.entry - setup.stop_loss) / setup.entry
             if sl_dist_pct > self.max_sl_distance_pct:
                 logger.info(
@@ -1599,23 +1608,54 @@ class BotIctInstance:
             return float(total)
         return 1000.0
 
+    def _calc_qty_risk_based(
+        self, setup: SilverBulletSetup, equity: float,
+    ) -> float:
+        """리스크 기반 qty — 건당 리스크(equity %)를 고정하고 SL 거리로 역산.
+
+        risk_pct = min(base + step * score, max)
+        risk_amount = equity * risk_pct/100
+        qty = risk_amount / |entry - stop_loss|   (SL 거리가 멀수록 qty 작아짐)
+        → 건당 손실(SL 히트 시) = risk_amount 로 일정. over-leverage 방지를 위해
+        필요 notional 이 equity*leverage*position_pct_max% 를 넘지 않게 상한.
+        """
+        sl_dist = abs(setup.entry - setup.stop_loss)
+        if sl_dist <= 0:
+            return 0.0
+        score = max(0, setup.confluence_score)
+        risk_pct = min(
+            self.risk_per_trade_base + self.risk_per_trade_step * score,
+            self.risk_per_trade_max,
+        )
+        risk_amount = equity * (risk_pct / 100.0)
+        qty = risk_amount / sl_dist
+        # over-leverage 상한 — 필요 notional 이 가용 마진×레버리지 한도를 못 넘게.
+        max_notional = equity * self.leverage * (self.position_pct_max / 100.0)
+        max_qty = max_notional / setup.entry
+        return min(qty, max_qty)
+
     def _calc_qty(self, setup: SilverBulletSetup, equity: float) -> float:
         """진입 qty 계산 — confluence_score 단계별 notional sizing.
 
+        risk_based_sizing=True 면 건당 리스크 고정(_calc_qty_risk_based), 아니면
+        기존 고정 % notional sizing:
         pct = min(base + step * score, max)
         margin = equity * pct/100  → leveraged notional = margin * leverage
         qty = leveraged notional / entry_price
         """
-        score = max(0, setup.confluence_score)
-        pct = min(
-            self.position_pct_base + self.position_pct_step * score,
-            self.position_pct_max,
-        )
-        margin = equity * (pct / 100.0)
-        notional = margin * self.leverage
         if setup.entry <= 0:
             return 0.0
-        qty = notional / setup.entry
+        if self.risk_based_sizing:
+            qty = self._calc_qty_risk_based(setup, equity)
+        else:
+            score = max(0, setup.confluence_score)
+            pct = min(
+                self.position_pct_base + self.position_pct_step * score,
+                self.position_pct_max,
+            )
+            margin = equity * (pct / 100.0)
+            notional = margin * self.leverage
+            qty = notional / setup.entry
         # 페어 확장 — 거래소 lot step 에 맞춰 qty 정렬(심볼별 precision). 미지원
         # client 면 원본 유지(안전 폴백). 반환이 실수일 때만 적용(테스트 mock 방어).
         # BTC/ETH 는 precision 관대해 영향 거의 없음.

@@ -138,3 +138,54 @@ def test_calc_qty_falls_back_to_btc_min_when_no_meta() -> None:
     assert bot._calc_qty(_setup(entry=100000.0), equity=1.0) == 0.0
     # 충분한 equity → 통과
     assert bot._calc_qty(_setup(entry=100.0), equity=100.0) > 0.0
+
+
+# ============================================================
+# 3. 리스크 기반 sizing
+# ============================================================
+
+
+def _setup_sl(entry: float, sl: float, score: int = 0):
+    s = MagicMock()
+    s.confluence_score = score
+    s.entry = entry
+    s.stop_loss = sl
+    return s
+
+
+def test_calc_qty_risk_based_fixes_loss_per_trade() -> None:
+    """리스크 기반 — SL 거리가 멀수록 qty 작아져 건당 손실(qty×SL거리) 일정."""
+    bot = _bot(
+        risk_based_sizing=True, risk_per_trade_base=1.0,
+        risk_per_trade_step=0.0, risk_per_trade_max=2.0,
+    )
+    bot._symbol_meta = {}
+    # equity 10000, risk 1% = 100. SL 거리 1 → qty 100, SL 거리 2 → qty 50.
+    q1 = bot._calc_qty(_setup_sl(100.0, 99.0), equity=10000.0)
+    q2 = bot._calc_qty(_setup_sl(100.0, 98.0), equity=10000.0)
+    assert q1 * 1.0 == pytest.approx(q2 * 2.0)  # 건당 손실 일정
+    assert q1 == pytest.approx(100.0)
+
+
+def test_calc_qty_risk_based_score_scales_risk() -> None:
+    """score 높을수록 건당 리스크 %↑ → qty↑."""
+    bot = _bot(
+        risk_based_sizing=True, risk_per_trade_base=1.0,
+        risk_per_trade_step=0.5, risk_per_trade_max=2.0,
+    )
+    bot._symbol_meta = {}
+    q0 = bot._calc_qty(_setup_sl(100.0, 99.0, score=0), equity=10000.0)  # 1%
+    q2 = bot._calc_qty(_setup_sl(100.0, 99.0, score=2), equity=10000.0)  # 2%
+    assert q2 == pytest.approx(2.0 * q0)
+
+
+def test_calc_qty_risk_based_caps_at_leverage() -> None:
+    """SL 매우 가까워 qty 폭증 시 over-leverage 상한(equity×lev×max%)에 cap."""
+    bot = _bot(
+        risk_based_sizing=True, risk_per_trade_base=1.0,
+        risk_per_trade_step=0.0, risk_per_trade_max=2.0,
+    )
+    bot._symbol_meta = {}
+    # risk 100 / SL거리 0.01 = 10000 qty. 상한 = 10000×10×80% / 100 = 800.
+    q = bot._calc_qty(_setup_sl(100.0, 99.99), equity=10000.0)
+    assert q == pytest.approx(800.0)
