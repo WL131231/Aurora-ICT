@@ -279,6 +279,89 @@
     color: #f87171;
   }
   .pair-chip .x { opacity: 0.7; font-size: 13px; }
+  /* 2026-06-06 페어 선택기 — 버튼 + 모달 */
+  .pair-add-btn {
+    width: 100%;
+    padding: 8px 10px;
+    background: var(--surface);
+    border: 1px dashed var(--line-strong);
+    color: var(--text-2);
+    font-size: 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .pair-add-btn:hover:not(:disabled) { border-color: #34d399; color: #34d399; }
+  .pair-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .pair-select-btn {
+    padding: 6px 12px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    color: var(--text-1);
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .pair-select-btn:hover { border-color: var(--line-strong); }
+  .pair-picker-overlay {
+    position: fixed; inset: 0; z-index: 1000;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex; align-items: flex-start; justify-content: center;
+    padding-top: 8vh;
+  }
+  .pair-picker-overlay[hidden] { display: none; }
+  .pair-picker {
+    width: 380px; max-width: 92vw; max-height: 70vh;
+    display: flex; flex-direction: column;
+    background: var(--surface); border: 1px solid var(--line-strong);
+    border-radius: 8px; overflow: hidden;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  }
+  .pair-picker-head {
+    display: flex; gap: 8px; padding: 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .pair-picker-search {
+    flex: 1; padding: 8px 10px;
+    background: var(--bg, #0e1015); border: 1px solid var(--line);
+    color: var(--text-1); border-radius: 4px; font-size: 13px;
+    font-family: inherit;
+  }
+  .pair-picker-close {
+    width: 32px; background: none; border: none; color: var(--text-3);
+    font-size: 20px; cursor: pointer;
+  }
+  .pair-picker-close:hover { color: var(--text-1); }
+  .pair-picker-cols {
+    display: grid; grid-template-columns: 1.2fr 1.2fr 0.9fr 1fr;
+    gap: 8px; padding: 6px 14px;
+    font-size: 10px; letter-spacing: 0.1em; color: var(--text-3);
+    border-bottom: 1px solid var(--line);
+  }
+  .pair-picker-cols span:not(:first-child) { text-align: right; }
+  .pair-picker-list { overflow-y: auto; }
+  .pair-picker-row {
+    display: grid; grid-template-columns: 1.2fr 1.2fr 0.9fr 1fr;
+    gap: 8px; align-items: center;
+    width: 100%; padding: 9px 14px;
+    background: none; border: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    color: var(--text-1); font-size: 12px; font-family: inherit;
+    cursor: pointer; text-align: left;
+  }
+  .pair-picker-row:hover { background: rgba(255, 255, 255, 0.05); }
+  .pair-picker-row .ppr-sym { font-weight: 600; }
+  .pair-picker-row .ppr-price,
+  .pair-picker-row .ppr-pct,
+  .pair-picker-row .ppr-vol { text-align: right; color: var(--text-2); }
+  .pair-picker-row .ppr-pct.up { color: #34d399; }
+  .pair-picker-row .ppr-pct.down { color: #f87171; }
+  .pair-picker-empty {
+    padding: 24px; text-align: center; color: var(--text-3); font-size: 12px;
+  }
   .pair-hint {
     margin: 6px 0 0 0;
     font-size: 9px;
@@ -1971,12 +2054,10 @@
          사이드바 에선 페어 선택으로 대체. BTC + ETH 복수 선택 가능 (백엔드 multi
          pair 지원은 다음 PR). 한 번에 1개 또는 양쪽 동시 = 동시 진입 옵션. -->
     <h2 data-i18n="sidebar.tradingPair">Trading Pair</h2>
-    <!-- 2026-06-05 페어 확장: BTC/ETH 2버튼 → 거래대금 상위 30 동적 드롭다운.
-         페어 추가 select 로 가동, 켠 페어는 칩으로 표시(칩 클릭 = 정지). -->
+    <!-- 2026-06-06 페어 선택기: '+ 페어 추가' 버튼 → 모달(가격/24H%/거래량+검색).
+         켠 페어는 칩으로 표시(칩 클릭 = 정지). -->
     <div class="pair-controls" id="pair-toggle">
-      <select id="pair-add-select" class="pair-select">
-        <option value="">+ 페어 추가</option>
-      </select>
+      <button type="button" id="pair-add-btn" class="pair-add-btn">+ 페어 추가</button>
       <div id="running-pair-chips" class="pair-chips"></div>
     </div>
     <p class="pair-hint" id="pair-limit-hint">선택한 페어만 매매 — 칩 클릭 시 정지</p>
@@ -2091,8 +2172,8 @@
     <div class="chart-toolbar">
       <!-- 차트 전용 페어 선택 — 좌측 TRADING PAIR(매매)와 별개로 "어느 페어
            차트를 볼지"만 전환. 매매/상태는 그대로, 차트 데이터만 심볼 교체.
-           2026-06-05 페어 확장: 2버튼 → 동적 드롭다운(거래대금 상위 30). -->
-      <select id="chart-pair-select" class="pair-select"></select>
+           2026-06-06: 버튼 → 모달 페어 선택기(가격/24H%/거래량+검색). -->
+      <button type="button" id="chart-pair-btn" class="pair-select-btn">BTC ▾</button>
       <div class="tf-toggle" id="tf-toggle">
         <button data-tf="1m">1m</button>
         <button data-tf="5m">5m</button>
@@ -2305,6 +2386,21 @@
 </div>
 
 <div id="toast" class="toast"></div>
+
+<!-- 2026-06-06 페어 선택기 모달 — 가격/24H%/거래량 + 검색(Bybit 스타일). -->
+<div id="pair-picker-overlay" class="pair-picker-overlay" hidden>
+  <div class="pair-picker">
+    <div class="pair-picker-head">
+      <input id="pair-picker-search" type="text" class="pair-picker-search"
+             placeholder="검색 (BTC, ETH, SOL...)" autocomplete="off" />
+      <button type="button" id="pair-picker-close" class="pair-picker-close">×</button>
+    </div>
+    <div class="pair-picker-cols">
+      <span>페어</span><span>가격</span><span>24H</span><span>거래량</span>
+    </div>
+    <div id="pair-picker-list" class="pair-picker-list"></div>
+  </div>
+</div>
 
 <!-- 2026-05-30 파트너 요청: 4개어 i18n + 4시간대 select. app.js 보다 먼저
      로드해야 app.js 가 window.AuroraI18n.t() / nyTimeToUserTz() 사용 가능. -->
