@@ -562,7 +562,19 @@ class AuroraClientAdapter:
                 raw_symbol, stop_loss, take_profit, e,
             )
             return {}
-        return dict(result) if isinstance(result, dict) else {"raw": str(result)}
+        # #TPSL-RETCODE fix: ccxt 가 예외를 안 던지고 retCode!=0 인 에러 바디를 200 OK
+        # 로 그대로 돌려주는 경우, 호출처는 truthy 판정만 하므로 실패를 SL 적용 성공으로
+        # 오인 → 무SL 포지션 잔존. retCode 를 명시 검사해 0(정상)·34040(이미 적용) 외엔
+        # falsy({}) 반환 → 상위 _ensure_protective_sl 의 재시도·비상청산 경로가 작동.
+        result_dict = dict(result) if isinstance(result, dict) else {"raw": str(result)}
+        ret_code = result_dict.get("retCode")
+        if ret_code is not None and ret_code not in (0, 34040):
+            logger.warning(
+                "set_position_tpsl retCode 이상 (%s sl=%s tp=%s): %s",
+                raw_symbol, stop_loss, take_profit, result_dict,
+            )
+            return {}
+        return result_dict
 
 
 __all__ = ["AuroraClientAdapter"]
