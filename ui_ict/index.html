@@ -295,16 +295,15 @@
   .pair-add-btn:hover:not(:disabled) { border-color: #34d399; color: #34d399; }
   .pair-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .pair-select-btn {
-    padding: 4px 9px;
+    padding: 6px 12px;
     background: var(--surface);
     border: 1px solid var(--line);
     color: var(--text-1);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     border-radius: 4px;
     cursor: pointer;
     font-family: inherit;
-    flex: 0 0 auto;
   }
   .pair-select-btn:hover { border-color: var(--line-strong); }
   .pair-picker-overlay {
@@ -377,17 +376,12 @@
   .chart-toolbar {
     display: flex;
     align-items: center;
-    /* 2026-06-06: space-between → 왼쪽 정렬 + gap. 페어 버튼과 TF 토글 사이
-       빈 공간이 페어 선택 영역을 넓어 보이게 해서, 왼쪽으로 모으고 차트 정보만
-       오른쪽(margin-left:auto)으로 민다. */
-    justify-content: flex-start;
-    gap: 10px;
+    justify-content: space-between;
     padding: 8px 16px;
     background: var(--bg-2);
     border-bottom: 1px solid var(--line);
     flex-shrink: 0;
   }
-  .chart-toolbar .chart-symbol { margin-left: auto; }
   .tf-toggle {
     display: flex;
     gap: 2px;
