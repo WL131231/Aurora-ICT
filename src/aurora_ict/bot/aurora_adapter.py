@@ -410,6 +410,14 @@ class AuroraClientAdapter:
             logger.debug("round_amount 폴백 (%s): %s", symbol, e)
             return amount
 
+    async def list_top_usdt_perps(self, limit: int = 30) -> list[str]:
+        """거래대금 상위 USDT perp 심볼 목록 위임. 실패 시 빈 리스트."""
+        try:
+            return await self._client.list_top_usdt_perps(limit)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("list_top_usdt_perps 위임 실패: %s", e)
+            return []
+
     async def cancel_all_orders(self, symbol: str) -> None:
         """해당 페어 미체결 주문 전체 취소 — pending limit entry TTL 만료 시 사용.
 
