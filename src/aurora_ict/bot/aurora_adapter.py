@@ -602,14 +602,22 @@ class AuroraClientAdapter:
         # 로 그대로 돌려주는 경우, 호출처는 truthy 판정만 하므로 실패를 SL 적용 성공으로
         # 오인 → 무SL 포지션 잔존. retCode 를 명시 검사해 0(정상)·34040(이미 적용) 외엔
         # falsy({}) 반환 → 상위 _ensure_protective_sl 의 재시도·비상청산 경로가 작동.
+        # 2026-06-06 #TPSL-RETCODE-STR fix: Bybit/ccxt 가 retCode 를 문자열 '0' 으로
+        # 돌려주는 경우가 있어 int 비교(0)에서 타입 불일치로 정상(OK)을 이상으로 오판
+        # → 멀쩡한 SL 을 실패 처리 → 비상청산. int 로 정규화해 비교한다.
         result_dict = dict(result) if isinstance(result, dict) else {"raw": str(result)}
-        ret_code = result_dict.get("retCode")
-        if ret_code is not None and ret_code not in (0, 34040):
-            logger.warning(
-                "set_position_tpsl retCode 이상 (%s sl=%s tp=%s): %s",
-                raw_symbol, stop_loss, take_profit, result_dict,
-            )
-            return {}
+        ret_code_raw = result_dict.get("retCode")
+        if ret_code_raw is not None:
+            try:
+                ret_code = int(ret_code_raw)
+            except (TypeError, ValueError):
+                ret_code = -1  # 파싱 불가 = 이상 취급
+            if ret_code not in (0, 34040):
+                logger.warning(
+                    "set_position_tpsl retCode 이상 (%s sl=%s tp=%s): %s",
+                    raw_symbol, stop_loss, take_profit, result_dict,
+                )
+                return {}
         return result_dict
 
 
