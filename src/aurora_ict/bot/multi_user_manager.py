@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +51,10 @@ ClientFactory = Callable[[IctSettings], Awaitable[ExchangeClientProtocol]]
 # 옛 호출 (symbol 안 주는 단일 사용자/.exe 흐름) 호환 위해 default 박음.
 _DEFAULT_SYMBOL = "BTC/USDT:USDT"
 SlotKey = tuple[str, str]  # (user_code, symbol)
+
+# #SEC path traversal 방어 — user_code 가 파일 경로에 들어가므로 영숫자/_/- 만 허용.
+# auth.router._CODE_PATTERN 과 동일 규칙(입력단·디렉토리 생성단 이중 검증).
+_SAFE_USER_CODE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 @dataclass(slots=True)
@@ -105,9 +110,26 @@ class MultiUserBotManager:
 
         Why: 사용자별 license.json / trades.db / trades_dataset 등 데이터 분리.
         한 사용자 데이터가 다른 사용자에게 노출/오염되지 않도록 격리.
+
+        #SEC path traversal 2차 방어(defense-in-depth): user_code 는 auth 입력단
+        (router._CODE_PATTERN)에서 이미 검증되지만, 디렉토리 생성 직전에 한 번 더
+        형식·경로 봉쇄를 재확인한다. ``../`` 등으로 users/ 루트를 벗어나면 예외.
+
+        Raises:
+            ValueError: user_code 가 허용 문자집합을 벗어나거나, 해석된 경로가
+                ``<data_dir>/users`` 하위가 아닐 때.
         """
         from aurora_ict.paths import data_dir
-        path = data_dir() / "users" / user_code
+        if not _SAFE_USER_CODE_RE.match(user_code):
+            raise ValueError(
+                f"부적합한 user_code (path traversal 방어): {user_code!r}",
+            )
+        root = (data_dir() / "users").resolve()
+        path = (root / user_code).resolve()
+        if path != root and root not in path.parents:
+            raise ValueError(
+                f"user_code 가 users 디렉토리를 벗어남: {user_code!r}",
+            )
         path.mkdir(parents=True, exist_ok=True)
         return path
 

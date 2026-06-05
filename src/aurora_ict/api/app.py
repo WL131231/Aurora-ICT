@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, SecretStr
@@ -185,6 +185,29 @@ def _status_dict(manager: BotManager) -> dict[str, Any]:
     }
 
 
+# #SEC rate limiting — 인증 관련 민감 POST 엔드포인트에 IP 당 분당 시도 제한.
+# brute-force / 무한 계정생성 / app-layer DoS 완화. 정상 사용자는 분당 5회 안에
+# 로그인하므로 영향 없음. (Fly 단일 머신 가정 — 다중 확장 시 공유 저장소 필요.)
+_RATE_LIMITED_PATHS = frozenset({"/auth/login", "/auth/setup-pin", "/admin/login"})
+_AUTH_RATE_MAX = 5
+_AUTH_RATE_WINDOW = 60.0
+
+
+def _client_ip(request: Request) -> str:
+    """프록시(Fly) 뒤 실제 클라이언트 IP 추출 — rate limit 키 용도.
+
+    Fly.io 는 ``Fly-Client-IP`` 헤더로 원 IP 를 전달한다. 없으면
+    ``X-Forwarded-For`` 첫 항목, 그것도 없으면 소켓 peer 로 폴백한다.
+    """
+    fly_ip = request.headers.get("fly-client-ip")
+    if fly_ip:
+        return fly_ip.strip()
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 def _register_multi_user_routes(
     app: FastAPI,
     *,
@@ -240,6 +263,44 @@ def _register_multi_user_routes(
             auth_db_path=db_path,
         ),
     )
+
+    # === #SEC 보안 미들웨어 (SaaS/multi-user 전용) ===
+    from starlette.responses import JSONResponse
+
+    from aurora_ict.auth.ratelimit import RateLimiter
+
+    _auth_limiter = RateLimiter(max_hits=_AUTH_RATE_MAX, window_sec=_AUTH_RATE_WINDOW)
+
+    @app.middleware("http")
+    async def _rate_limit_mw(request: Request, call_next):  # type: ignore[no-untyped-def]
+        """인증 민감 엔드포인트에 IP 단위 rate limit 적용 — 초과 시 429."""
+        if request.method == "POST" and request.url.path in _RATE_LIMITED_PATHS:
+            client_ip = _client_ip(request)
+            if not _auth_limiter.allow(f"{request.url.path}:{client_ip}"):
+                logger.warning(
+                    "rate limit 초과 — path=%s ip=%s",
+                    request.url.path, client_ip,
+                )
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "detail": "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.",
+                    },
+                )
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def _security_headers_mw(request: Request, call_next):  # type: ignore[no-untyped-def]
+        """응답에 기본 보안 헤더 주입 — 클릭재킹/MIME 스니핑/HTTPS 강제."""
+        resp = await call_next(request)
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        # HSTS — Fly 가 force_https 하지만 헤더는 앱이 보내야 브라우저가 기억한다.
+        resp.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+        return resp
 
     @app.get("/ict/health")
     async def health_mu() -> dict[str, str]:
@@ -1188,10 +1249,16 @@ def create_app(
                 "multi_user=False 면 manager (BotManager) 인자가 필수입니다.",
             )
 
+    # #SEC 운영(SaaS, multi_user)에서는 /docs·/redoc·/openapi.json 을 비활성화한다.
+    # 전체 API 스키마(admin 엔드포인트·헤더 이름 포함)가 인증 없이 노출되면 공격
+    # 표면 정찰에 직접 쓰인다. 데스크탑(.exe single)은 로컬 전용이라 그대로 유지.
     app = FastAPI(
         title="Aurora-ICT API",
         version="0.2.1",
         description="ICT (Inner Circle Trader) 매매 봇 REST API",
+        docs_url=None if multi_user else "/docs",
+        redoc_url=None if multi_user else "/redoc",
+        openapi_url=None if multi_user else "/openapi.json",
     )
 
     # CORS — SaaS(multi_user)는 운영 도메인만 허용(쿠키 세션 + credentials 사용이라

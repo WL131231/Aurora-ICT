@@ -45,11 +45,18 @@ _LOGIN_FAIL_SLEEP_SEC = 0.5
 # ============================================================
 
 
+# 라이선스 코드 허용 문자 — 영숫자/하이픈/언더스코어만. #SEC path traversal 방어:
+# code 는 세션 user_code 가 되고 파일 경로 ``<data_dir>/users/<code>/`` 에 직접
+# 들어가므로, ``../`` 나 경로 구분자가 섞이면 디렉토리 탈출이 가능하다. 입력단에서
+# 형식을 강제해 차단한다(_user_data_dir 에 2차 방어 게이트 별도 존재).
+_CODE_PATTERN = r"^[A-Za-z0-9_-]+$"
+
+
 class SetupPinRequest(BaseModel):
     """PIN 최초 설정 요청."""
 
-    # 라이선스 코드 형식 — ``AICT-XXXX-XXXX-XXXX`` 가정, 최소 길이만 검증.
-    code: str = Field(min_length=4, max_length=64)
+    # 라이선스 코드 형식 — ``AICT-XXXX-XXXX-XXXX`` 가정. 길이 + 문자집합 검증.
+    code: str = Field(min_length=4, max_length=64, pattern=_CODE_PATTERN)
     pin: str = Field(min_length=1, max_length=128)
     pin_confirm: str = Field(min_length=1, max_length=128)
 
@@ -57,7 +64,7 @@ class SetupPinRequest(BaseModel):
 class LoginRequest(BaseModel):
     """로그인 요청."""
 
-    code: str = Field(min_length=4, max_length=64)
+    code: str = Field(min_length=4, max_length=64, pattern=_CODE_PATTERN)
     pin: str = Field(min_length=1, max_length=128)
 
 
