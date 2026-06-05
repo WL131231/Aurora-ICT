@@ -2343,9 +2343,14 @@ class BotIctInstance:
         )
         new_qty = self._calc_qty(fake_setup, equity)
         try:
+            # #FLIP-SL fix: 일반 진입(#LIVE-4)과 동일하게 SL/TP 를 진입 주문에 동봉하지
+            # 않는다. flip 은 시장가(price=None)라 대개 통과하지만, 변동성 큰 flip 순간
+            # FVG 경계 SL 이 현재가 너머로 가면 Bybit 10001(StopLoss 방향 검증)로 주문
+            # 자체가 거부 → 신규 진입 0. SL/TP 는 체결 후 아래 _ensure_protective_sl 가
+            # set_position_tpsl 로 박는다 (체결가 기준이라 방향 유효).
             resp = await self.client.place_order(
                 symbol=self.symbol, side=new_side, qty=new_qty,
-                price=None, stop_loss=new_sl, take_profit=None,
+                price=None, stop_loss=None, take_profit=None,
             )
             if isinstance(resp, dict) and resp.get("error"):
                 raise RuntimeError(str(resp.get("error")))
