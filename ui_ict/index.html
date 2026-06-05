@@ -238,6 +238,47 @@
     color: #34d399;
     box-shadow: 0 0 12px rgba(52, 211, 153, 0.45);
   }
+  /* 2026-06-05 페어 확장 — 드롭다운 + 칩 UI. */
+  .pair-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .pair-select {
+    width: 100%;
+    padding: 8px 10px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    color: var(--text-1);
+    font-size: 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .pair-select:hover { border-color: var(--line-strong); }
+  .pair-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pair-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    background: rgba(52, 211, 153, 0.18);
+    border: 1px solid #34d399;
+    color: #34d399;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .pair-chip:hover {
+    background: rgba(248, 113, 113, 0.16);
+    border-color: #f87171;
+    color: #f87171;
+  }
+  .pair-chip .x { opacity: 0.7; font-size: 13px; }
   .pair-hint {
     margin: 6px 0 0 0;
     font-size: 9px;
@@ -1930,11 +1971,15 @@
          사이드바 에선 페어 선택으로 대체. BTC + ETH 복수 선택 가능 (백엔드 multi
          pair 지원은 다음 PR). 한 번에 1개 또는 양쪽 동시 = 동시 진입 옵션. -->
     <h2 data-i18n="sidebar.tradingPair">Trading Pair</h2>
-    <div class="pair-toggle" id="pair-toggle">
-      <button type="button" data-pair="BTCUSDT" class="active">BTC</button>
-      <button type="button" data-pair="ETHUSDT">ETH</button>
+    <!-- 2026-06-05 페어 확장: BTC/ETH 2버튼 → 거래대금 상위 30 동적 드롭다운.
+         페어 추가 select 로 가동, 켠 페어는 칩으로 표시(칩 클릭 = 정지). -->
+    <div class="pair-controls" id="pair-toggle">
+      <select id="pair-add-select" class="pair-select">
+        <option value="">+ 페어 추가</option>
+      </select>
+      <div id="running-pair-chips" class="pair-chips"></div>
     </div>
-    <p class="pair-hint" data-i18n="hint.pairSelect">선택한 페어만 매매 — 복수 선택 시 동시 진입 가능</p>
+    <p class="pair-hint" id="pair-limit-hint">선택한 페어만 매매 — 칩 클릭 시 정지</p>
 
     <h2 data-i18n="sidebar.tradeTimeframe">Trade Timeframe</h2>
     <div class="trade-tf-toggle" id="trade-tf-toggle">
@@ -2045,11 +2090,9 @@
   <main class="main">
     <div class="chart-toolbar">
       <!-- 차트 전용 페어 선택 — 좌측 TRADING PAIR(매매)와 별개로 "어느 페어
-           차트를 볼지"만 전환. 매매/상태는 그대로, 차트 데이터만 심볼 교체. -->
-      <div class="tf-toggle" id="chart-pair-toggle">
-        <button data-chart-pair="BTCUSDT" class="active">BTC</button>
-        <button data-chart-pair="ETHUSDT">ETH</button>
-      </div>
+           차트를 볼지"만 전환. 매매/상태는 그대로, 차트 데이터만 심볼 교체.
+           2026-06-05 페어 확장: 2버튼 → 동적 드롭다운(거래대금 상위 30). -->
+      <select id="chart-pair-select" class="pair-select"></select>
       <div class="tf-toggle" id="tf-toggle">
         <button data-tf="1m">1m</button>
         <button data-tf="5m">5m</button>

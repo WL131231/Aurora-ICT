@@ -923,10 +923,9 @@ let _prefetchStarted = false;
 async function _prefetchAllCharts() {
   if (_prefetchStarted) return;
   _prefetchStarted = true;
-  const symbols = [
-    currentChartSymbol,
-    ...Object.values(_PAIR_TO_SYMBOL).filter((s) => s !== currentChartSymbol),
-  ];
+  // #PAIR-EXPAND: 페어가 30종목으로 늘어 전종목×TF prefetch 는 폭발(240 요청).
+  // 현재 보는 차트 심볼의 TF 들만 미리 받는다. 다른 페어는 전환 시 개별 fetch.
+  const symbols = [currentChartSymbol];
   const tfs = [
     currentTimeframe,
     ...VALID_TFS.filter((t) => t !== currentTimeframe),
@@ -1595,96 +1594,157 @@ if (_vizToggleSide) _vizToggleSide.addEventListener("click", _handleVizClick);
 //   - 가동 실패 (LIVE 키 미등록 등) 시 active 안 박힘 (백엔드 status 따라감).
 //   - 페어 토글로 모든 페어 끌 수 있음 — 봇 자체 정지와 동일 효과 (마지막 1개 보호 X).
 //
-// UI 페어 ID (data-pair="BTCUSDT") ↔ ccxt symbol (BTC/USDT:USDT) 매핑.
-// 백엔드는 ccxt unified format 사용, UI 는 깔끔하게 표시하기 위해 별도.
-const _PAIR_TO_SYMBOL = {
-  "BTCUSDT": "BTC/USDT:USDT",
-  "ETHUSDT": "ETH/USDT:USDT",
-};
+// 2026-06-05 페어 확장 — BTC/ETH 2버튼 하드코딩 → /ict/markets 동적 드롭다운.
+// 매매 페어: select 로 추가(가동), 켠 페어는 칩으로 표시(칩 클릭=정지).
+// 차트 페어: select 로 "어느 페어 차트를 볼지" 전환(매매와 별개).
+let _tradablePairs = ["BTC/USDT:USDT", "ETH/USDT:USDT"];  // markets 실패 시 폴백
+let _maxPairs = 5;
+let _runningSymbols = new Set();
 
-function _updatePairButtonsFromRunning(runningSet) {
-  document.querySelectorAll("#pair-toggle button[data-pair]").forEach((b) => {
-    const sym = _PAIR_TO_SYMBOL[b.dataset.pair];
-    b.classList.toggle("active", runningSet.has(sym));
-  });
+/** ccxt symbol → 표시명. 예: "BTC/USDT:USDT" → "BTC". */
+function _symLabel(sym) {
+  return (sym && sym.split("/")[0]) || sym || "?";
 }
 
-/** 백엔드 running-pairs 로 페어 토글 active 동기화. */
-async function refreshRunningPairs() {
+/** /ict/markets 로 거래 가능 페어 목록 + 상한 로드 → 드롭다운 채움. */
+async function loadTradablePairs() {
   try {
-    const r = await api("/ict/running-pairs");
-    const running = new Set(r.running_symbols || []);
-    _updatePairButtonsFromRunning(running);
-    return running;
-  } catch (e) {
-    // 인증 게이트 등 — 토글은 그대로 둠.
-    return new Set();
+    const r = await api("/ict/markets");
+    if (Array.isArray(r.pairs) && r.pairs.length) _tradablePairs = r.pairs;
+    if (r.max_pairs) _maxPairs = r.max_pairs;
+  } catch (e) { /* 폴백(BTC/ETH) 유지 */ }
+  _populateChartPairSelect();
+  _populatePairAddSelect();
+}
+
+function _populateChartPairSelect() {
+  const sel = $("chart-pair-select");
+  if (!sel) return;
+  const list = _tradablePairs.includes(currentChartSymbol)
+    ? _tradablePairs
+    : [currentChartSymbol, ..._tradablePairs];  // 과거 선택이 목록 밖이면 보존
+  sel.innerHTML = "";
+  for (const sym of list) {
+    const o = document.createElement("option");
+    o.value = sym;
+    o.textContent = _symLabel(sym);
+    if (sym === currentChartSymbol) o.selected = true;
+    sel.appendChild(o);
   }
 }
 
-const _pairToggle = $("pair-toggle");
-if (_pairToggle) {
-  // bootstrap 1회 동기화 — 페이지 로드 직후 화면에 정확한 active 표시.
-  refreshRunningPairs();
-  _pairToggle.addEventListener("click", async (e) => {
-    const btn = e.target.closest("button[data-pair]");
-    if (!btn) return;
-    const pair = btn.dataset.pair;
-    const symbol = _PAIR_TO_SYMBOL[pair];
-    if (!symbol) return;
-    const isActive = btn.classList.contains("active");
-    // 즉시 시각 응답 — 백엔드 응답 기다리지 않고 토글 상태 반영.
-    // 실패 시 refreshRunningPairs() 가 진실값으로 되돌림.
-    btn.classList.toggle("active");
-    try {
-      if (isActive) {
-        await api(
-          `/ict/stop?symbol=${encodeURIComponent(symbol)}`,
-          "POST",
-        );
-        toast(`${pair} 정지`);
-      } else {
-        await api(
-          `/ict/start?symbol=${encodeURIComponent(symbol)}`,
-          "POST",
-        );
-        toast(`${pair} 가동`);
-      }
-    } catch (e2) {
-      toast(`${pair} ${isActive ? "정지" : "가동"} 실패: ${e2.message}`, true);
+function _populatePairAddSelect() {
+  const sel = $("pair-add-select");
+  if (!sel) return;
+  const atLimit = _runningSymbols.size >= _maxPairs;
+  sel.innerHTML = "";
+  const ph = document.createElement("option");
+  ph.value = "";
+  ph.textContent = atLimit ? `최대 ${_maxPairs}개 가동 중` : "+ 페어 추가";
+  sel.appendChild(ph);
+  if (!atLimit) {
+    for (const sym of _tradablePairs) {
+      if (_runningSymbols.has(sym)) continue;  // 이미 켠 페어 제외
+      const o = document.createElement("option");
+      o.value = sym;
+      o.textContent = _symLabel(sym);
+      sel.appendChild(o);
     }
-    // 백엔드 진실값으로 토글 재동기화 (성공·실패 무관).
-    await refreshRunningPairs();
-    // 차트가 보고 있는 페어 status 도 갱신.
-    await fetchAndRender();
+  }
+  sel.disabled = atLimit;
+}
+
+function _renderRunningChips() {
+  const box = $("running-pair-chips");
+  if (!box) return;
+  box.innerHTML = "";
+  for (const sym of _runningSymbols) {
+    const chip = document.createElement("span");
+    chip.className = "pair-chip";
+    chip.dataset.symbol = sym;
+    chip.title = `${_symLabel(sym)} 정지`;
+    chip.innerHTML = `${_symLabel(sym)} <span class="x">×</span>`;
+    box.appendChild(chip);
+  }
+}
+
+/** 622 renderStatus 호환 — running set 갱신 + 칩/드롭다운 재렌더. */
+function _updatePairButtonsFromRunning(runningSet) {
+  _runningSymbols = runningSet;
+  _renderRunningChips();
+  _populatePairAddSelect();
+}
+
+/** 백엔드 running-pairs 로 매매 칩/드롭다운 동기화. */
+async function refreshRunningPairs() {
+  try {
+    const r = await api("/ict/running-pairs");
+    _runningSymbols = new Set(r.running_symbols || []);
+  } catch (e) { /* 인증 게이트 등 — 기존 상태 유지 */ }
+  _renderRunningChips();
+  _populatePairAddSelect();
+  return _runningSymbols;
+}
+
+async function _startPair(symbol) {
+  try {
+    await api(`/ict/start?symbol=${encodeURIComponent(symbol)}`, "POST");
+    toast(`${_symLabel(symbol)} 가동`);
+  } catch (e) {
+    toast(`${_symLabel(symbol)} 가동 실패: ${e.message}`, true);
+  }
+  await refreshRunningPairs();
+  await fetchAndRender();
+}
+
+async function _stopPair(symbol) {
+  try {
+    await api(`/ict/stop?symbol=${encodeURIComponent(symbol)}`, "POST");
+    toast(`${_symLabel(symbol)} 정지`);
+  } catch (e) {
+    toast(`${_symLabel(symbol)} 정지 실패: ${e.message}`, true);
+  }
+  await refreshRunningPairs();
+  await fetchAndRender();
+}
+
+// 페어 추가 드롭다운 — 선택 시 가동(선택 후 placeholder 로 리셋).
+const _pairAddSelect = $("pair-add-select");
+if (_pairAddSelect) {
+  _pairAddSelect.addEventListener("change", async (e) => {
+    const sym = e.target.value;
+    if (!sym) return;
+    e.target.value = "";
+    await _startPair(sym);
   });
 }
 
-// 차트 전용 페어 선택 — 좌측 #pair-toggle(매매 on/off)과 별개로 "어느 페어
-// 차트를 볼지"만 전환한다. 차트 데이터(ohlcv/markers)만 심볼 교체, 매매/상태는 그대로.
-function _updateChartPairButtons() {
-  document.querySelectorAll("#chart-pair-toggle button[data-chart-pair]").forEach((b) => {
-    b.classList.toggle(
-      "active", _PAIR_TO_SYMBOL[b.dataset.chartPair] === currentChartSymbol,
-    );
+// 켠 페어 칩 — 클릭 시 정지.
+const _runningChipsBox = $("running-pair-chips");
+if (_runningChipsBox) {
+  _runningChipsBox.addEventListener("click", async (e) => {
+    const chip = e.target.closest(".pair-chip");
+    if (!chip || !chip.dataset.symbol) return;
+    await _stopPair(chip.dataset.symbol);
   });
 }
-const _chartPairToggle = $("chart-pair-toggle");
-if (_chartPairToggle) {
-  _updateChartPairButtons();
-  _chartPairToggle.addEventListener("click", async (ev) => {
-    const btn = ev.target.closest("button[data-chart-pair]");
-    if (!btn) return;
-    const sym = _PAIR_TO_SYMBOL[btn.dataset.chartPair];
+
+// 차트 페어 드롭다운 — 선택 시 차트 심볼 전환(매매/상태는 그대로).
+const _chartPairSelect = $("chart-pair-select");
+if (_chartPairSelect) {
+  _chartPairSelect.addEventListener("change", async (e) => {
+    const sym = e.target.value;
     if (!sym || sym === currentChartSymbol) return;
     currentChartSymbol = sym;
     localStorage.setItem("aurora_ict_chart_symbol", sym);
-    _updateChartPairButtons();
-    _chartViewInitialized = false;  // 페어 바뀌면 차트 다시 최근 N봉 zoom
-    _showCachedChartIfAny();  // 캐시 있으면 즉시 표시(체감 즉답)
-    await fetchAndRender();   // fresh 갱신
+    _chartViewInitialized = false;  // 페어 바뀌면 최근 N봉 zoom 재적용
+    _showCachedChartIfAny();        // 캐시 있으면 즉시 표시
+    await fetchAndRender();         // fresh 갱신
   });
 }
+
+// bootstrap — 페어 목록 로드 후 running 동기화.
+loadTradablePairs().then(() => refreshRunningPairs());
 
 $("tf-toggle").addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button[data-tf]");
