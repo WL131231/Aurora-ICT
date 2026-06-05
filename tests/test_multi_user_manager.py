@@ -864,6 +864,60 @@ async def test_max_pairs_per_user_enforced(
 
 
 @pytest.mark.asyncio
+async def test_list_market_tickers_caches(
+    db_path, base_settings, master_key,
+) -> None:
+    """페어 선택기 시세 행 — 슬롯 client 로 조회 + 60초 TTL 캐시."""
+    from aurora_ict.bot.multi_user_manager import _UserBotSlot
+
+    class _TickerClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def fetch_perp_tickers(self, limit: int = 30):
+            self.calls += 1
+            return [{"symbol": "BTC/USDT:USDT", "last": 60000.0,
+                     "pct24h": -5.0, "volume": 8.0e9}]
+
+    tc = _TickerClient()
+
+    async def factory(_s):
+        return tc
+
+    mu = MultiUserBotManager(
+        client_factory=factory, db_path=db_path,
+        base_settings=base_settings, master_key=master_key,
+    )
+    mu._slots[("U", "BTC/USDT:USDT")] = _UserBotSlot(
+        symbol="BTC/USDT:USDT", settings=base_settings, bot=None, client=tc,
+    )
+    r1 = await mu.list_market_tickers("U", now=0.0)
+    assert r1[0]["symbol"] == "BTC/USDT:USDT"
+    assert tc.calls == 1
+    # 60초 내 — 캐시 사용(재조회 X).
+    await mu.list_market_tickers("U", now=30.0)
+    assert tc.calls == 1
+    # TTL 만료 → 재조회.
+    await mu.list_market_tickers("U", now=70.0)
+    assert tc.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_list_market_tickers_empty_when_no_client(
+    db_path, base_settings, master_key,
+) -> None:
+    """슬롯 client 미확보 시 빈 리스트(첫 가동 전)."""
+    async def factory(_s):
+        return None
+
+    mu = MultiUserBotManager(
+        client_factory=factory, db_path=db_path,
+        base_settings=base_settings, master_key=master_key,
+    )
+    assert await mu.list_market_tickers("U", now=0.0) == []
+
+
+@pytest.mark.asyncio
 async def test_start_uses_last_run_mode_when_force_not_given(
     db_path, base_settings, master_key,
 ) -> None:

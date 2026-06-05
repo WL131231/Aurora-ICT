@@ -435,19 +435,18 @@ class CcxtClient:
             logger.debug("round_amount 폴백 (%s, %s): %s", symbol, amount, exc)
             return amount
 
-    async def list_top_usdt_perps(self, limit: int = 30) -> list[str]:
-        """USDT 무기한(perpetual) 중 24h 거래대금 상위 N 심볼(ccxt 통합 형식).
+    async def fetch_perp_tickers(self, limit: int = 30) -> list[dict[str, Any]]:
+        """USDT 무기한 거래대금 상위 N 시세 행 — UI 페어 선택기용.
 
-        페어 화이트리스트를 거래소 목록에서 동적 구성하기 위한 조회. ICT 전략은
-        유동성이 필요해 거래대금(quoteVolume) 기준 상위만 추린다. fetch_tickers
-        는 무거우니 호출처(PairRegistry)에서 TTL 캐시로 빈도를 제한한다.
+        ICT 전략은 유동성이 필요해 거래대금(quoteVolume) 기준 상위만 추린다.
+        fetch_tickers 는 무거우니 호출처에서 캐시로 빈도를 제한한다.
 
         Args:
             limit: 상위 몇 개를 반환할지.
 
         Returns:
-            거래대금 내림차순 상위 limit 심볼 리스트. 조회 실패 시 빈 리스트
-            (호출처가 기존 캐시 유지하도록).
+            ``[{symbol, last, pct24h, volume}, ...]`` 거래대금 내림차순.
+            조회 실패 시 빈 리스트(호출처가 기존 캐시 유지하도록).
         """
         await self._ensure_init()
         try:
@@ -455,9 +454,9 @@ class CcxtClient:
                 await self._ex.load_markets()
             tickers = await self._ex.fetch_tickers()
         except (ccxt.BaseError, KeyError, ValueError) as exc:
-            logger.warning("list_top_usdt_perps 조회 실패: %s", exc)
+            logger.warning("fetch_perp_tickers 조회 실패: %s", exc)
             return []
-        rows: list[tuple[str, float]] = []
+        rows: list[dict[str, Any]] = []
         for sym, t in tickers.items():
             m = self._ex.markets.get(sym)
             if not m or not m.get("swap") or m.get("quote") != "USDT":
@@ -466,11 +465,21 @@ class CcxtClient:
                 continue
             vol = t.get("quoteVolume") or 0.0
             try:
-                rows.append((sym, float(vol)))
+                vol = float(vol)
             except (TypeError, ValueError):
-                continue
-        rows.sort(key=lambda x: x[1], reverse=True)
-        return [s for s, _ in rows[:limit]]
+                vol = 0.0
+            rows.append({
+                "symbol": sym,
+                "last": t.get("last"),
+                "pct24h": t.get("percentage"),  # ccxt 24h 변동률(%)
+                "volume": vol,
+            })
+        rows.sort(key=lambda r: r["volume"], reverse=True)
+        return rows[:limit]
+
+    async def list_top_usdt_perps(self, limit: int = 30) -> list[str]:
+        """USDT perp 거래대금 상위 N 심볼(화이트리스트용). fetch_perp_tickers 래퍼."""
+        return [r["symbol"] for r in await self.fetch_perp_tickers(limit)]
 
     async def set_leverage(self, symbol: str, leverage: int) -> None:
         """레버리지 설정 — paper 모드는 noop (로깅만).

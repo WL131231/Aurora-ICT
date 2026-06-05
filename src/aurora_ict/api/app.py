@@ -394,14 +394,29 @@ def _register_multi_user_routes(
         메이저만 반환되고, 봇 가동 후부터 전체 목록을 받는다.
 
         Returns:
-            ``{"pairs": ["BTC/USDT:USDT", ...], "max_pairs": 5}``.
+            ``{"pairs": [심볼...], "tickers": [{symbol,last,pct24h,volume}...],
+            "max_pairs": 5}``. tickers 는 페어 선택기 시세 표시용(거래대금 정렬).
+            시세 조회 전/실패 시 tickers 는 빈 배열, pairs 는 화이트리스트 폴백.
         """
         try:
-            pairs = await mu_manager.list_tradable_pairs(user_code)
+            tickers = await mu_manager.list_market_tickers(user_code)
         except Exception as e:  # noqa: BLE001
-            logger.warning("markets 조회 실패 — %s: %s", user_code, e)
-            pairs = list(MAJOR_PAIRS)
-        return {"pairs": pairs, "max_pairs": MAX_PAIRS_PER_USER}
+            logger.warning("markets tickers 조회 실패 — %s: %s", user_code, e)
+            tickers = []
+        if tickers:
+            pairs = [t["symbol"] for t in tickers]
+            for major in MAJOR_PAIRS:
+                if major not in pairs:
+                    pairs.append(major)
+        else:
+            try:
+                pairs = await mu_manager.list_tradable_pairs(user_code)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("markets pairs 폴백 실패 — %s: %s", user_code, e)
+                pairs = list(MAJOR_PAIRS)
+        return {
+            "pairs": pairs, "tickers": tickers, "max_pairs": MAX_PAIRS_PER_USER,
+        }
 
     # ------------------------------------------------------------------
     # 2026-05-28: SaaS 1차 출시 — UI 가 호출하는 /ict/* 전체를 multi-user 분기에도

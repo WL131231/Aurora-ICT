@@ -55,6 +55,29 @@ async def test_adapter_fetch_symbol_meta_fallback_on_error() -> None:
     assert r == {"min_qty": None, "qty_step": None, "max_leverage": None}
 
 
+@pytest.mark.asyncio
+async def test_adapter_fetch_perp_tickers_delegates() -> None:
+    rows = [{"symbol": "BTC/USDT:USDT", "last": 60000.0,
+             "pct24h": -5.0, "volume": 8.0e9}]
+
+    class _TickerClient:
+        async def fetch_perp_tickers(self, limit: int = 30):
+            return rows[:limit]
+
+    adapter = AuroraClientAdapter(_TickerClient())
+    assert await adapter.fetch_perp_tickers(30) == rows
+
+
+@pytest.mark.asyncio
+async def test_adapter_fetch_perp_tickers_fallback_on_error() -> None:
+    class _Boom:
+        async def fetch_perp_tickers(self, limit: int = 30):
+            raise RuntimeError("net down")
+
+    adapter = AuroraClientAdapter(_Boom())
+    assert await adapter.fetch_perp_tickers() == []
+
+
 def test_adapter_round_amount_delegates() -> None:
     adapter = AuroraClientAdapter(_MetaClient({}, rounder=lambda a: round(a, 2)))
     assert adapter.round_amount("ETH/USDT:USDT", 1.23456) == 1.23
