@@ -110,6 +110,16 @@ class IctSettings(BaseSettings):
     # confluence_score 0 → base, 1/2/3+ → base + step * score (max capped).
     # 사용자 정책: 0→40, 1→55, 2→70, 3+→80 (step=15, max 80 cap).
     position_pct_step: float = Field(default=15.0, ge=0.0, le=50.0)
+    # 2026-06-06 리스크 기반 sizing (파트너 결정) — True 면 고정 % notional 대신
+    # 건당 리스크(equity %)를 고정하고 qty = risk금액 / SL거리 로 역산. SL 이 멀수록
+    # qty 가 줄어 건당 손실(R)이 일정 → max_sl_distance 게이트 우회(아래 참조).
+    # 기본 False(기존 동작 보존). 켜면 진입 빈도↑ + 건당 손실폭 제어.
+    risk_based_sizing: bool = Field(default=False)
+    # 건당 리스크 % (equity 대비). score 0→base, 1/2/3+→base+step*score (max cap).
+    # 예: base 1.0 / step 0.5 / max 2.0 → 0:1%, 1:1.5%, 2:2%, 3+:2%.
+    risk_per_trade_base: float = Field(default=1.0, gt=0.0, le=20.0)
+    risk_per_trade_step: float = Field(default=0.5, ge=0.0, le=10.0)
+    risk_per_trade_max: float = Field(default=2.0, gt=0.0, le=20.0)
     # min_rr — v0.4.60 정통화 시 2.0 → v0.4.61 빈도 우려로 1.5 rollback → 2026-05-27
     # 데모 (v0.4.82 22h, 1W 5L, -843 USDT, 평균이익<평균손실 비대칭) 후 **2.0 복원**.
     # 작은 이익에 큰 손실 패턴을 1:2 이상만 통과시켜 완화. 빈도↓ 기대값↑.
