@@ -390,6 +390,51 @@ class CcxtClient:
         raw = await self._ex.create_order(symbol, order_type, side, qty, price, params)
         return self._parse_order(raw, symbol, side, qty, price)
 
+    async def fetch_symbol_meta(self, symbol: str) -> dict[str, float | None]:
+        """심볼별 거래소 메타 — 최소수량 / lot step / 최대 레버리지.
+
+        페어 확장(BTC·ETH → 다종목) 시 심볼마다 다른 lot size·precision·최대
+        레버리지를 주문·사이징에 반영하기 위해 ccxt market 정보를 조회한다.
+        markets 미로드면 1회 ``load_markets`` 후 캐시된 메타를 읽는다.
+
+        Args:
+            symbol: ccxt 통합 심볼 (예: ``"BTC/USDT:USDT"``).
+
+        Returns:
+            dict — ``min_qty`` / ``qty_step`` / ``max_leverage``. 미상장·조회
+            실패 시 각 값 None (호출처가 안전 폴백하도록).
+        """
+        await self._ensure_init()
+        try:
+            if not self._ex.markets:
+                await self._ex.load_markets()
+            m = self._ex.market(symbol)
+        except (ccxt.BaseError, KeyError, ValueError) as exc:
+            logger.warning("fetch_symbol_meta 실패 (%s): %s", symbol, exc)
+            return {"min_qty": None, "qty_step": None, "max_leverage": None}
+        limits = m.get("limits") or {}
+        amount_lim = limits.get("amount") or {}
+        lev_lim = limits.get("leverage") or {}
+        precision = m.get("precision") or {}
+        return {
+            "min_qty": amount_lim.get("min"),
+            "qty_step": precision.get("amount"),
+            "max_leverage": lev_lim.get("max"),
+        }
+
+    def round_amount(self, symbol: str, amount: float) -> float:
+        """거래소 lot step 에 맞게 qty 를 정렬(내림)한다.
+
+        ``amount_to_precision`` 은 markets 로드를 전제로 한다. 로드 전/미상장
+        등으로 실패하면 원본 amount 를 그대로 반환해 주문 경로를 막지 않는다
+        (안전 폴백 — BTC/ETH 기존 동작 회귀 방지).
+        """
+        try:
+            return float(self._ex.amount_to_precision(symbol, amount))
+        except (ccxt.BaseError, KeyError, ValueError, TypeError) as exc:
+            logger.debug("round_amount 폴백 (%s, %s): %s", symbol, amount, exc)
+            return amount
+
     async def set_leverage(self, symbol: str, leverage: int) -> None:
         """레버리지 설정 — paper 모드는 noop (로깅만).
 

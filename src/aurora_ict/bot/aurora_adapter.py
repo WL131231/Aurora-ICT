@@ -390,6 +390,26 @@ class AuroraClientAdapter:
             logger.warning("fetch_ticker 실패: %s", e)
             return None
 
+    async def fetch_symbol_meta(self, symbol: str) -> dict[str, float | None]:
+        """심볼별 거래소 메타(min_qty / qty_step / max_leverage) 위임.
+
+        페어 확장 시 봇이 가동 직후 자기 심볼 메타를 캐시해 사이징·precision 에
+        쓴다. 실패 시 각 값 None (호출처 안전 폴백).
+        """
+        try:
+            return await self._client.fetch_symbol_meta(symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("fetch_symbol_meta 실패 (%s): %s", symbol, e)
+            return {"min_qty": None, "qty_step": None, "max_leverage": None}
+
+    def round_amount(self, symbol: str, amount: float) -> float:
+        """거래소 lot step 에 맞춘 qty 정렬 위임. 실패 시 원본 반환(안전 폴백)."""
+        try:
+            return self._client.round_amount(symbol, amount)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("round_amount 폴백 (%s): %s", symbol, e)
+            return amount
+
     async def cancel_all_orders(self, symbol: str) -> None:
         """해당 페어 미체결 주문 전체 취소 — pending limit entry TTL 만료 시 사용.
 
