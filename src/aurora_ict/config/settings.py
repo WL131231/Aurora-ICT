@@ -123,7 +123,8 @@ class IctSettings(BaseSettings):
     # 고RR 예외 구멍 — confluence 미달이어도 손익비(rr)가 이 값 이상이고 score>=1
     # 이면 단일신호 셋업도 진입 통과. 0=비활성. 파트너 결정 2026-06-04:
     # rr 2.5+ 1점 셋업은 confluence 게이트 우회 (손익비 좋은 단일신호 살리기).
-    high_rr_bypass_min_rr: float = Field(default=2.5, ge=0.0)
+    # 2026-06-05: 매매 빈도 너무 낮아 2.5 → 2.3 하향 (1점 셋업 진입 문턱 완화).
+    high_rr_bypass_min_rr: float = Field(default=2.3, ge=0.0)
     # FVG 최소 % size — 지난 12거래 분석 결과 작은 FVG 노이즈 비중 커서 0.0004 → 0.0006 상향.
     fvg_min_size_pct: float = Field(default=0.0006, ge=0)
     step_interval_sec: int = Field(default=60, ge=10)
