@@ -197,6 +197,42 @@ async def test_set_position_tpsl_zero_retcode_returns_truthy() -> None:
 
 
 @pytest.mark.asyncio
+async def test_set_position_tpsl_string_zero_retcode_returns_truthy() -> None:
+    """#TPSL-RETCODE-STR: Bybit 가 retCode 를 문자열 '0' 으로 줘도 정상(truthy).
+
+    실 라이브 회귀: '0'(문자열)을 int 0 과 != 비교해 정상을 이상으로 오판 →
+    멀쩡한 SL 을 실패 처리 → 비상청산. int 정규화로 수정.
+    """
+    inner = MagicMock()
+    ex = MagicMock()
+    ex.private_post_v5_position_trading_stop = AsyncMock(
+        return_value={"retCode": "0", "retMsg": "OK"}
+    )
+    inner._ex = ex
+    adapter = AuroraClientAdapter(inner)
+    result = await adapter.set_position_tpsl(
+        symbol="BTC/USDT:USDT", stop_loss=79000, take_profit=82000,
+    )
+    assert result  # truthy — 정상 SL 적용으로 판정
+
+
+@pytest.mark.asyncio
+async def test_set_position_tpsl_string_error_retcode_returns_falsy() -> None:
+    """문자열 에러 retCode('10001')도 falsy 로 차단."""
+    inner = MagicMock()
+    ex = MagicMock()
+    ex.private_post_v5_position_trading_stop = AsyncMock(
+        return_value={"retCode": "10001", "retMsg": "err"}
+    )
+    inner._ex = ex
+    adapter = AuroraClientAdapter(inner)
+    result = await adapter.set_position_tpsl(
+        symbol="BTC/USDT:USDT", stop_loss=79000, take_profit=82000,
+    )
+    assert not result
+
+
+@pytest.mark.asyncio
 async def test_set_leverage_calls_bybit_api() -> None:
     """set_leverage 가 Bybit V5 set_leverage 호출 + 정확한 params."""
     inner = MagicMock()
