@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from pathlib import Path
 
@@ -73,15 +74,17 @@ class IctSettings(BaseSettings):
     @field_validator("symbol")
     @classmethod
     def _validate_symbol(cls, v: str) -> str:
-        """2026-05-29 PR B: 멀티 페어 — BTC + ETH 허용. 그 외는 차단.
+        """ccxt Bybit linear perpetual 형식 검증.
 
-        Bybit V5 linear perpetual ccxt unified format. ETHUSDT 추가는 파트너
-        결정 (BTC/ETH 분산 진입). 다른 알트는 추후 화이트리스트로 점진 확장.
+        2026-06-05 페어 확장: BTC/ETH 정적 화이트리스트 → 형식 검증으로 완화.
+        실제 거래 가능 여부(거래대금 상위 N 화이트리스트)는 가동 단계
+        (MultiUserBotManager.get_or_create_bot)에서 PairRegistry 로 확인한다.
+        field_validator 는 클래스 메서드라 거래소 조회가 불가하므로 형식만 본다.
+        ``BASE/USDT:USDT`` (BASE = 영문 대문자·숫자) 형식만 허용 — path/주입 차단.
         """
-        allowed = {"BTC/USDT:USDT", "ETH/USDT:USDT"}
-        if v not in allowed:
+        if not re.fullmatch(r"[A-Z0-9]+/USDT:USDT", v):
             raise ValueError(
-                f"symbol '{v}' 미지원 — 허용 목록: {sorted(allowed)}",
+                f"symbol '{v}' 형식 오류 — 'XXX/USDT:USDT' 형식이어야 합니다.",
             )
         return v
 

@@ -38,7 +38,14 @@ from aurora_ict.bot.bot_ict_instance import (
     BotState,
     ExchangeClientProtocol,
 )
+from aurora_ict.bot.pair_registry import MAJOR_PAIRS, PairRegistry
 from aurora_ict.config.settings import IctSettings, RunMode
+
+# 페어 확장 (파트너 결정 2026-06-05):
+#   - 사용자당 동시 가동 페어 상한 (서버 부하 = 사용자수 × 페어수 곱셈 방지).
+#   - 알트(BTC/ETH 외)는 변동성 커서 레버리지 15배 고정.
+MAX_PAIRS_PER_USER = 5
+_ALT_LEVERAGE = 15
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +92,7 @@ class MultiUserBotManager:
     master_key: bytes | None = None
     # 2026-05-29 PR B: (user_code, symbol) 복합 키. 한 사용자가 BTC + ETH 등
     # 여러 페어 동시 진입 가능.
+    _pair_registry: PairRegistry = field(default_factory=PairRegistry)
     _slots: dict[SlotKey, _UserBotSlot] = field(default_factory=dict)
     # (user_code, symbol) 별 start lock — 같은 사용자×symbol 동시 start race 방지.
     # 다른 사용자 / 다른 symbol 끼리는 병렬 가능.
@@ -174,6 +182,11 @@ class MultiUserBotManager:
         settings.license_type = license_type
         # 2026-05-29 PR B: symbol 강제 (멀티 페어 — 슬롯별 symbol 정확히 박음).
         settings.symbol = symbol
+        # 페어 확장 2026-06-05: 알트(BTC/ETH 외)는 변동성 커서 레버리지 15배 고정.
+        # BTC/ETH 는 사용자 설정값 유지. 거래소 max leverage 가 15 미만이면 가동 시
+        # set_leverage 실패 → 실제값 보정(#LEV-1)이 받아냄.
+        if symbol not in MAJOR_PAIRS:
+            settings.leverage = _ALT_LEVERAGE
         # 2026-05-29 hot-fix #1: force_run_mode 명시 시 그 값으로 강제 override.
         # 사용자 마지막 가동 모드 복원 (auto_resume 흐름).
         # 2026-05-29 hot-fix #2 (파트너 보고): force_run_mode 미명시 시 DB 의
@@ -258,12 +271,32 @@ class MultiUserBotManager:
         slot = self._slots.get(key)
         if slot is not None and slot.bot is not None:
             return slot.bot
+        # 페어 확장 — 동시 가동 페어 수 상한 (신규 슬롯일 때만 카운트).
+        existing = {s for (u, s) in self._slots if u == user_code}
+        if symbol not in existing and len(existing) >= MAX_PAIRS_PER_USER:
+            raise ValueError(
+                f"동시 가동 페어는 최대 {MAX_PAIRS_PER_USER}개입니다 "
+                f"(현재 {len(existing)}개 — 일부 정지 후 추가하세요).",
+            )
         # 새 슬롯 — settings + client + bot 생성. settings.symbol 은
         # _build_user_settings 안에서 인자 symbol 로 강제 박힘.
         settings = self._build_user_settings(
             user_code, symbol, force_run_mode=force_run_mode,
         )
         client = await self.client_factory(settings)
+        # 페어 확장 — 거래 가능 화이트리스트(거래대금 상위 N + 메이저) 검증.
+        # 조회 실패는 통과 처리(거래소 일시 장애가 메이저 가동까지 막지 않게).
+        try:
+            allowed = await self._pair_registry.is_allowed(client, symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("화이트리스트 조회 실패 (%s) — 통과 처리: %s", symbol, e)
+            allowed = True
+        if not allowed:
+            await self._safe_close_client(client)
+            raise ValueError(
+                f"'{symbol}' 는 거래 가능 목록(거래대금 상위 "
+                f"{self._pair_registry.limit})에 없습니다.",
+            )
         bot = BotIctInstance(
             client=client,
             symbol=settings.symbol,
@@ -312,6 +345,40 @@ class MultiUserBotManager:
             symbol=symbol, settings=settings, bot=bot, client=client,
         )
         return bot
+
+    async def _safe_close_client(self, client: object) -> None:
+        """client 정리 — close 메서드 있으면 호출(슬롯 미생성 시 세션 누수 방지)."""
+        close = getattr(client, "close", None)
+        if close is None:
+            return
+        try:
+            result = close()
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception as e:  # noqa: BLE001
+            logger.debug("client close 실패(무시): %s", e)
+
+    async def list_tradable_pairs(self, user_code: str | None = None) -> list[str]:
+        """거래 가능 페어 목록 — UI 페어 선택용 (거래대금 상위 N + 메이저).
+
+        활성 슬롯 client 가 있으면 그걸로 거래소 목록을 갱신(TTL 캐시)하고, 없으면
+        메이저(BTC/ETH)만 반환한다. 신규 사용자는 첫 봇 가동 후부터 전체 목록을
+        받는다(슬롯 client 확보 시점).
+        """
+        src = None
+        for (u, _s), slot in self._slots.items():
+            if slot.client is None:
+                continue
+            src = slot.client
+            if user_code is not None and u == user_code:
+                break  # 해당 사용자 client 우선
+        if src is None:
+            return list(MAJOR_PAIRS)
+        try:
+            return await self._pair_registry.get_allowed(src)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("거래 가능 페어 조회 실패: %s", e)
+            return list(MAJOR_PAIRS)
 
     async def ensure_bot_ready(
         self, user_code: str, symbol: str = _DEFAULT_SYMBOL,

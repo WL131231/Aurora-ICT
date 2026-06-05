@@ -7,6 +7,10 @@
 BTC/ETH(메이저)는 항상 허용 목록에 포함되도록 보장한다 — 거래소 응답 지연/실패
 시에도 기존 1순위 페어는 동작해야 하기 때문.
 
+조회용 client(source)는 메서드 인자로 받는다. MultiUserBotManager 는 사용자별
+client 를 동적 생성하므로, registry 가 특정 client 에 묶이지 않고 호출 시점의
+client 로 조회하되 캐시는 공유한다(전부 같은 거래소).
+
 담당: 지영민 (페어 확장 PR — 화이트리스트 동적화)
 """
 
@@ -22,7 +26,7 @@ logger = logging.getLogger(__name__)
 MAJOR_PAIRS = ("BTC/USDT:USDT", "ETH/USDT:USDT")
 
 
-class _PairSource(Protocol):
+class PairSource(Protocol):
     async def list_top_usdt_perps(self, limit: int = 30) -> list[str]: ...
 
 
@@ -34,21 +38,16 @@ class PairRegistry:
         ttl_sec: 캐시 유효 기간(초).
     """
 
-    def __init__(
-        self,
-        client: _PairSource,
-        *,
-        limit: int = 30,
-        ttl_sec: float = 3600.0,
-    ) -> None:
-        self._client = client
+    def __init__(self, *, limit: int = 30, ttl_sec: float = 3600.0) -> None:
         self.limit = limit
         self.ttl_sec = float(ttl_sec)
         self._cache: list[str] = list(MAJOR_PAIRS)
         self._fetched_at: float | None = None
 
-    async def get_allowed(self, *, now: float | None = None) -> list[str]:
-        """거래 가능 페어 목록 반환 — 캐시 만료 시 거래소에서 갱신.
+    async def get_allowed(
+        self, source: PairSource, *, now: float | None = None,
+    ) -> list[str]:
+        """거래 가능 페어 목록 반환 — 캐시 만료 시 source 에서 갱신.
 
         조회 결과가 비어있으면(실패) 기존 캐시를 유지한다. 어떤 경우에도 메이저
         (BTC/ETH)는 목록에 포함된다.
@@ -59,7 +58,7 @@ class PairRegistry:
             and (t - self._fetched_at) < self.ttl_sec
         )
         if not fresh:
-            pairs = await self._client.list_top_usdt_perps(self.limit)
+            pairs = await source.list_top_usdt_perps(self.limit)
             if pairs:
                 merged = list(pairs)
                 for major in MAJOR_PAIRS:
@@ -72,9 +71,11 @@ class PairRegistry:
                                len(self._cache))
         return list(self._cache)
 
-    async def is_allowed(self, symbol: str, *, now: float | None = None) -> bool:
+    async def is_allowed(
+        self, source: PairSource, symbol: str, *, now: float | None = None,
+    ) -> bool:
         """symbol 이 거래 가능 화이트리스트에 있는지."""
-        return symbol in await self.get_allowed(now=now)
+        return symbol in await self.get_allowed(source, now=now)
 
 
-__all__ = ["PairRegistry", "MAJOR_PAIRS"]
+__all__ = ["PairRegistry", "MAJOR_PAIRS", "PairSource"]

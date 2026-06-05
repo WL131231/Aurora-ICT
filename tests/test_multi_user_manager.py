@@ -795,14 +795,72 @@ async def test_start_persists_bot_running_symbols(
     await mu.stop(code, "ETH/USDT:USDT")
 
 
-def test_settings_symbol_validator_rejects_unknown_pair() -> None:
-    """settings.symbol — BTC/ETH 외 페어는 ValueError (2026-05-29 PR B 화이트리스트)."""
-    # BTC / ETH 통과.
+def test_settings_symbol_validator_accepts_format_rejects_malformed() -> None:
+    """settings.symbol — ccxt perp 형식만 검증(페어 확장 2026-06-05).
+
+    BTC/ETH 정적 화이트리스트 → 형식 검증으로 완화. 실제 거래 가능 여부(거래대금
+    상위 N)는 가동 단계에서 PairRegistry 가 확인하므로, validator 는 형식만 본다.
+    """
+    # 정상 형식은 BTC/ETH/알트 모두 통과.
     IctSettings(symbol="BTC/USDT:USDT")
     IctSettings(symbol="ETH/USDT:USDT")
-    # SOL 등 미지원 페어는 차단.
-    with pytest.raises(ValueError, match="symbol"):
-        IctSettings(symbol="SOL/USDT:USDT")
+    IctSettings(symbol="SOL/USDT:USDT")
+    IctSettings(symbol="1000PEPE/USDT:USDT")
+    # 형식 오류(구분자 없음·소문자·USDT 아님·path 주입)는 거부.
+    for bad in ["BTCUSDT", "btc/usdt:usdt", "BTC/USD:USD", "../etc", "BTC/USDT"]:
+        with pytest.raises(ValueError):
+            IctSettings(symbol=bad)
+
+
+@pytest.mark.asyncio
+async def test_alt_pair_forces_15x_leverage(
+    db_path, base_settings, master_key,
+) -> None:
+    """페어 확장 — 알트(BTC/ETH 외)는 레버리지 15배 고정, 메이저는 사용자값 유지."""
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path, base_settings=base_settings, master_key=master_key,
+    )
+    code = "AICT-ALTL-ALTL-ALTL"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc)
+    btc = mu._build_user_settings(code, "BTC/USDT:USDT")
+    eth = mu._build_user_settings(code, "ETH/USDT:USDT")
+    sol = mu._build_user_settings(code, "SOL/USDT:USDT")
+    assert btc.leverage == base_settings.leverage  # 메이저 — 사용자값
+    assert eth.leverage == base_settings.leverage
+    assert sol.leverage == 15  # 알트 — 15배 고정
+
+
+@pytest.mark.asyncio
+async def test_max_pairs_per_user_enforced(
+    db_path, base_settings, master_key,
+) -> None:
+    """페어 확장 — 사용자당 동시 가동 페어는 MAX_PAIRS_PER_USER(5) 개로 제한."""
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path, base_settings=base_settings, master_key=master_key,
+    )
+    code = "AICT-MAXP-MAXP-MAXP"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc)
+    five = [
+        "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT",
+        "XRP/USDT:USDT", "ADA/USDT:USDT",
+    ]
+    for s in five:
+        await mu.get_or_create_bot(code, s)
+    assert len([1 for (u, _s) in mu._slots if u == code]) == 5
+    # 6번째 신규 페어 → 상한 초과 거부.
+    with pytest.raises(ValueError, match="최대"):
+        await mu.get_or_create_bot(code, "DOGE/USDT:USDT")
+    # 이미 슬롯 있는 페어 재호출은 통과(카운트 안 늘림).
+    again = await mu.get_or_create_bot(code, "BTC/USDT:USDT")
+    assert again is not None
 
 
 @pytest.mark.asyncio

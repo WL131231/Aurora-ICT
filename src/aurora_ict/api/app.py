@@ -30,8 +30,10 @@ from aurora_ict.api.markers import to_chart_markers
 from aurora_ict.bot.manager import BotManager
 from aurora_ict.bot.multi_user_manager import (
     _DEFAULT_SYMBOL,
+    MAX_PAIRS_PER_USER,
     MultiUserBotManager,
 )
+from aurora_ict.bot.pair_registry import MAJOR_PAIRS
 from aurora_ict.config.settings import TRADE_TIMEFRAMES, IctSettings, RunMode
 from aurora_ict.strategy.silver_bullet import Direction
 
@@ -381,6 +383,25 @@ def _register_multi_user_routes(
             )
             syms = []
         return {"running_symbols": syms}
+
+    @app.get("/ict/markets")
+    async def list_markets_mu(
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """거래 가능 페어 목록 — UI 페어 선택 드롭다운용 (페어 확장).
+
+        거래대금 상위 N + 메이저(BTC/ETH). 슬롯 client 미확보(첫 가동 전) 시엔
+        메이저만 반환되고, 봇 가동 후부터 전체 목록을 받는다.
+
+        Returns:
+            ``{"pairs": ["BTC/USDT:USDT", ...], "max_pairs": 5}``.
+        """
+        try:
+            pairs = await mu_manager.list_tradable_pairs(user_code)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("markets 조회 실패 — %s: %s", user_code, e)
+            pairs = list(MAJOR_PAIRS)
+        return {"pairs": pairs, "max_pairs": MAX_PAIRS_PER_USER}
 
     # ------------------------------------------------------------------
     # 2026-05-28: SaaS 1차 출시 — UI 가 호출하는 /ict/* 전체를 multi-user 분기에도
