@@ -350,6 +350,9 @@ class BotIctInstance:
     _sync_failure_streak: int = field(default=0)
     # 진입 주문 실패 카운트 (place_order) — 누적 시 운영자 점검 신호.
     _order_failure_count: int = field(default=0)
+    # 페어 확장 — 가동 시 fetch_symbol_meta 로 채우는 심볼별 거래소 메타
+    # (min_qty / qty_step / max_leverage). 빈 dict 면 BTC 기준 0.001 폴백.
+    _symbol_meta: dict[str, float | None] = field(default_factory=dict)
     # SL/TP 박기 실패 카운트 — 무SL 상태 가시화. step 마다 재시도.
     _tpsl_failure_streak: int = field(default=0)
     # 가장 최근 진입 setup direction 들 (recent 10) — judgment 응답에 노출하여
@@ -365,6 +368,15 @@ class BotIctInstance:
         if self.state is BotState.RUNNING:
             logger.info("BotIctInstance %s 이미 실행 중", self.symbol)
             return
+        # 페어 확장 — 가동 직후 심볼별 거래소 메타(min_qty/lot step/max leverage)
+        # 캐시. 미지원 client(구 테스트) 나 조회 실패면 빈 dict → BTC 기준 폴백.
+        if hasattr(self.client, "fetch_symbol_meta"):
+            try:
+                meta = await self.client.fetch_symbol_meta(self.symbol)
+                self._symbol_meta = meta if isinstance(meta, dict) else {}
+            except Exception as e:  # noqa: BLE001
+                logger.warning("symbol meta 로드 실패 (%s): %s", self.symbol, e)
+                self._symbol_meta = {}
         await self._recover_position_from_exchange()
         self.state = BotState.RUNNING
         self._task = asyncio.create_task(self._run_loop())
@@ -1604,9 +1616,27 @@ class BotIctInstance:
         if setup.entry <= 0:
             return 0.0
         qty = notional / setup.entry
-        # Bybit BTC 최소 주문수량 0.001 — 미달 시 floor 가 아니라 skip (작은 잔고에서
-        # 의도 notional 초과 박는 회귀 회피, 호출처에서 qty 0 이하 skip 분기 활용).
-        if qty < 0.001:
+        # 페어 확장 — 거래소 lot step 에 맞춰 qty 정렬(심볼별 precision). 미지원
+        # client 면 원본 유지(안전 폴백). 반환이 실수일 때만 적용(테스트 mock 방어).
+        # BTC/ETH 는 precision 관대해 영향 거의 없음.
+        if hasattr(self.client, "round_amount"):
+            rounded = self.client.round_amount(self.symbol, qty)
+            if asyncio.iscoroutine(rounded):
+                rounded.close()  # round_amount 는 sync 계약 — mock 의 coroutine 폐기
+            elif isinstance(rounded, (int, float)) and not isinstance(rounded, bool):
+                qty = float(rounded)
+        # 최소 주문수량 미달 시 skip — 심볼 메타가 있으면 그 min_qty, 없으면 Bybit
+        # BTC 기준 0.001 폴백. (작은 잔고에서 의도 notional 초과 박는 회귀 회피,
+        # 호출처에서 qty 0 이하 skip 분기 활용.)
+        meta = self._symbol_meta if isinstance(self._symbol_meta, dict) else {}
+        meta_min = meta.get("min_qty")
+        min_qty = (
+            meta_min
+            if isinstance(meta_min, (int, float)) and not isinstance(meta_min, bool)
+            and meta_min > 0
+            else 0.001
+        )
+        if qty < min_qty:
             return 0.0
         return qty
 
