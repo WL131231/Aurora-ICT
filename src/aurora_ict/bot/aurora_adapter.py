@@ -418,6 +418,14 @@ class AuroraClientAdapter:
             logger.warning("list_top_usdt_perps 위임 실패: %s", e)
             return []
 
+    async def fetch_perp_tickers(self, limit: int = 30) -> list[dict]:
+        """거래대금 상위 USDT perp 시세 행(symbol/last/pct24h/volume) 위임."""
+        try:
+            return await self._client.fetch_perp_tickers(limit)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("fetch_perp_tickers 위임 실패: %s", e)
+            return []
+
     async def cancel_all_orders(self, symbol: str) -> None:
         """해당 페어 미체결 주문 전체 취소 — pending limit entry TTL 만료 시 사용.
 

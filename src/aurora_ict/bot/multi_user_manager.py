@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -93,6 +94,9 @@ class MultiUserBotManager:
     # 2026-05-29 PR B: (user_code, symbol) 복합 키. 한 사용자가 BTC + ETH 등
     # 여러 페어 동시 진입 가능.
     _pair_registry: PairRegistry = field(default_factory=PairRegistry)
+    # UI 페어 선택기용 시세 행 캐시(symbol/last/pct24h/volume) — 60초 TTL.
+    _market_rows_cache: list[dict[str, Any]] = field(default_factory=list)
+    _market_rows_at: float = 0.0
     _slots: dict[SlotKey, _UserBotSlot] = field(default_factory=dict)
     # (user_code, symbol) 별 start lock — 같은 사용자×symbol 동시 start race 방지.
     # 다른 사용자 / 다른 symbol 끼리는 병렬 가능.
@@ -379,6 +383,36 @@ class MultiUserBotManager:
         except Exception as e:  # noqa: BLE001
             logger.warning("거래 가능 페어 조회 실패: %s", e)
             return list(MAJOR_PAIRS)
+
+    async def list_market_tickers(
+        self, user_code: str | None = None, *, now: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """UI 페어 선택기용 시세 행 — 거래대금 상위 N(symbol/last/pct24h/volume).
+
+        활성 슬롯 client 로 거래소 시세 조회(60초 TTL 캐시). 조회 실패 시 기존
+        캐시 유지, 슬롯 client 미확보 시 빈 리스트.
+        """
+        t = time.monotonic() if now is None else now
+        if self._market_rows_cache and (t - self._market_rows_at) < 60.0:
+            return self._market_rows_cache
+        src = None
+        for (u, _s), slot in self._slots.items():
+            if slot.client is None:
+                continue
+            src = slot.client
+            if user_code is not None and u == user_code:
+                break
+        if src is None:
+            return self._market_rows_cache
+        try:
+            rows = await src.fetch_perp_tickers(self._pair_registry.limit)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("시세 행 조회 실패: %s", e)
+            return self._market_rows_cache
+        if rows:
+            self._market_rows_cache = rows
+            self._market_rows_at = t
+        return self._market_rows_cache
 
     async def ensure_bot_ready(
         self, user_code: str, symbol: str = _DEFAULT_SYMBOL,
