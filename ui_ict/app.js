@@ -1594,10 +1594,11 @@ if (_vizToggleSide) _vizToggleSide.addEventListener("click", _handleVizClick);
 //   - 가동 실패 (LIVE 키 미등록 등) 시 active 안 박힘 (백엔드 status 따라감).
 //   - 페어 토글로 모든 페어 끌 수 있음 — 봇 자체 정지와 동일 효과 (마지막 1개 보호 X).
 //
-// 2026-06-05 페어 확장 — BTC/ETH 2버튼 하드코딩 → /ict/markets 동적 드롭다운.
-// 매매 페어: select 로 추가(가동), 켠 페어는 칩으로 표시(칩 클릭=정지).
-// 차트 페어: select 로 "어느 페어 차트를 볼지" 전환(매매와 별개).
+// 2026-06-06 페어 선택기 — Bybit 스타일 모달(가격/24H%/거래량 + 검색).
+// 매매 페어: '+ 페어 추가' 버튼 → 모달 선택 → 가동. 켠 페어는 칩(클릭=정지).
+// 차트 페어: 현재 심볼 버튼 → 모달 선택 → 차트 전환(매매와 별개).
 let _tradablePairs = ["BTC/USDT:USDT", "ETH/USDT:USDT"];  // markets 실패 시 폴백
+let _marketTickers = [];   // [{symbol,last,pct24h,volume}] — 거래대금 정렬
 let _maxPairs = 5;
 let _runningSymbols = new Set();
 
@@ -1606,52 +1607,38 @@ function _symLabel(sym) {
   return (sym && sym.split("/")[0]) || sym || "?";
 }
 
-/** /ict/markets 로 거래 가능 페어 목록 + 상한 로드 → 드롭다운 채움. */
+function _fmtPrice(v) {
+  if (v == null || isNaN(v)) return "-";
+  if (v >= 1000) return Number(v).toLocaleString("en-US", { maximumFractionDigits: 1 });
+  if (v >= 1) return Number(v).toFixed(3);
+  return Number(v).toFixed(5);
+}
+function _fmtPct(v) {
+  if (v == null || isNaN(v)) return { text: "-", cls: "" };
+  return { text: (v >= 0 ? "+" : "") + Number(v).toFixed(2) + "%", cls: v >= 0 ? "up" : "down" };
+}
+function _fmtVol(v) {
+  if (!v || isNaN(v)) return "-";
+  if (v >= 1e9) return (v / 1e9).toFixed(2) + "B";
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + "M";
+  if (v >= 1e3) return (v / 1e3).toFixed(0) + "K";
+  return String(Math.round(v));
+}
+
+/** /ict/markets 로 거래 가능 페어 + 시세 + 상한 로드. */
 async function loadTradablePairs() {
   try {
     const r = await api("/ict/markets");
     if (Array.isArray(r.pairs) && r.pairs.length) _tradablePairs = r.pairs;
+    if (Array.isArray(r.tickers)) _marketTickers = r.tickers;
     if (r.max_pairs) _maxPairs = r.max_pairs;
   } catch (e) { /* 폴백(BTC/ETH) 유지 */ }
-  _populateChartPairSelect();
-  _populatePairAddSelect();
+  _updateChartPairBtnLabel();
 }
 
-function _populateChartPairSelect() {
-  const sel = $("chart-pair-select");
-  if (!sel) return;
-  const list = _tradablePairs.includes(currentChartSymbol)
-    ? _tradablePairs
-    : [currentChartSymbol, ..._tradablePairs];  // 과거 선택이 목록 밖이면 보존
-  sel.innerHTML = "";
-  for (const sym of list) {
-    const o = document.createElement("option");
-    o.value = sym;
-    o.textContent = _symLabel(sym);
-    if (sym === currentChartSymbol) o.selected = true;
-    sel.appendChild(o);
-  }
-}
-
-function _populatePairAddSelect() {
-  const sel = $("pair-add-select");
-  if (!sel) return;
-  const atLimit = _runningSymbols.size >= _maxPairs;
-  sel.innerHTML = "";
-  const ph = document.createElement("option");
-  ph.value = "";
-  ph.textContent = atLimit ? `최대 ${_maxPairs}개 가동 중` : "+ 페어 추가";
-  sel.appendChild(ph);
-  if (!atLimit) {
-    for (const sym of _tradablePairs) {
-      if (_runningSymbols.has(sym)) continue;  // 이미 켠 페어 제외
-      const o = document.createElement("option");
-      o.value = sym;
-      o.textContent = _symLabel(sym);
-      sel.appendChild(o);
-    }
-  }
-  sel.disabled = atLimit;
+function _updateChartPairBtnLabel() {
+  const btn = $("chart-pair-btn");
+  if (btn) btn.textContent = `${_symLabel(currentChartSymbol)} ▾`;
 }
 
 function _renderRunningChips() {
@@ -1666,23 +1653,27 @@ function _renderRunningChips() {
     chip.innerHTML = `${_symLabel(sym)} <span class="x">×</span>`;
     box.appendChild(chip);
   }
+  const addBtn = $("pair-add-btn");
+  if (addBtn) {
+    const atLimit = _runningSymbols.size >= _maxPairs;
+    addBtn.disabled = atLimit;
+    addBtn.textContent = atLimit ? `최대 ${_maxPairs}개 가동 중` : "+ 페어 추가";
+  }
 }
 
-/** 622 renderStatus 호환 — running set 갱신 + 칩/드롭다운 재렌더. */
+/** 622 renderStatus 호환 — running set 갱신 + 칩 재렌더. */
 function _updatePairButtonsFromRunning(runningSet) {
   _runningSymbols = runningSet;
   _renderRunningChips();
-  _populatePairAddSelect();
 }
 
-/** 백엔드 running-pairs 로 매매 칩/드롭다운 동기화. */
+/** 백엔드 running-pairs 로 매매 칩 동기화. */
 async function refreshRunningPairs() {
   try {
     const r = await api("/ict/running-pairs");
     _runningSymbols = new Set(r.running_symbols || []);
   } catch (e) { /* 인증 게이트 등 — 기존 상태 유지 */ }
   _renderRunningChips();
-  _populatePairAddSelect();
   return _runningSymbols;
 }
 
@@ -1708,14 +1699,91 @@ async function _stopPair(symbol) {
   await fetchAndRender();
 }
 
-// 페어 추가 드롭다운 — 선택 시 가동(선택 후 placeholder 로 리셋).
-const _pairAddSelect = $("pair-add-select");
-if (_pairAddSelect) {
-  _pairAddSelect.addEventListener("change", async (e) => {
-    const sym = e.target.value;
-    if (!sym) return;
-    e.target.value = "";
-    await _startPair(sym);
+// ── 페어 선택기 모달 ──────────────────────────────────────
+let _pickerOnSelect = null;
+let _pickerExclude = new Set();
+
+function _renderPickerRows(filter) {
+  const list = $("pair-picker-list");
+  if (!list) return;
+  const q = (filter || "").trim().toUpperCase();
+  // 시세(tickers) 우선, 없으면 심볼 목록만(가격 -).
+  let rows = _marketTickers.length
+    ? _marketTickers
+    : _tradablePairs.map((s) => ({ symbol: s, last: null, pct24h: null, volume: null }));
+  rows = rows.filter((r) => !_pickerExclude.has(r.symbol));
+  if (q) rows = rows.filter((r) => _symLabel(r.symbol).toUpperCase().includes(q));
+  list.innerHTML = "";
+  if (!rows.length) {
+    list.innerHTML = '<div class="pair-picker-empty">결과 없음</div>';
+    return;
+  }
+  for (const r of rows) {
+    const pct = _fmtPct(r.pct24h);
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "pair-picker-row";
+    row.dataset.symbol = r.symbol;
+    row.innerHTML =
+      `<span class="ppr-sym">${_symLabel(r.symbol)}</span>` +
+      `<span class="ppr-price">${_fmtPrice(r.last)}</span>` +
+      `<span class="ppr-pct ${pct.cls}">${pct.text}</span>` +
+      `<span class="ppr-vol">${_fmtVol(r.volume)}</span>`;
+    list.appendChild(row);
+  }
+}
+
+function openPairPicker(onSelect, excludeSet) {
+  _pickerOnSelect = onSelect;
+  _pickerExclude = excludeSet || new Set();
+  const ov = $("pair-picker-overlay");
+  const search = $("pair-picker-search");
+  if (search) search.value = "";
+  _renderPickerRows("");
+  if (ov) ov.hidden = false;
+  if (search) search.focus();
+}
+
+function closePairPicker() {
+  const ov = $("pair-picker-overlay");
+  if (ov) ov.hidden = true;
+  _pickerOnSelect = null;
+}
+
+const _pickerOverlay = $("pair-picker-overlay");
+if (_pickerOverlay) {
+  _pickerOverlay.addEventListener("click", (e) => {
+    if (e.target === _pickerOverlay) closePairPicker();  // 배경 클릭 닫기
+  });
+}
+const _pickerClose = $("pair-picker-close");
+if (_pickerClose) _pickerClose.addEventListener("click", closePairPicker);
+const _pickerSearch = $("pair-picker-search");
+if (_pickerSearch) {
+  _pickerSearch.addEventListener("input", (e) => _renderPickerRows(e.target.value));
+  _pickerSearch.addEventListener("keydown", (e) => { if (e.key === "Escape") closePairPicker(); });
+}
+const _pickerList = $("pair-picker-list");
+if (_pickerList) {
+  _pickerList.addEventListener("click", async (e) => {
+    const row = e.target.closest(".pair-picker-row");
+    if (!row || !row.dataset.symbol) return;
+    const sym = row.dataset.symbol;
+    const cb = _pickerOnSelect;
+    closePairPicker();
+    if (cb) await cb(sym);
+  });
+}
+
+// 매매 페어 추가 버튼 → 모달(켠 페어 제외).
+const _pairAddBtn = $("pair-add-btn");
+if (_pairAddBtn) {
+  _pairAddBtn.addEventListener("click", () => {
+    if (_runningSymbols.size >= _maxPairs) {
+      toast(`최대 ${_maxPairs}개까지 가동 가능`, true);
+      return;
+    }
+    openPairPicker(_startPair, _runningSymbols);
   });
 }
 
@@ -1729,21 +1797,24 @@ if (_runningChipsBox) {
   });
 }
 
-// 차트 페어 드롭다운 — 선택 시 차트 심볼 전환(매매/상태는 그대로).
-const _chartPairSelect = $("chart-pair-select");
-if (_chartPairSelect) {
-  _chartPairSelect.addEventListener("change", async (e) => {
-    const sym = e.target.value;
-    if (!sym || sym === currentChartSymbol) return;
-    currentChartSymbol = sym;
-    localStorage.setItem("aurora_ict_chart_symbol", sym);
-    _chartViewInitialized = false;  // 페어 바뀌면 최근 N봉 zoom 재적용
-    _showCachedChartIfAny();        // 캐시 있으면 즉시 표시
-    await fetchAndRender();         // fresh 갱신
+// 차트 페어 버튼 → 모달(전체). 선택 시 차트 심볼만 전환.
+const _chartPairBtn = $("chart-pair-btn");
+if (_chartPairBtn) {
+  _chartPairBtn.addEventListener("click", () => {
+    openPairPicker(async (sym) => {
+      if (sym === currentChartSymbol) return;
+      currentChartSymbol = sym;
+      localStorage.setItem("aurora_ict_chart_symbol", sym);
+      _updateChartPairBtnLabel();
+      _chartViewInitialized = false;  // 페어 바뀌면 최근 N봉 zoom 재적용
+      _showCachedChartIfAny();        // 캐시 있으면 즉시 표시
+      await fetchAndRender();         // fresh 갱신
+    }, new Set());
   });
 }
 
-// bootstrap — 페어 목록 로드 후 running 동기화.
+// bootstrap — 페어 목록/시세 로드 후 running 동기화.
+_updateChartPairBtnLabel();
 loadTradablePairs().then(() => refreshRunningPairs());
 
 $("tf-toggle").addEventListener("click", async (ev) => {
