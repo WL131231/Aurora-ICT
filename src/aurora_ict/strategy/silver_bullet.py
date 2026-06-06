@@ -318,14 +318,16 @@ def detect_silver_bullet_setups(
     atr_val = _atr_last(df)  # #LIVE-7: SL 최소 폭 (1.5×ATR)
     if bias is None:
         bias = _bias_from_structure(df, swings)
-
-    if bias is TrendDirection.NONE:
-        return []
-
-    direction = Direction.LONG if bias is TrendDirection.UP else Direction.SHORT
-    desired_fvg_type = (
-        FVGType.BULLISH if direction is Direction.LONG else FVGType.BEARISH
-    )
+    # 2026-06-06 #BIAS-DIRECTION: bias 가 더 이상 진입 방향을 강제하지 않는다.
+    # 양방향(BULLISH→롱, BEARISH→숏) setup 을 모두 생성하고, 추세 방향 최종 필터는
+    # 진입 단계 HTF EMA bias 게이트(_passes_htf_ema_bias)가 담당한다. bias 는
+    # confluence 보너스(+1)로만 쓴다.
+    # (간밤 19연속 숏 사고: bias=DOWN 이 숏 setup 만 만들어 상승장에서 풀히트)
+    bias_dir: Direction | None = None
+    if bias is TrendDirection.UP:
+        bias_dir = Direction.LONG
+    elif bias is TrendDirection.DOWN:
+        bias_dir = Direction.SHORT
 
     fvgs = detect_fvgs(df, min_size_pct=fvg_min_size_pct)
     # mark_filled_and_invalidated 적용 — fvg.filled (retrace) / invalidated 갱신.
@@ -346,8 +348,10 @@ def detect_silver_bullet_setups(
     seen_windows: set[tuple[int, str]] = set()  # (day_ms, window_name) — 일자별 1회 제한
 
     for fvg in fvgs:
-        if fvg.type is not desired_fvg_type:
-            continue
+        # 양방향 — FVG 타입으로 진입 방향 결정 (bias 강제 제거).
+        fvg_direction = (
+            Direction.LONG if fvg.type is FVGType.BULLISH else Direction.SHORT
+        )
         # 시간 윈도우 검사 — disable_time_filter 면 skip (24h 매매, referral).
         # 아니면 (sub_*): 2026-05-28 파트너 결정 — "미장 전체 X, 미장 안의
         # Killzone/Macro/Silver Bullet 만". in_trade_window_sub 가 게이트.
@@ -383,13 +387,13 @@ def detect_silver_bullet_setups(
         # 정통 ICT: SL = FVG 영역 가장자리 (단순). 추가 버퍼 없음.
         # Why: Silver Bullet PDF / Practical 모두 wick 너머 단순 정의.
         # FVG 폭의 10% 버퍼 + sl_buffer_ratio 는 정통 이탈이라 제거.
-        if direction is Direction.LONG:
+        if fvg_direction is Direction.LONG:
             stop_loss = fvg.low
         else:
             stop_loss = fvg.high
-        stop_loss = _widen_sl_to_atr(entry, stop_loss, direction, atr_val)  # #LIVE-7
+        stop_loss = _widen_sl_to_atr(entry, stop_loss, fvg_direction, atr_val)  # #LIVE-7
 
-        target_swing = _next_liquidity_target(swings, direction, entry)
+        target_swing = _next_liquidity_target(swings, fvg_direction, entry)
         if target_swing is None:
             continue
 
@@ -414,7 +418,7 @@ def detect_silver_bullet_setups(
         confluences: list[str] = []
         score = 0
 
-        ob_match = _ob_confluence(obs, direction, fvg.idx)
+        ob_match = _ob_confluence(obs, fvg_direction, fvg.idx)
         if ob_match is not None:
             score += 1
             confluences.append(f"ob={ob_match.type.value}@{ob_match.ts_ms}")
@@ -433,9 +437,15 @@ def detect_silver_bullet_setups(
                 score += 1
                 confluences.append(f"macro={macro_name}")
 
-        if _sweep_confluence(all_sweeps, df, direction, fvg.ts_ms):
+        if _sweep_confluence(all_sweeps, df, fvg_direction, fvg.ts_ms):
             score += 1
             confluences.append("sweep")
+
+        # #BIAS-DIRECTION: HTF/daily 추세(bias)와 같은 방향이면 confluence +1.
+        # bias 가 방향을 강제하지 않는 대신 "추세 순응" 셋업에 가점을 준다.
+        if bias_dir is not None and fvg_direction is bias_dir:
+            score += 1
+            confluences.append(f"bias={bias.value}")
 
         # min_confluence 미달은 제외 (기본 0 이라 호환성 유지)
         if score < min_confluence:
@@ -446,6 +456,7 @@ def detect_silver_bullet_setups(
 
         reasons = [
             f"window={window}",
+            f"dir={fvg_direction.value}",
             f"bias={bias.value}",
             f"fvg={fvg.type.value}@{fvg.ts_ms}",
             f"rr={rr:.2f}",
@@ -453,7 +464,7 @@ def detect_silver_bullet_setups(
         ]
         setups.append(SilverBulletSetup(
             ts_ms=fvg.ts_ms,
-            direction=direction,
+            direction=fvg_direction,
             window=window,
             entry=entry,
             stop_loss=stop_loss,
@@ -860,10 +871,10 @@ def build_extra_source_setups(
     atr_val = _atr_last(df)  # #LIVE-7: SL 최소 폭 (1.5×ATR) 계산용
     setups: list[SilverBulletSetup] = []
 
+    # #BIAS-DIRECTION 2026-06-06: Phase B 도 bias 방향 강제 제거(양방향).
+    # 추세 방향 최종 필터는 진입 단계 HTF EMA bias 게이트가 담당한다.
     def _accept(built: SilverBulletSetup | None) -> None:
         if built is None:
-            return
-        if not _matches_bias(built.direction, bias):
             return
         if not _phase_b_in_time_window(built.ts_ms, disable_time_filter):
             return
@@ -894,15 +905,3 @@ def build_extra_source_setups(
         _accept(_build_rejection_setup(rb, df, swings, min_rr=min_rr, atr_val=atr_val))
 
     return setups
-
-
-def _matches_bias(
-    direction: Direction,
-    bias: TrendDirection | None,
-) -> bool:
-    """bias 가 None 이면 양방향 OK. 박혀있으면 일치만."""
-    if bias is None or bias is TrendDirection.NONE:
-        return True
-    if bias is TrendDirection.UP:
-        return direction is Direction.LONG
-    return direction is Direction.SHORT

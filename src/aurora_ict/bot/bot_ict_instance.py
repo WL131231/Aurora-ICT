@@ -581,6 +581,10 @@ class BotIctInstance:
         htf_bias = await self._compute_htf_bias()
         daily_bias = await self._compute_daily_bias(df)
         bias = self._combine_with_daily(htf_bias, daily_bias)
+        # #BIAS-DIRECTION 2026-06-06: HTF EMA 추세로 진입 방향을 결정한다. 양방향
+        # setup 중 추세 방향만 진입 → 상승장 숏/하락장 롱 차단(간밤 19연속 숏 방지).
+        # None(EMA 비활성/실패/neutral)이면 방향 강제 안 함(양방향 허용 = 기존 동작).
+        ema_dir = await self._compute_htf_ema_direction()
 
         # 2026-05-28: 봇 의사결정 가시성 — 매 step 1줄 INFO (시장 컨디션 스냅샷).
         # fly.io logs 에서 봇이 뭘 보고 있는지 한 눈에 파악 + 추후 사용자 데이터 분석.
@@ -605,6 +609,7 @@ class BotIctInstance:
             expand_to_killzone=self.expand_to_killzone,
             disable_time_filter=self.disable_time_filter,
             min_sl_distance_pct=self.min_sl_distance_pct,
+            prefer_direction=ema_dir,
         )
 
         # 추세 평가 캐시 갱신 (현재는 로깅용, 향후 가중치 확장 여지).
@@ -872,6 +877,38 @@ class BotIctInstance:
         df.index = pd.DatetimeIndex(pd.to_datetime(df["ts_ms"], unit="ms", utc=True))
         df = df[["open", "high", "low", "close", "volume"]]
         return df
+
+    async def _compute_htf_ema_direction(self) -> Direction | None:
+        """HTF EMA bias 방향 — bullish→LONG, bearish→SHORT, neutral/비활성/실패→None.
+
+        #BIAS-DIRECTION: 진입 방향 결정용(generate_ict_signal prefer_direction).
+        양방향 setup 중 이 방향만 진입시켜 상승장 숏/하락장 롱을 차단한다. None 이면
+        방향을 강제하지 않아(양방향 허용) 기존 동작과 같다.
+        """
+        if not self.htf_ema_bias_enabled:
+            return None
+        period = max(2, int(self.htf_ema_bias_period))
+        try:
+            df = await self._fetch_ohlcv_tf(self.htf_ema_bias_tf, period + 30)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "HTF EMA direction fetch 실패 (tf=%s): %s — 방향 강제 안 함",
+                self.htf_ema_bias_tf, e,
+            )
+            return None
+        if len(df) < period + 1:
+            return None
+        closes = df["close"].astype(float).to_numpy()
+        k = 2.0 / (period + 1)
+        ema = float(closes[:period].mean())  # SMA 시드
+        for px in closes[period:]:
+            ema = float(px) * k + ema * (1.0 - k)
+        last_close = float(closes[-1])
+        if last_close > ema:
+            return Direction.LONG
+        if last_close < ema:
+            return Direction.SHORT
+        return None
 
     async def _passes_htf_ema_bias(self, direction: Direction) -> bool:
         """HTF EMA bias 필터 — setup 방향이 EMA bias 와 일치할 때만 True.
