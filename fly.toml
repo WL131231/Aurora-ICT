@@ -59,3 +59,10 @@ primary_region = "sin"
     method = "get"
     path = "/ict/health"
     protocol = "http"
+
+# 2026-06-06: 베타 테스터 11명 추가 → 멀티유저 봇(사용자별 페어 × OHLCV 캐시 +
+# step detect)의 메모리·CPU 부하 대비 증설. 기존 shared-1x/2GB(fly scale) →
+# shared-2x/4GB. 부하 모니터링(fly metrics Memory/Load) 후 조정.
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "4gb"
