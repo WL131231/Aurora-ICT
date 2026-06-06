@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from ccxt.base.errors import AuthenticationError
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -1202,6 +1203,13 @@ def _register_multi_user_routes(
         use_tf = timeframe or bot.timeframe
         try:
             rows = await bot.client.fetch_ohlcv(use_symbol, use_tf, limit)
+        except AuthenticationError as e:
+            # 키 무효(10003) — 502 대신 빈 마커 반환. 차트는 마커 없이 표시되고
+            # 사용자는 키 재등록 유도. (502 는 콘솔 에러 + ASGI exception 유발)
+            logger.warning(
+                "[multi-user] %s markers 인증 실패(키 무효): %s", user_code, e,
+            )
+            rows = []
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "[multi-user] %s fetch_ohlcv 실패: %s", user_code, e,
@@ -1992,6 +2000,10 @@ def create_app(
         use_tf = timeframe or bot.timeframe
         try:
             rows = await bot.client.fetch_ohlcv(use_symbol, use_tf, limit)
+        except AuthenticationError as e:
+            # 키 무효(10003) — 502 대신 빈 마커. 차트는 마커 없이 표시.
+            logger.warning("markers 인증 실패(키 무효): %s", e)
+            rows = []
         except Exception as e:  # noqa: BLE001
             logger.warning("fetch_ohlcv 실패: %s", e)
             raise HTTPException(status_code=502, detail=f"fetch_ohlcv: {e}") from e
