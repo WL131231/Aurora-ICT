@@ -2012,18 +2012,13 @@
   </div>
 
   <!-- (C) API 키 등록 — 로그인 완료 + has_api_keys=false
-       2026-05-29: Live 모드 지원 — DEMO/LIVE 슬롯 선택 라디오 추가. 신규
-       가입자는 기본 DEMO 를 강제 (LIVE 단독 등록은 메인 화면에서 추가). -->
+       2026-06-06: 데모 영구 미사용 — LIVE 전용. DEMO/LIVE 토글 제거. -->
   <div class="auth-card" id="auth-keys" style="display:none">
     <h1>AURORA · ICT</h1>
     <p class="auth-sub">거래소 API 키 등록</p>
 
-    <div class="auth-mode-toggle" id="auth-mode-toggle">
-      <button type="button" data-auth-mode="demo" class="active">DEMO</button>
-      <button type="button" data-auth-mode="live">LIVE</button>
-    </div>
     <p class="auth-hint" id="auth-mode-hint" style="margin-top:6px">
-      Bybit <b>Demo Trading</b> 키 (api-demo.bybit.com). 처음 사용자는 데모로 시작 권장.
+      ⚠ <b style="color:#fb7185">LIVE</b> 슬롯 — Bybit <b>실거래</b> (api.bybit.com) 키.
     </p>
 
     <label for="keys-api-key">API Key</label>

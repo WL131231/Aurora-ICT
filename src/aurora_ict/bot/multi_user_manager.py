@@ -295,6 +295,11 @@ class MultiUserBotManager:
             user_code, symbol, force_run_mode=force_run_mode,
         )
         client = await self.client_factory(settings)
+        # 거래소 호출 실패 로그(retCode 10003 키 무효 등)에 어느 사용자/심볼인지
+        # 식별되도록 라벨 주입 — 멀티유저 운영에서 문제 키 특정용.
+        _set_label = getattr(client, "set_log_label", None)
+        if callable(_set_label):
+            _set_label(f"{user_code}/{symbol}")
         # 페어 확장 — 거래 가능 화이트리스트(거래대금 상위 N + 메이저) 검증.
         # 조회 실패는 통과 처리(거래소 일시 장애가 메이저 가동까지 막지 않게).
         try:

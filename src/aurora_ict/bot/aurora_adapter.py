@@ -53,6 +53,32 @@ class AuroraClientAdapter:
             except Exception:  # noqa: BLE001
                 pass
         self._time_diff_loaded = False
+        # 거래소 호출 실패 로그에 어느 사용자/심볼인지 식별용 라벨 (멀티유저 운영).
+        # 비어있으면 기존과 동일하게 동작 — multi_user_manager 가 start 시 주입.
+        self._log_label = ""
+
+    def set_log_label(self, label: str) -> None:
+        """거래소 호출 실패 WARNING 에 붙일 식별 라벨 설정 (예: 'AICT-XXXX/BTC').
+
+        멀티유저 환경에서 retCode 10003(키 무효) 등 발생 시 어느 사용자인지
+        로그만으로 특정하기 위함.
+
+        Args:
+            label: 사용자 코드/심볼 등 식별 문자열. None/빈 문자열이면 prefix 미부착.
+        """
+        self._log_label = label or ""
+
+    def _wlog(self, msg: str, *args: Any) -> None:
+        """라벨 prefix 를 붙여 WARNING 로깅. 라벨 없으면 기존과 동일.
+
+        Args:
+            msg: %-스타일 포맷 문자열.
+            args: 포맷 인자.
+        """
+        if self._log_label:
+            logger.warning("[%s] " + msg, self._log_label, *args)
+        else:
+            logger.warning(msg, *args)
 
     async def _ensure_time_sync(self) -> None:
         """Bybit 서버 시간과 PC 시간 차이 한 번 로드 (lazy)."""
@@ -66,7 +92,7 @@ class AuroraClientAdapter:
             if hasattr(ex, "load_time_difference"):
                 await ex.load_time_difference()
         except Exception as e:  # noqa: BLE001
-            logger.warning("load_time_difference 실패: %s", e)
+            self._wlog("load_time_difference 실패: %s", e)
         finally:
             self._time_diff_loaded = True
 
@@ -156,7 +182,7 @@ class AuroraClientAdapter:
             # 들어간 상태에서 ERROR). retCode 10005 모두 false positive 처리,
             # 다음 sync_position_state 가 거래소 상태와 reconcile.
             if "10005" in msg:
-                logger.warning(
+                self._wlog(
                     "place_order (%s %s qty=%s): ccxt UTA 체크 false positive "
                     "(retCode 10005) — Bybit 측 실제 처리 확인 중...",
                     symbol, side, qty,
@@ -166,12 +192,12 @@ class AuroraClientAdapter:
                 try:
                     pos = await self.fetch_position(symbol)
                 except Exception as pe:  # noqa: BLE001
-                    logger.warning(
+                    self._wlog(
                         "place_order false positive 검증용 fetch_position 실패: %s",
                         pe,
                     )
                 if pos is not None and float(pos.get("contracts") or 0) > 0:
-                    logger.warning(
+                    self._wlog(
                         "place_order false positive 확인 — 포지션 활성. success 처리.",
                     )
                     return {
@@ -187,7 +213,7 @@ class AuroraClientAdapter:
                 # pending 표시 (별도 `_pending_entry` 로직) 가 fetch_open_orders
                 # 로 확인하므로 여기선 일단 success 응답으로 처리해 봇의 active
                 # state 박음. 만약 진짜 실패면 다음 sync 에서 자동 해제.
-                logger.warning(
+                self._wlog(
                     "place_order false positive — 포지션 미확인 but Bybit 측 "
                     "limit 박힌 가능성 (pending). success 처리 + 다음 sync 검증.",
                 )
@@ -269,7 +295,7 @@ class AuroraClientAdapter:
         try:
             pos = await self._client.fetch_position(symbol)
         except Exception as e:  # noqa: BLE001
-            logger.warning("Aurora fetch_position 실패: %s — ccxt fallback", e)
+            self._wlog("Aurora fetch_position 실패: %s — ccxt fallback", e)
             pos = None
         if pos is not None:
             if hasattr(pos, "__dict__"):
@@ -290,7 +316,7 @@ class AuroraClientAdapter:
         try:
             positions = await ex.fetch_positions([symbol])
         except Exception as e:  # noqa: BLE001
-            logger.warning("ccxt fetch_positions 실패: %s", e)
+            self._wlog("ccxt fetch_positions 실패: %s", e)
             return None
         for p in positions or []:
             contracts = float(p.get("contracts") or 0)
@@ -324,14 +350,14 @@ class AuroraClientAdapter:
             await self._ensure_time_sync()
             positions = await ex.fetch_positions([symbol])
         except Exception as e:  # noqa: BLE001
-            logger.warning("fetch_actual_leverage 실패 (%s): %s", symbol, e)
+            self._wlog("fetch_actual_leverage 실패 (%s): %s", symbol, e)
             return None
         # 디버그 — 응답의 모든 position 항목 가시화. WARNING level (#LEV-5)
         # 파트너 fly redirect filter 가 INFO 안 잡아 임시 WARNING. 디버그 끝나면
         # info 로 되돌리거나 제거.
         for idx, p in enumerate(positions or []):
             info = p.get("info") or {}
-            logger.warning(
+            self._wlog(
                 "LEV_DEBUG[%s] #%d: sym=%s side=%s "
                 "lev=%s marginMode=%s contracts=%s | info: lev=%s "
                 "leverage_buy=%s leverage_sell=%s tradeMode=%s",
@@ -371,12 +397,12 @@ class AuroraClientAdapter:
         """
         ex = getattr(self._client, "_ex", None)
         if ex is None:
-            logger.warning("Aurora client에 _ex 속성 없음 — fallback {}")
+            self._wlog("Aurora client에 _ex 속성 없음 — fallback {}")
             return {}
         try:
             return await ex.fetch_balance()
         except Exception as e:  # noqa: BLE001
-            logger.warning("fetch_balance 실패: %s", e)
+            self._wlog("fetch_balance 실패: %s", e)
             return {}
 
     async def fetch_ticker(self, symbol: str) -> float | None:
@@ -387,7 +413,7 @@ class AuroraClientAdapter:
         try:
             return await self._client.fetch_ticker(symbol)
         except Exception as e:  # noqa: BLE001
-            logger.warning("fetch_ticker 실패: %s", e)
+            self._wlog("fetch_ticker 실패: %s", e)
             return None
 
     async def fetch_symbol_meta(self, symbol: str) -> dict[str, float | None]:
@@ -399,7 +425,7 @@ class AuroraClientAdapter:
         try:
             return await self._client.fetch_symbol_meta(symbol)
         except Exception as e:  # noqa: BLE001
-            logger.warning("fetch_symbol_meta 실패 (%s): %s", symbol, e)
+            self._wlog("fetch_symbol_meta 실패 (%s): %s", symbol, e)
             return {"min_qty": None, "qty_step": None, "max_leverage": None}
 
     def round_amount(self, symbol: str, amount: float) -> float:
@@ -415,7 +441,7 @@ class AuroraClientAdapter:
         try:
             return await self._client.list_top_usdt_perps(limit)
         except Exception as e:  # noqa: BLE001
-            logger.warning("list_top_usdt_perps 위임 실패: %s", e)
+            self._wlog("list_top_usdt_perps 위임 실패: %s", e)
             return []
 
     async def fetch_perp_tickers(self, limit: int = 30) -> list[dict]:
@@ -423,7 +449,7 @@ class AuroraClientAdapter:
         try:
             return await self._client.fetch_perp_tickers(limit)
         except Exception as e:  # noqa: BLE001
-            logger.warning("fetch_perp_tickers 위임 실패: %s", e)
+            self._wlog("fetch_perp_tickers 위임 실패: %s", e)
             return []
 
     async def cancel_all_orders(self, symbol: str) -> None:
@@ -435,7 +461,7 @@ class AuroraClientAdapter:
         try:
             await self._client.cancel_all(symbol)
         except Exception as e:  # noqa: BLE001
-            logger.warning("cancel_all_orders 실패: %s", e)
+            self._wlog("cancel_all_orders 실패: %s", e)
 
     async def fetch_closed_positions(
         self, since_ms: int | None = None, limit: int = 200,
@@ -450,7 +476,7 @@ class AuroraClientAdapter:
                 since_ms=since_ms, limit=limit,
             )
         except Exception as e:  # noqa: BLE001
-            logger.warning("fetch_closed_positions 실패: %s", e)
+            self._wlog("fetch_closed_positions 실패: %s", e)
             return []
 
     async def set_leverage(
@@ -467,7 +493,7 @@ class AuroraClientAdapter:
         """
         ex = getattr(self._client, "_ex", None)
         if ex is None:
-            logger.warning("set_leverage: _ex 없음 — skip")
+            self._wlog("set_leverage: _ex 없음 — skip")
             return {}
         await self._ensure_time_sync()
         raw_symbol = symbol.replace("/", "").split(":")[0]
@@ -496,13 +522,13 @@ class AuroraClientAdapter:
                 )
                 return {"retCode": 110043, "alreadySet": True}
             if "10005" in msg and "query-api" in msg:
-                logger.warning(
+                self._wlog(
                     "set_leverage (%s → %dx): ccxt UTA 체크 false positive "
                     "(retCode 10005) — Bybit 측 실제로는 성공 처리됨.",
                     raw_symbol, leverage,
                 )
                 return {"retCode": 0, "alreadySet": False}
-            logger.warning(
+            self._wlog(
                 "set_leverage 실패 (%s %dx): %s",
                 raw_symbol, leverage, e,
             )
@@ -522,7 +548,7 @@ class AuroraClientAdapter:
         """
         ex = getattr(self._client, "_ex", None)
         if ex is None:
-            logger.warning("modify_stop_loss: _ex 없음 — skip")
+            self._wlog("modify_stop_loss: _ex 없음 — skip")
             return {}
         await self._ensure_time_sync()
         # ccxt unified → Bybit raw symbol ("BTC/USDT:USDT" → "BTCUSDT").
@@ -545,7 +571,7 @@ class AuroraClientAdapter:
                     raw_symbol, new_stop_loss,
                 )
                 return {"retCode": 34040, "alreadySet": True}
-            logger.warning("set_trading_stop 실패 (%s, sl=%.4f): %s",
+            self._wlog("set_trading_stop 실패 (%s, sl=%.4f): %s",
                            raw_symbol, new_stop_loss, e)
             return {}
         return dict(result) if isinstance(result, dict) else {"raw": str(result)}
@@ -569,7 +595,7 @@ class AuroraClientAdapter:
         """
         ex = getattr(self._client, "_ex", None)
         if ex is None:
-            logger.warning("set_position_tpsl: _ex 없음 — skip")
+            self._wlog("set_position_tpsl: _ex 없음 — skip")
             return {}
         await self._ensure_time_sync()
         raw_symbol = symbol.replace("/", "").split(":")[0]
@@ -593,7 +619,7 @@ class AuroraClientAdapter:
                     raw_symbol, stop_loss, take_profit,
                 )
                 return {"retCode": 34040, "alreadySet": True}
-            logger.warning(
+            self._wlog(
                 "set_position_tpsl 실패 (%s sl=%s tp=%s): %s",
                 raw_symbol, stop_loss, take_profit, e,
             )
@@ -613,7 +639,7 @@ class AuroraClientAdapter:
             except (TypeError, ValueError):
                 ret_code = -1  # 파싱 불가 = 이상 취급
             if ret_code not in (0, 34040):
-                logger.warning(
+                self._wlog(
                     "set_position_tpsl retCode 이상 (%s sl=%s tp=%s): %s",
                     raw_symbol, stop_loss, take_profit, result_dict,
                 )

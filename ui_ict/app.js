@@ -2517,25 +2517,7 @@ function _bindAuthHandlers() {
     }
   };
 
-  // 2026-05-29: 인증 게이트 키 등록 — auth-mode-toggle (DEMO/LIVE) 핸들러.
-  const authModeRoot = document.getElementById("auth-mode-toggle");
-  if (authModeRoot) {
-    const hint = document.getElementById("auth-mode-hint");
-    authModeRoot.addEventListener("click", (e) => {
-      const btn = e.target.closest("button[data-auth-mode]");
-      if (!btn) return;
-      authModeRoot.querySelectorAll("button").forEach((b) =>
-        b.classList.remove("active"),
-      );
-      btn.classList.add("active");
-      if (hint) {
-        const m = btn.dataset.authMode;
-        hint.innerHTML = m === "live"
-          ? '⚠ <b style="color:#fb7185">LIVE</b> 슬롯 — 실거래 키. Demo 키와 혼동 주의.'
-          : 'Bybit <b>Demo Trading</b> 키 (api-demo.bybit.com). 처음 사용자는 데모로 시작 권장.';
-      }
-    });
-  }
+  // 2026-06-06: 데모 영구 미사용 — 인증 게이트는 LIVE 전용. auth-mode 토글 제거.
 
   const btnKeys = document.getElementById("btn-save-keys");
   if (btnKeys) btnKeys.onclick = async () => {
@@ -2545,20 +2527,8 @@ function _bindAuthHandlers() {
     if (!api_key || !api_secret) {
       return _showAuthError("keys", "API Key 와 Secret 을 모두 입력하세요.");
     }
-    const activeBtn = document.querySelector(
-      "#auth-mode-toggle button[data-auth-mode].active",
-    );
-    const mode = activeBtn ? activeBtn.dataset.authMode : "demo";
-    if (mode === "live") {
-      // 인증 게이트에서도 LIVE 슬롯 등록은 한 번 더 확인 — 첫 사용자가 실수로 LIVE 키
-      // 박는 사고 방지. (UI 흐름상 신규 가입자는 데모로 시작 권장.)
-      const ok = confirm(
-        "LIVE 슬롯에 키를 저장합니다.\n\n" +
-        "실거래 (api.bybit.com) 키여야 합니다. Demo 키와 다릅니다.\n" +
-        "계속하시겠습니까?",
-      );
-      if (!ok) return;
-    }
+    // 2026-06-06: 데모 영구 미사용 — 키 등록 게이트는 LIVE 슬롯 고정.
+    const mode = "live";
     btnKeys.disabled = true;
     try {
       await api("/auth/api-keys", "POST", { api_key, api_secret, mode });
