@@ -15,6 +15,7 @@ from aurora_ict.backtest.replay import (
     _aggregate,
     _gate_pass,
     _simulate_exit,
+    _simulate_fill,
     load_ohlcv_parquet,
     run_backtest,
 )
@@ -107,6 +108,40 @@ def test_simulate_exit_eod_when_no_touch() -> None:
     idx, px, outcome = _simulate_exit(highs, lows, closes, 0, Direction.LONG, 90, 110, cfg)
     assert (idx, outcome) == (2, "eod")
     assert px == 101.0
+
+
+# ============================================================
+# _simulate_fill — limit 체결 (TTL)
+# ============================================================
+
+
+def test_simulate_fill_long_touches() -> None:
+    # long limit 99. idx2 low 98 <= 99 → 체결 idx2.
+    highs = _arr([100, 101, 100, 102])
+    lows = _arr([100, 100, 98, 99])
+    assert _simulate_fill(highs, lows, 0, Direction.LONG, 99, 5) == 2
+
+
+def test_simulate_fill_short_touches() -> None:
+    # short limit 102. idx2 high 103 >= 102 → 체결 idx2.
+    highs = _arr([100, 100, 103, 101])
+    lows = _arr([100, 99, 100, 100])
+    assert _simulate_fill(highs, lows, 0, Direction.SHORT, 102, 5) == 2
+
+
+def test_simulate_fill_no_touch_returns_none() -> None:
+    # long limit 95, 가격이 안 내려옴 → 미체결.
+    highs = _arr([100, 101, 102, 103])
+    lows = _arr([100, 99, 100, 101])
+    assert _simulate_fill(highs, lows, 0, Direction.LONG, 95, 5) is None
+
+
+def test_simulate_fill_ttl_expiry() -> None:
+    # ttl=2 면 idx1,2 만 봄 — 체결 타점이 idx3 이면 미체결.
+    highs = _arr([100, 101, 101, 101, 101])
+    lows = _arr([100, 99, 99, 95, 95])
+    assert _simulate_fill(highs, lows, 0, Direction.LONG, 96, 2) is None
+    assert _simulate_fill(highs, lows, 0, Direction.LONG, 96, 5) == 3
 
 
 # ============================================================
