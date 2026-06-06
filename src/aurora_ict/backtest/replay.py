@@ -26,6 +26,9 @@ from pathlib import Path
 import pandas as pd
 
 from aurora.backtest.cost import apply_costs, apply_slippage, slip_pct
+from aurora_ict.indicators.cisd import CisdType, detect_cisd
+from aurora_ict.indicators.smt import SmtType, detect_smt_divergence
+from aurora_ict.indicators.swing_points import detect_swing_points
 from aurora_ict.strategy.silver_bullet import Direction, detect_silver_bullet_setups
 
 
@@ -45,12 +48,18 @@ class BacktestConfig:
     min_sl_distance_pct: float = 0.001
     disable_time_filter: bool = True  # 백테스트 기본 24h (시간 필터 영향 분리)
     expand_to_killzone: bool = False
+    # --- bot 레벨 boost 반영 (2차-②) — confluence_score 에 가산 후 게이트 ---
+    apply_cisd: bool = False  # CISD 방향 일치 시 +1 (단일 심볼)
+    apply_smt: bool = False   # SMT divergence 방향 일치 시 +1 (corr_df 필요)
     # --- 시뮬/비용 ---
     window: int = 500  # 슬라이딩 lookback 봉 수 (detect 입력 길이)
     entry_ttl_bars: int = 5  # limit 체결 대기 봉 수 (entry_limit_ttl_sec 300s / 60s @1m)
     leverage: float = 20.0
     size_pct: float = 0.3  # 시드 대비 포지션 (고정 — 상대 비교용)
-    sl_priority: bool = True  # 같은 봉 SL/TP 동시 도달 시 SL 우선(보수)
+    # 같은 봉 SL/TP 동시 도달 처리:
+    #   False(기본) = 봉 경로 휴리스틱(bullish 봉 저점 먼저 / bearish 봉 고점 먼저)
+    #   True = 무조건 SL 우선(worst-case 보수) — win 과소평가
+    sl_priority: bool = False
 
 
 @dataclass(slots=True)
@@ -104,6 +113,53 @@ def load_ohlcv_parquet(path: str | Path) -> pd.DataFrame:
     return df[[c for c in cols if c in df.columns]]
 
 
+def _boost_score(
+    base_score: int, direction: Direction, window: pd.DataFrame,
+    corr_window: pd.DataFrame | None, cfg: BacktestConfig,
+) -> int:
+    """bot 레벨 boost(CISD/SMT)를 base confluence_score 에 가산 — bot step() 재현.
+
+    HTF FVG boost 는 멀티 TF map 필요라 1차 boost 범위에서 제외 (별도 단계).
+    """
+    score = base_score
+    if cfg.apply_cisd:
+        cisd = detect_cisd(window)
+        if cisd is not None:
+            want = CisdType.BULLISH if direction is Direction.LONG else CisdType.BEARISH
+            if cisd is want:
+                score += 1
+    if cfg.apply_smt and corr_window is not None and len(corr_window) > 0:
+        swings = detect_swing_points(window)
+        if len(swings) >= 2:
+            events = detect_smt_divergence(swings, corr_window)
+            if events:
+                want = SmtType.BULLISH if direction is Direction.LONG else SmtType.BEARISH
+                if events[-1].type is want:
+                    score += 1
+    return score
+
+
+def resample_ohlcv(df: pd.DataFrame, rule: str = "5min") -> pd.DataFrame:
+    """1m OHLCV → 상위 TF 집계 (라이브 trade TF 5m 일치용).
+
+    DatetimeIndex 기준 OHLC 표준 집계 (open=first, high=max, low=min, close=last).
+    봉이 안 채워진 구간(NaN)은 제거.
+
+    Args:
+        df: DatetimeIndex OHLCV.
+        rule: pandas resample rule (예 "5min", "15min").
+    """
+    agg = {
+        "open": df["open"].resample(rule).first(),
+        "high": df["high"].resample(rule).max(),
+        "low": df["low"].resample(rule).min(),
+        "close": df["close"].resample(rule).last(),
+    }
+    if "volume" in df.columns:
+        agg["volume"] = df["volume"].resample(rule).sum()
+    return pd.DataFrame(agg).dropna()
+
+
 def _gate_pass(score: int, rr: float, cfg: BacktestConfig) -> bool:
     """봇 step() 의 confluence 게이트 재현 — min_confluence 또는 고RR 예외."""
     if score >= cfg.min_confluence:
@@ -138,10 +194,16 @@ def _simulate_fill(
 
 
 def _simulate_exit(
-    highs, lows, closes, entry_idx: int, direction: Direction,
+    opens, highs, lows, closes, entry_idx: int, direction: Direction,
     sl: float, tp: float, cfg: BacktestConfig,
 ) -> tuple[int, float, str]:
-    """진입 후 봉들에서 SL/TP 먼저 닿는 지점 → (exit_idx, exit_price, outcome)."""
+    """진입 후 봉들에서 SL/TP 먼저 닿는 지점 → (exit_idx, exit_price, outcome).
+
+    같은 봉에 SL·TP 둘 다 도달 시 봉 내 경로를 추정:
+    bullish 봉(close>=open)은 보통 open→저점→고점→close 경로라 **저점 먼저**,
+    bearish 봉은 open→고점→저점→close 라 **고점 먼저** 형성됐다고 가정한다.
+    sl_priority=True 면 무조건 SL(worst-case 보수).
+    """
     n = len(highs)
     for j in range(entry_idx + 1, n):
         hi, lo = float(highs[j]), float(lows[j])
@@ -150,8 +212,12 @@ def _simulate_exit(
         else:
             hit_sl, hit_tp = hi >= sl, lo <= tp
         if hit_sl and hit_tp:
-            # 봉 안 경로 불명 — 보수적으로 SL 우선 (낙관 편향 회피).
-            return (j, sl, "sl") if cfg.sl_priority else (j, tp, "tp")
+            if cfg.sl_priority:
+                return j, sl, "sl"
+            bar_up = float(closes[j]) >= float(opens[j])
+            # LONG: SL=저점쪽 → bullish 봉이면 SL 먼저. SHORT: SL=고점쪽 → bearish 봉이면 SL 먼저.
+            sl_first = bar_up if direction is Direction.LONG else not bar_up
+            return (j, sl, "sl") if sl_first else (j, tp, "tp")
         if hit_sl:
             return j, sl, "sl"
         if hit_tp:
@@ -159,17 +225,21 @@ def _simulate_exit(
     return n - 1, float(closes[-1]), "eod"
 
 
-def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> BacktestResult:
+def run_backtest(
+    df: pd.DataFrame, cfg: BacktestConfig, corr_df: pd.DataFrame | None = None,
+) -> BacktestResult:
     """슬라이딩 윈도우 백테스트 실행.
 
     Args:
         df: 1m OHLCV (DatetimeIndex, columns open/high/low/close). load_ohlcv_parquet 산출.
         cfg: 파라미터.
+        corr_df: SMT boost 용 상관 심볼 OHLCV (apply_smt=True 시 필요, 같은 기간 정렬).
 
     Returns:
         BacktestResult — per-trade 기록 + 집계.
     """
     n = len(df)
+    opens = df["open"].to_numpy()
     highs = df["high"].to_numpy()
     lows = df["low"].to_numpy()
     closes = df["close"].to_numpy()
@@ -194,7 +264,14 @@ def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> BacktestResult:
         if bars_since > cfg.setup_stale_bars:
             i += 1
             continue
-        if not _gate_pass(setup.confluence_score, setup.risk_reward, cfg):
+        # bot 레벨 boost(CISD/SMT) 반영 — confluence_score 가산 후 게이트 (bot step 재현).
+        corr_window = (
+            corr_df.iloc[i - cfg.window : i + 1] if corr_df is not None else None
+        )
+        score = _boost_score(
+            setup.confluence_score, setup.direction, window, corr_window, cfg,
+        )
+        if not _gate_pass(score, setup.risk_reward, cfg):
             i += 1
             continue
         # 체결 시뮬 — limit(setup.entry)에 ttl 봉 내 가격이 닿아야 체결. 미체결이면 skip.
@@ -208,7 +285,7 @@ def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> BacktestResult:
         # limit 체결이라 entry 슬리피지 0 (계획가 그대로). 청산만 슬리피지(시장가 발동).
         entry = setup.entry
         exit_idx, exit_raw, outcome = _simulate_exit(
-            highs, lows, closes, fill_idx, setup.direction,
+            opens, highs, lows, closes, fill_idx, setup.direction,
             setup.stop_loss, setup.take_profit, cfg,
         )
         exit_slip = slip_pct(
@@ -222,7 +299,7 @@ def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> BacktestResult:
             entry_idx=fill_idx, exit_idx=exit_idx, direction=d_val,
             entry=entry, exit_price=exit_price, outcome=outcome,
             raw_pnl_pct=raw_pnl_pct, net_pnl_pct=net_pnl_pct,
-            confluence_score=setup.confluence_score,
+            confluence_score=score,
         ))
         i = exit_idx + 1  # 청산 후 다음 봉부터 재탐색 (동시 포지션 1개)
     return _aggregate(cfg, trades)
