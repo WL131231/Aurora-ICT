@@ -1244,32 +1244,36 @@
   @media (orientation: portrait) and (max-width: 1024px) {
     /* 안내 화면 제거 — 세로도 정상 작동. */
     .mobile-rotate-notice { display: none; }
-    /* 본문 표시 + 세로 흐름 (.wrap 은 default flex row 라 column 으로 강제). */
-    .wrap { display: flex; flex-direction: column; height: 100vh; }
-
-    /* 좌측 사이드바 — default hidden, body.sidebar-open 일 때만 슬라이드 인. */
-    body:not(.sidebar-open) .sidebar { display: none; }
-    body.sidebar-open .sidebar {
-      display: block;
-      position: fixed; top: 0; left: 0; bottom: 0;
-      width: min(80vw, 300px);
-      z-index: 200;
+    /* 2026-06-06 Bybit 식 세로 스크롤 재디자인 — 모든 패널을 차트 아래로 펼침
+       (햄버거/fab 토글 제거). .wrap 이 콘텐츠 높이만큼 늘고 페이지가 세로 스크롤. */
+    .wrap {
+      display: flex;
+      flex-direction: column;
+      height: auto;
+      min-height: 100vh;
       overflow-y: auto;
-      box-shadow: 4px 0 16px rgba(0, 0, 0, 0.5);
-      /* 2026-05-29 파트너 피드백 (iPad): 사이드바 위쪽 햄버거 가림 회피. */
-      padding-top: 60px;
+    }
+    /* 차트(main) 맨 위 → 매매컨트롤(사이드바) → P&L 순. */
+    .main { order: 1; width: 100%; }
+    .sidebar { order: 2; }
+    .pnl-panel { order: 3; }
+
+    /* 사이드바(매매 컨트롤) — 세로로 펼침 (hidden 토글 제거, 차트 아래). */
+    .sidebar {
+      display: block;
+      position: static;
+      width: 100%;
+      overflow-y: visible;
+      box-shadow: none;
+      padding-top: 0;
     }
 
-    /* 우측 P&L 패널 — default hidden, body.pnl-open 일 때만 슬라이드 인.
-       pnl-collapsed (데스크탑 클래스) 는 모바일에선 의미 X (open 우선). */
-    body:not(.pnl-open) .pnl-panel { display: none; }
-    body.pnl-collapsed .pnl-panel { display: none; }
-    body.pnl-open .pnl-panel {
+    /* P&L 패널 — 세로로 펼침 (hidden 토글 제거, 맨 아래). */
+    .pnl-panel {
       display: flex;
-      position: fixed; top: 0; right: 0; bottom: 0;
-      width: min(88vw, 360px);
-      z-index: 200;
-      box-shadow: -4px 0 16px rgba(0, 0, 0, 0.5);
+      position: static;
+      width: 100%;
+      box-shadow: none;
     }
 
     /* 햄버거 2개 — 좌상단(사이드바) / 우상단(P&L). 가로와 동일 크기. */
@@ -1293,15 +1297,21 @@
     /* main(차트 컨테이너) — 풀 너비 + relative (fab/판단/포지션 absolute 기준). */
     .main { width: 100%; position: relative; }
 
-    /* 차트 풀스크린 — flex:1 로 가로/세로 화면 잔여 공간 모두 흡수. */
-    .chart-wrap { flex: 1; min-height: 0; }
+    /* 차트 — 고정 높이 (세로 스크롤 위해 flex:1 해제, 차트 아래 패널 펼침). */
+    .chart-wrap { flex: none; height: 60vh; min-height: 0; }
 
-    /* 차트 toolbar — 햄버거 자리 확보 + 가로 스크롤 (TF/Viz 한 줄). */
+    /* 차트 toolbar — 가로 스크롤 (TF 한 줄). 햄버거 제거로 padding 정상화. */
     .chart-toolbar {
-      padding: 6px 60px;
+      padding: 6px 12px;
       flex-wrap: nowrap;
       overflow-x: auto;
       gap: 8px;
+    }
+    /* killzone 배지(5개) — 화면 넘치면 가로 스크롤 (잘림 방지). */
+    .killzone-bar {
+      max-width: calc(100vw - 24px);
+      overflow-x: auto;
+      flex-wrap: nowrap;
     }
     .tf-toggle { flex-shrink: 0; }
     .tf-toggle button { padding: 5px 8px; font-size: 9.5px; }
@@ -1313,43 +1323,31 @@
     /* 레전드 12칩 — 세로에서도 공간 낭비 → 숨김 (가로와 동일). */
     .legend { display: none; }
 
-    /* 판단 패널 — default hidden, fab 으로 토글. 세로에선 fab 위 띄움. */
-    .judgment-panel { display: none; }
-    body.judgment-open .judgment-panel {
+    /* 봇 판단 패널 — 세로로 펼침 (차트 바로 아래, fab 토글 제거). */
+    .judgment-panel {
       display: block;
-      position: fixed;
-      left: 12px; right: 12px;
-      bottom: 124px;          /* 판단 fab(70) + 여백 */
+      position: static;
+      left: auto; right: auto; bottom: auto;
       width: auto;
       max-width: none;
-      max-height: 50vh;
-      z-index: 200;
-      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+      max-height: none;
+      box-shadow: none;
     }
 
-    /* POSITIONS 패널 — default hidden, fab 으로 토글. 세로에선 fab 위. */
-    body:not(.positions-open) .positions-panel { display: none; }
-    body.positions-open .positions-panel {
+    /* POSITIONS 패널 — 세로로 펼침 (판단 아래, fab 토글 제거). */
+    .positions-panel {
       display: flex;
-      position: fixed;
-      left: 12px; right: 12px;
-      bottom: 124px;          /* 판단 fab(70) + 여백 — POSITIONS 가 위 우선 */
-      max-height: 55vh;
-      z-index: 200;
-      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
-      border-radius: 5px;
-      overflow: hidden;
+      position: static;
+      left: auto; right: auto; bottom: auto;
+      max-height: none;
+      box-shadow: none;
+      border-radius: 0;
+      overflow: visible;
     }
 
-    /* 우하단 fab 2개 — 판단(ⓘ) / 포지션(P). 가로와 동일 위치. */
-    .judgment-fab { display: flex; }
-    .positions-fab { display: flex; }
-
-    /* Overlay — 어느 패널이든 열리면 표시. */
-    body.sidebar-open .mobile-overlay,
-    body.pnl-open .mobile-overlay,
-    body.judgment-open .mobile-overlay,
-    body.positions-open .mobile-overlay { display: block; }
+    /* 세로 스크롤 재디자인 — 햄버거/fab/overlay 전부 불필요 (다 펼쳤으므로). */
+    #btn-mobile-sidebar, .sidebar-toggle,
+    .judgment-fab, .positions-fab, .mobile-overlay { display: none !important; }
   }
   /* 데스크탑에서는 모바일용 사이드바 햄버거 + 판단 패널 fab + positions fab + overlay 숨김. */
   #btn-mobile-sidebar { display: none; }
