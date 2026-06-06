@@ -29,6 +29,7 @@ shutdown 흐름:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -196,7 +197,19 @@ def main() -> int:
             logger.info("legacy trades 마이그레이션 결과 — %s", mig)
         except Exception as e:  # noqa: BLE001
             logger.warning("legacy trades 마이그레이션 실패 (무시, 봇 진행): %s", e)
-        await auto_resume_running_bots(mu, db_path)
+        # #STARTUP-NONBLOCK 2026-06-06: 봇 복원을 백그라운드 task 로 분리.
+        # FastAPI 는 startup hook 이 완료될 때까지 uvicorn 의 listen(8765) 을 보류한다.
+        # 복원(가동 사용자 × 페어마다 set_leverage + OHLCV fetch)은 수십 초 걸릴 수
+        # 있어, 여기서 await 하면 Fly 헬스체크 grace 를 넘겨 머신이 죽고 재시작되는
+        # crash loop 가 된다. task 로 띄워 즉시 listen → 헬스체크 통과, 봇은 뒤에서 복원.
+        async def _resume_bg() -> None:
+            try:
+                await auto_resume_running_bots(mu, db_path)
+            except Exception as e:  # noqa: BLE001
+                logger.exception("백그라운드 봇 복원 실패 (서버는 정상 가동): %s", e)
+        # task 참조 보관 — asyncio 는 task 를 weak ref 로만 들고 있어 GC 로 중도
+        # 취소될 수 있으므로 app.state 에 보관한다.
+        app.state.resume_task = asyncio.create_task(_resume_bg())
 
     # FastAPI shutdown 이벤트 — uvicorn graceful 종료 시 모든 사용자 봇 정지.
     #
