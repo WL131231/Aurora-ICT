@@ -42,7 +42,7 @@ class BacktestConfig:
     # --- 검출/게이트 (sweep 대상) ---
     min_rr: float = 2.0
     min_confluence: int = 2
-    high_rr_bypass_min_rr: float = 2.3
+    high_rr_bypass_min_rr: float = 3.0  # 라이브 settings 일치 (2026-06-06 2.3→3.0)
     setup_stale_bars: int = 120
     fvg_min_size_pct: float = 0.0006
     min_sl_distance_pct: float = 0.001

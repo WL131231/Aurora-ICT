@@ -137,7 +137,11 @@ class IctSettings(BaseSettings):
     # 이면 단일신호 셋업도 진입 통과. 0=비활성. 파트너 결정 2026-06-04:
     # rr 2.5+ 1점 셋업은 confluence 게이트 우회 (손익비 좋은 단일신호 살리기).
     # 2026-06-05: 매매 빈도 너무 낮아 2.5 → 2.3 하향 (1점 셋업 진입 문턱 완화).
-    high_rr_bypass_min_rr: float = Field(default=2.3, ge=0.0)
+    # 2026-06-06: 2.3 → 3.0 상향 — 백테스트(#BACKTEST)상 bypass 2.3 이 confluence
+    #   게이트를 무력화해 약한 단일신호를 과다 통과(net -129% vs bypass 0 의 -98%).
+    #   win 은 confluence 와 무관하게 비슷 → bypass 가 빈도만 키움. RR 3.0+ 단일
+    #   신호만 우회 허용해 품질 게이트 복원 (파트너 결정).
+    high_rr_bypass_min_rr: float = Field(default=3.0, ge=0.0)
     # SMT divergence (BTC↔ETH 상관) confluence 가점 — #SMT 2026-06-06.
     # 두 상관 자산이 같은 시점 swing 에서 한쪽만 새 고/저점을 박으면 '기관 흐름
     # 누설' → 못 따라온 쪽 반전 신호. setup 방향과 일치 시 confluence +1.
