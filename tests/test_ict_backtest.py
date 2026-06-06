@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from aurora_ict.backtest.replay import (
@@ -17,6 +18,7 @@ from aurora_ict.backtest.replay import (
     _simulate_exit,
     _simulate_fill,
     load_ohlcv_parquet,
+    resample_ohlcv,
     run_backtest,
 )
 from aurora_ict.strategy.silver_bullet import Direction
@@ -62,50 +64,77 @@ def _arr(vals: list[float]) -> np.ndarray:
 def test_simulate_exit_long_hits_tp() -> None:
     cfg = BacktestConfig()
     # entry_idx=0, long, sl=99 tp=105. idx1 high 106 >= tp → tp.
+    opens = _arr([100, 104, 106])
     highs = _arr([100, 106, 107])
     lows = _arr([100, 100, 100])
     closes = _arr([100, 104, 106])
-    idx, px, outcome = _simulate_exit(highs, lows, closes, 0, Direction.LONG, 99, 105, cfg)
+    idx, px, outcome = _simulate_exit(opens, highs, lows, closes, 0, Direction.LONG, 99, 105, cfg)
     assert (idx, px, outcome) == (1, 105, "tp")
 
 
 def test_simulate_exit_long_hits_sl() -> None:
     cfg = BacktestConfig()
     # idx1 low 98 <= sl 99 → sl.
+    opens = _arr([100, 100, 99])
     highs = _arr([100, 101, 102])
     lows = _arr([100, 98, 97])
     closes = _arr([100, 99, 98])
-    idx, px, outcome = _simulate_exit(highs, lows, closes, 0, Direction.LONG, 99, 110, cfg)
+    idx, px, outcome = _simulate_exit(opens, highs, lows, closes, 0, Direction.LONG, 99, 110, cfg)
     assert (idx, px, outcome) == (1, 99, "sl")
 
 
 def test_simulate_exit_sl_priority_on_same_bar() -> None:
     cfg = BacktestConfig(sl_priority=True)
-    # idx1 에서 high 110(tp) + low 98(sl) 동시 → SL 우선(보수).
+    # idx1 에서 high 110(tp) + low 98(sl) 동시 → SL 우선(보수 모드).
+    opens = _arr([100, 100, 105])
     highs = _arr([100, 110, 110])
     lows = _arr([100, 98, 98])
     closes = _arr([100, 105, 105])
-    idx, px, outcome = _simulate_exit(highs, lows, closes, 0, Direction.LONG, 99, 108, cfg)
+    idx, px, outcome = _simulate_exit(opens, highs, lows, closes, 0, Direction.LONG, 99, 108, cfg)
     assert outcome == "sl"
+
+
+def test_simulate_exit_tie_heuristic_bullish_bar_long() -> None:
+    """동시 도달 + LONG + bullish 봉(close>=open) → 저점 먼저 → SL."""
+    cfg = BacktestConfig(sl_priority=False)
+    opens = _arr([100, 100, 105])   # idx1 open 100 < close 105 = bullish
+    highs = _arr([100, 110, 110])
+    lows = _arr([100, 98, 98])
+    closes = _arr([100, 105, 105])
+    _, _, outcome = _simulate_exit(opens, highs, lows, closes, 0, Direction.LONG, 99, 108, cfg)
+    assert outcome == "sl"
+
+
+def test_simulate_exit_tie_heuristic_bearish_bar_long() -> None:
+    """동시 도달 + LONG + bearish 봉(close<open) → 고점 먼저 → TP."""
+    cfg = BacktestConfig(sl_priority=False)
+    opens = _arr([100, 106, 100])   # idx1 open 106 > close 100 = bearish
+    highs = _arr([100, 110, 110])
+    lows = _arr([100, 98, 98])
+    closes = _arr([100, 100, 105])
+    _, _, outcome = _simulate_exit(opens, highs, lows, closes, 0, Direction.LONG, 99, 108, cfg)
+    assert outcome == "tp"
 
 
 def test_simulate_exit_short_hits_tp() -> None:
     cfg = BacktestConfig()
     # short: tp 아래. idx1 low 94 <= tp 95 → tp.
+    opens = _arr([100, 96, 95])
     highs = _arr([100, 101, 102])
     lows = _arr([100, 94, 93])
     closes = _arr([100, 96, 95])
-    idx, px, outcome = _simulate_exit(highs, lows, closes, 0, Direction.SHORT, 105, 95, cfg)
+    idx, px, outcome = _simulate_exit(opens, highs, lows, closes, 0, Direction.SHORT, 105, 95, cfg)
     assert (idx, px, outcome) == (1, 95, "tp")
 
 
 def test_simulate_exit_eod_when_no_touch() -> None:
     cfg = BacktestConfig()
     # SL/TP 둘 다 안 닿음 → 마지막 봉 close 로 강제 청산.
+    opens = _arr([100, 100, 100.5])
     highs = _arr([100, 101, 102])
     lows = _arr([100, 99.5, 99.6])
     closes = _arr([100, 100.5, 101.0])
-    idx, px, outcome = _simulate_exit(highs, lows, closes, 0, Direction.LONG, 90, 110, cfg)
+    idx, px, outcome = _simulate_exit(opens, highs, lows, closes, 0, Direction.LONG, 90, 110, cfg)
     assert (idx, outcome) == (2, "eod")
     assert px == 101.0
 
@@ -183,3 +212,28 @@ def test_run_backtest_smoke() -> None:
     assert res.total_net_pnl_pct == pytest.approx(
         sum(t.net_pnl_pct for t in res.trades), rel=1e-9, abs=1e-9,
     )
+
+
+# ============================================================
+# resample_ohlcv — 1m → 상위 TF 집계
+# ============================================================
+
+
+def test_resample_ohlcv_5min() -> None:
+    """1m 10봉 → 5m 2봉. open=first/high=max/low=min/close=last/volume=sum."""
+    idx = pd.date_range("2026-01-01", periods=10, freq="1min", tz="UTC")
+    df = pd.DataFrame({
+        "open": list(range(10)),
+        "high": [i + 2 for i in range(10)],
+        "low": [i - 1 for i in range(10)],
+        "close": [i + 1 for i in range(10)],
+        "volume": [1.0] * 10,
+    }, index=idx)
+    r = resample_ohlcv(df, "5min")
+    assert len(r) == 2
+    # 첫 5m 봉 = 1m idx 0~4.
+    assert r["open"].iloc[0] == 0      # first
+    assert r["high"].iloc[0] == 6      # max(2,3,4,5,6)
+    assert r["low"].iloc[0] == -1      # min(-1,0,1,2,3)
+    assert r["close"].iloc[0] == 5     # last (idx4 close = 5)
+    assert r["volume"].iloc[0] == 5    # sum
