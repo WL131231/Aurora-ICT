@@ -655,9 +655,13 @@
     // ============================================================
     // 데이터 로드
     // ============================================================
-    function renderStats(stats) {
+    function renderStats(stats, seedUsdt) {
       const root = $("stats");
+      // 2026-06-06 파트너 요청: 현재 시드(USDT 지갑 잔고) 카드. null 이면 "—"
+      // (봇 비가동 또는 키 무효/조회 실패).
+      const seedTxt = (seedUsdt == null) ? "—" : `${fmt(seedUsdt)}`;
       const cards = [
+        ["현재 시드 (USDT)", seedTxt, ""],
         ["총 이벤트", stats.total_events || 0, ""],
         ["청산 이벤트", stats.closed_events || 0, ""],
         ["누적 PnL", `${stats.pnl_sum_usdt >= 0 ? "+" : ""}${fmt(stats.pnl_sum_usdt)}`,
@@ -881,7 +885,7 @@
       }
       try {
         const data = await api(url);
-        renderStats(data.stats || {});
+        renderStats(data.stats || {}, data.current_seed_usdt);
         renderRows(data.trades || []);
       } catch (e) {
         $("rows").innerHTML = `<tr><td colspan="9" class="empty">` +
