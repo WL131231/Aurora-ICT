@@ -558,9 +558,6 @@ function renderStatus(s) {
   const _eP = $("s-pos");
   if (_eP) _eP.textContent = s.has_active_position ? "YES" : "—";
 
-  $("btn-demo").classList.toggle("active", s.run_mode === "demo");
-  $("btn-live").classList.toggle("active", s.run_mode === "live");
-
   // 봇 가동 상태 → START / STOP 시각 효과
   // 2026-05-27 파트너 피드백 — "stop 누르면 빨간 활성화 안돼"
   // 이전 조건은 (stopped && enabled) 였는데 STOP 클릭 시 enabled=false 도 같이
@@ -991,29 +988,8 @@ async function fetchAndRender() {
 // ============================================================
 // Button handlers
 // ============================================================
-$("btn-demo").onclick = async () => {
-  try { await api("/ict/run-mode", "POST", { mode: "demo" }); await fetchAndRender(); }
-  catch (e) { toast(e.message, true); }
-};
-$("btn-live").onclick = async () => {
-  // 2026-05-29: Live 전환 — confirm 1단계만 (LIVE 타이핑 prompt 제거, 파트너 요청).
-  // 서버 단 has_api_keys("live") 가드가 있어 키 미등록 시 자동 차단됨.
-  const warn = (
-    "⚠ LIVE (실거래) 모드로 전환합니다.\n\n" +
-    "• 실제 자금이 즉시 거래에 사용됩니다.\n" +
-    "• Bybit Live API 키가 등록돼 있어야 합니다 (Demo 키와 별도).\n" +
-    "• 봇이 가동 중이면 자동 재시작됩니다.\n\n" +
-    "계속하려면 OK 를 누르세요."
-  );
-  if (!confirm(warn)) return;
-  try {
-    await api("/ict/run-mode", "POST", { mode: "live" });
-    toast("LIVE 모드 전환 완료");
-    await fetchAndRender();
-  } catch (e) {
-    toast(e.message, true);
-  }
-};
+// 2026-06-06: MODE(DEMO/LIVE) 토글 제거 — LIVE 실거래 전용(run_mode 항상 live,
+// 백엔드 #253). 사이드바 MODE 섹션 + demo/live 전환 핸들러 삭제.
 $("btn-start").onclick = async () => {
   // 2026-05-27: 즉시 시각 응답 — fetchAndRender 까지 기다리지 않고 클릭 직후 active.
   $("btn-start").classList.add("active");
