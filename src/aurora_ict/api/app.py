@@ -15,6 +15,7 @@ BotManager는 모듈 전역 싱글톤으로 주입한다 (production에선 ``lif
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from pathlib import Path
@@ -36,6 +37,25 @@ from aurora_ict.bot.multi_user_manager import (
 from aurora_ict.bot.pair_registry import MAJOR_PAIRS
 from aurora_ict.config.settings import TRADE_TIMEFRAMES, IctSettings, RunMode
 from aurora_ict.strategy.silver_bullet import Direction
+
+
+def _rows_to_candles(rows: list[list[Any]]) -> list[dict[str, float]]:
+    """OHLCV rows → 차트 candle dict 리스트.
+
+    수만 봉(파트너 요청: 거래소 시작부터 현재까지) 동기 변환이 이벤트 루프를 막아
+    health check(8765) timeout → Fly 재기동을 유발하므로, asyncio.to_thread 로
+    호출해 이벤트 루프 밖에서 변환한다 (#OHLCV-NONBLOCK 2026-06-06).
+    """
+    return [
+        {
+            "time": int(r[0] // 1000),
+            "open": float(r[1]),
+            "high": float(r[2]),
+            "low": float(r[3]),
+            "close": float(r[4]),
+        }
+        for r in rows
+    ]
 
 logger = logging.getLogger(__name__)
 
@@ -1246,16 +1266,8 @@ def _register_multi_user_routes(
                 rows = await bot.client.fetch_ohlcv(use_symbol, use_tf, limit)
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"fetch_ohlcv: {e}") from e
-        candles = [
-            {
-                "time": int(r[0] // 1000),
-                "open": float(r[1]),
-                "high": float(r[2]),
-                "low": float(r[3]),
-                "close": float(r[4]),
-            }
-            for r in rows
-        ]
+        # 수만 봉 변환은 이벤트 루프 밖에서 (#OHLCV-NONBLOCK) — health timeout 방지.
+        candles = await asyncio.to_thread(_rows_to_candles, rows)
         return {"symbol": use_symbol, "timeframe": use_tf, "candles": candles}
 
     # Static UI mount — SaaS 도 ui_ict 그대로 서빙 (브라우저 → cookie 세션 흐름).
@@ -2043,16 +2055,8 @@ def create_app(
                 rows = await bot.client.fetch_ohlcv(use_symbol, use_tf, limit)
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"fetch_ohlcv: {e}") from e
-        candles = [
-            {
-                "time": int(r[0] // 1000),
-                "open": float(r[1]),
-                "high": float(r[2]),
-                "low": float(r[3]),
-                "close": float(r[4]),
-            }
-            for r in rows
-        ]
+        # 수만 봉 변환은 이벤트 루프 밖에서 (#OHLCV-NONBLOCK) — health timeout 방지.
+        candles = await asyncio.to_thread(_rows_to_candles, rows)
         return {"symbol": use_symbol, "timeframe": use_tf, "candles": candles}
 
     # Static UI mount — frozen (PyInstaller) 환경 대응:
