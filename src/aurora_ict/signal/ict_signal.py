@@ -70,6 +70,7 @@ def generate_ict_signal(
     expand_to_killzone: bool = False,
     disable_time_filter: bool = False,
     min_sl_distance_pct: float = 0.0,
+    prefer_direction: Direction | None = None,
 ) -> ICTSignal:
     """OHLCV DataFrame으로부터 ICT signal을 한 건 생성.
 
@@ -155,6 +156,21 @@ def generate_ict_signal(
             reason="no setup",
         )
 
+    # #BIAS-DIRECTION 2026-06-06: prefer_direction(HTF EMA 추세) 방향 setup 만
+    # 후보로 선택 → 상승장 숏/하락장 롱을 원천 차단(간밤 19연속 숏 사고 방지).
+    # 양방향 setup 중 추세 방향만 진입. 추세 방향 setup 이 없으면 진입 안 함.
+    # prefer_direction=None 이면 기존 동작(최근 setup, 방향 무관).
+    if prefer_direction is not None:
+        dir_setups = [s for s in setups if s.direction is prefer_direction]
+        if not dir_setups:
+            return ICTSignal(
+                action=SignalAction.NO_ACTION,
+                setup=None,
+                symbol=symbol,
+                ts_ms=last_ts_ms,
+                reason=f"no setup matching trend {prefer_direction.value}",
+            )
+        setups = dir_setups
     # 가장 최근 setup만 채택 (마지막 봉 기준) — bot은 시점당 1개 의사결정.
     setup = setups[-1]
 

@@ -100,16 +100,43 @@ def test_build_extra_setups_respects_min_rr():
     assert len(setups_strict) < len(setups_loose) or len(setups_loose) == 0
 
 
-def test_build_extra_setups_bias_filter():
-    """bias 박으면 그 방향 setup 만."""
+def test_build_extra_setups_not_filtered_by_bias():
+    """#BIAS-DIRECTION 2026-06-06: bias 는 더 이상 Phase B 방향을 강제하지 않는다.
+
+    양방향 setup 을 모두 생성하고, 추세 방향 필터는 진입 단계 EMA 게이트가 담당.
+    따라서 bias UP/DOWN/None 모두 동일한 setup 집합을 반환한다(필터 제거 확인).
+    """
     from aurora_ict.indicators.structure import TrendDirection
     df = _synthetic_df(100, seed=42)
-    long_only = build_extra_source_setups(df, min_rr=1.0, bias=TrendDirection.UP)
-    short_only = build_extra_source_setups(df, min_rr=1.0, bias=TrendDirection.DOWN)
-    for s in long_only:
-        assert s.direction is Direction.LONG
-    for s in short_only:
-        assert s.direction is Direction.SHORT
+    up = build_extra_source_setups(df, min_rr=1.0, bias=TrendDirection.UP)
+    down = build_extra_source_setups(df, min_rr=1.0, bias=TrendDirection.DOWN)
+    none = build_extra_source_setups(df, min_rr=1.0, bias=None)
+    # bias 가 방향 필터를 안 하므로 세 경우 결과가 같다.
+    assert len(up) == len(down) == len(none)
+    # 양방향이 실제로 섞여 나오는지(롱·숏 둘 다 가능) — 합성데이터라 한쪽만일 수도
+    # 있으나, 최소한 bias 와 무관하게 동일해야 한다.
+    assert {s.direction for s in up} == {s.direction for s in none}
+
+
+def test_generate_ict_signal_prefer_direction_filters() -> None:
+    """#BIAS-DIRECTION: prefer_direction 이 추세 방향 setup 만 선택한다.
+
+    양방향 setup 중 prefer_direction 과 같은 방향만 진입(상승장 숏/하락장 롱 차단).
+    setup 이 나오면 반드시 그 방향. prefer_direction=None 이면 방향 무관(기존).
+    """
+    for seed in range(20):
+        df = _synthetic_df(150, seed=seed)
+        long_sig = generate_ict_signal(
+            df, "BTCUSDT", min_rr=1.0, prefer_direction=Direction.LONG,
+        )
+        short_sig = generate_ict_signal(
+            df, "BTCUSDT", min_rr=1.0, prefer_direction=Direction.SHORT,
+        )
+        # 선택된 setup 은 반드시 prefer_direction 방향이어야 한다.
+        if long_sig.setup is not None:
+            assert long_sig.setup.direction is Direction.LONG
+        if short_sig.setup is not None:
+            assert short_sig.setup.direction is Direction.SHORT
 
 
 def test_ict_signal_uses_extra_sources_when_no_fvg_setup():
