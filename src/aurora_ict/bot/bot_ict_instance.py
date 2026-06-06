@@ -26,6 +26,7 @@ from typing import Any, ClassVar, Protocol
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+from ccxt.base.errors import AuthenticationError
 
 from aurora_ict.bot.structure_trail import compute_structure_trail
 from aurora_ict.indicators.cisd import CisdType, detect_cisd
@@ -68,6 +69,10 @@ from aurora_ict.strategy.trend_state import TrendState, evaluate_trend
 from aurora_ict.timing.killzone import classify_killzone, in_trade_window_sub
 
 logger = logging.getLogger(__name__)
+
+# 키 무효(retCode 10003)가 step 에서 이 횟수만큼 연속되면 봇 자동 정지 —
+# 무한 재시도로 인한 로그 폭증·502 차단. 사용자는 거래소 키 재등록 후 재가동.
+_AUTH_FAIL_STOP_THRESHOLD = 3
 
 _NY_TZ = ZoneInfo("America/New_York")
 
@@ -338,6 +343,8 @@ class BotIctInstance:
     _today_date_str: str = field(default="")  # "YYYY-MM-DD" NY local
     _today_start_equity: float = field(default=0.0)
     _daily_limit_hit: bool = field(default=False)
+    # 키 무효(10003) step 연속 실패 카운터 — 임계치 도달 시 봇 자동 정지.
+    _auth_fail_streak: int = field(default=0)
 
     # 2026-05-28 파트너 요청 — fly.io logs 에서 봇 의사결정 흐름 보이게.
     # 같은 값이 매 step 반복 출력 안 되도록 "직전 값" 캐시 — 변화 시에만 1줄 INFO.
@@ -553,6 +560,24 @@ class BotIctInstance:
         while self.state is BotState.RUNNING:
             try:
                 await self.step()
+                self._auth_fail_streak = 0  # 정상 step — 인증 실패 카운터 리셋
+            except AuthenticationError as e:
+                # 키 무효(retCode 10003) — 일시 오류가 아니므로 ERROR/traceback 대신
+                # WARNING 으로 강등하고 연속 카운트. 임계치 도달 시 봇 자동 정지로
+                # 무한 재시도(로그 폭증·502)를 차단한다. 사용자는 키 재등록 후 재가동.
+                self._auth_fail_streak += 1
+                logger.warning(
+                    "%s 거래소 인증 실패(키 무효 추정) %d/%d — %s",
+                    self.symbol, self._auth_fail_streak,
+                    _AUTH_FAIL_STOP_THRESHOLD, e,
+                )
+                if self._auth_fail_streak >= _AUTH_FAIL_STOP_THRESHOLD:
+                    logger.warning(
+                        "%s 키 무효 %d회 연속 — 봇 자동 정지. 거래소 API 키 재등록 필요.",
+                        self.symbol, self._auth_fail_streak,
+                    )
+                    self.state = BotState.STOPPED
+                    break
             except Exception as e:  # noqa: BLE001 — step 실패가 loop 전체를 죽이지 않도록
                 logger.exception("step 실패: %s", e)
             # Heartbeat — loop 살아있음 주기적 INFO 로그.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
@@ -102,6 +103,31 @@ async def test_sync_emergency_close_on_direction_mismatch() -> None:
     assert kw["reduce_only"] is True
     assert kw["qty"] == pytest.approx(0.107)
     assert bot.active_position is None
+
+
+@pytest.mark.asyncio
+async def test_run_loop_auto_stops_on_repeated_auth_error() -> None:
+    """키 무효(AuthenticationError)가 step 에서 임계치만큼 연속되면 봇 자동 정지."""
+    from ccxt.base.errors import AuthenticationError
+
+    from aurora_ict.bot.bot_ict_instance import (
+        _AUTH_FAIL_STOP_THRESHOLD,
+        BotState,
+    )
+
+    class _AuthFailBot(BotIctInstance):
+        # step 을 키 무효 던지게 오버라이드 — _run_loop 의 인증 실패 처리 검증.
+        async def step(self):  # type: ignore[override]
+            raise AuthenticationError(
+                'bybit {"retCode":10003,"retMsg":"API key is invalid."}',
+            )
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    bot = _AuthFailBot(client=client, symbol="BTCUSDT", step_interval_sec=0)
+    bot.state = BotState.RUNNING
+    await asyncio.wait_for(bot._run_loop(), timeout=2.0)
+    assert bot.state is BotState.STOPPED
+    assert bot._auth_fail_streak >= _AUTH_FAIL_STOP_THRESHOLD
 
 
 @pytest.mark.asyncio
