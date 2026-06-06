@@ -266,6 +266,7 @@ def _register_multi_user_routes(
             db_path,
             secure_cookie=secure_cookie,
             master_key=master_key,
+            on_keys_changed=mu_manager.stop_user,
         ),
     )
 

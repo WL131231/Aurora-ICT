@@ -23,8 +23,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
@@ -32,6 +34,8 @@ from pydantic import BaseModel, Field
 from aurora_ict import __version__
 from aurora_ict.auth import keystore, pin, users_db
 from aurora_ict.auth.middleware import SESSION_COOKIE_NAME, extract_session_token
+
+logger = logging.getLogger(__name__)
 
 # 세션 cookie TTL — pin._DEFAULT_TTL_SEC 와 일치 (30일).
 _SESSION_TTL_SEC = 30 * 24 * 3600
@@ -90,6 +94,7 @@ def create_auth_router(
     *,
     secure_cookie: bool = False,
     master_key: bytes | None = None,
+    on_keys_changed: Any = None,
 ) -> APIRouter:
     """``/auth/*`` router 생성 — DB 경로/master key 를 주입.
 
@@ -99,6 +104,9 @@ def create_auth_router(
             로컬/테스트 (HTTP) 에서는 False.
         master_key: keystore Fernet 키. None 이면 ``keystore.get_master_key()``
             기본 동작 (환경변수 / 파일) 사용. 테스트에서는 명시 주입.
+        on_keys_changed: async (user_code) -> Any. 키 등록/갱신 직후 호출되는
+            콜백. SaaS 는 mu_manager.stop_user 를 주입해 옛 키로 가동 중인 봇을
+            자동 정지한다(사용자는 새 키로 다시 START). None 이면 미동작.
 
     Returns:
         prefix ``/auth`` 의 APIRouter.
@@ -328,6 +336,13 @@ def create_auth_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="해당 사용자가 존재하지 않습니다.",
             )
+        # 키 재등록 시 가동 중인 봇 자동 정지 — 옛 키로 만든 연결을 무효화한다.
+        # 사용자는 새 키로 다시 START 해야 재가동(새 client 생성). 무효 키 캐시 방지.
+        if on_keys_changed is not None:
+            try:
+                await on_keys_changed(user_code)
+            except Exception:  # noqa: BLE001
+                logger.warning("키 재등록 후 봇 자동 정지 실패: %s", user_code)
         return {"ok": True, "mode": req.mode}
 
     @router.delete("/api-keys")

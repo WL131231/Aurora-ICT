@@ -131,6 +131,24 @@ async def test_run_loop_auto_stops_on_repeated_auth_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_loop_auto_stops_on_balance_auth_failures() -> None:
+    """잔고 조회가 키 무효로 연속 실패(어댑터 auth_fail_streak)하면 봇 자동 정지.
+
+    step 이 예외를 안 내도(어댑터가 10003 을 흡수해 빈 dict 반환) 자동 정지되는
+    TDAF 류 케이스 — _run_loop 가 client.auth_fail_streak 를 체크한다.
+    """
+    from aurora_ict.bot.bot_ict_instance import _AUTH_FAIL_STOP_THRESHOLD
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    # 어댑터가 fetch_balance 10003 을 임계치만큼 누적했다고 시뮬.
+    client.auth_fail_streak = _AUTH_FAIL_STOP_THRESHOLD
+    bot = BotIctInstance(client=client, symbol="BTCUSDT", step_interval_sec=0)
+    bot.state = BotState.RUNNING
+    await asyncio.wait_for(bot._run_loop(), timeout=2.0)
+    assert bot.state is BotState.STOPPED
+
+
+@pytest.mark.asyncio
 async def test_sync_corrects_qty_on_partial_manual_close() -> None:
     """#POS-SYNC: 사용자가 일부 수동 청산 → 청산 안 하고 봇 qty 만 거래소 실제로 보정."""
     client = _mock_client([[1, 100, 101, 99, 100, 10]])
