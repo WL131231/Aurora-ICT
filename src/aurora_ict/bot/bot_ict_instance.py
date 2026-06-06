@@ -561,6 +561,16 @@ class BotIctInstance:
             try:
                 await self.step()
                 self._auth_fail_streak = 0  # 정상 step — 인증 실패 카운터 리셋
+                # 잔고 조회 등 거래소 호출이 키 무효로 연속 실패하면 step 이 예외를
+                # 안 내도(어댑터가 흡수) 자동 정지. TDAF 류(fetch_balance 10003) 차단.
+                _bal_streak = getattr(self.client, "auth_fail_streak", 0)
+                if _bal_streak >= _AUTH_FAIL_STOP_THRESHOLD:
+                    logger.warning(
+                        "%s 거래소 키 무효 %d회(잔고 조회) — 봇 자동 정지. 키 재등록 필요.",
+                        self.symbol, _bal_streak,
+                    )
+                    self.state = BotState.STOPPED
+                    break
             except AuthenticationError as e:
                 # 키 무효(retCode 10003) — 일시 오류가 아니므로 ERROR/traceback 대신
                 # WARNING 으로 강등하고 연속 카운트. 임계치 도달 시 봇 자동 정지로

@@ -21,6 +21,7 @@ import logging
 from typing import Any
 
 import pandas as pd
+from ccxt.base.errors import AuthenticationError
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,9 @@ class AuroraClientAdapter:
         # 거래소 호출 실패 로그에 어느 사용자/심볼인지 식별용 라벨 (멀티유저 운영).
         # 비어있으면 기존과 동일하게 동작 — multi_user_manager 가 start 시 주입.
         self._log_label = ""
+        # 거래소 인증 실패(키 무효 10003) 연속 횟수 — fetch_balance 성공 시 0 리셋.
+        # 봇 _run_loop 가 임계치 도달 시 자동 정지에 사용(잔고 조회조차 안 되는 키).
+        self.auth_fail_streak = 0
 
     def set_log_label(self, label: str) -> None:
         """거래소 호출 실패 WARNING 에 붙일 식별 라벨 설정 (예: 'AICT-XXXX/BTC').
@@ -400,7 +404,17 @@ class AuroraClientAdapter:
             self._wlog("Aurora client에 _ex 속성 없음 — fallback {}")
             return {}
         try:
-            return await ex.fetch_balance()
+            result = await ex.fetch_balance()
+            self.auth_fail_streak = 0  # 잔고 조회 성공 — 인증 정상, 카운터 리셋
+            return result
+        except AuthenticationError as e:
+            # 키 무효(10003) — 별도 카운트. 봇 _run_loop 가 임계치 도달 시 자동 정지.
+            self.auth_fail_streak += 1
+            self._wlog(
+                "fetch_balance 인증 실패(키 무효) %d회: %s",
+                self.auth_fail_streak, e,
+            )
+            return {}
         except Exception as e:  # noqa: BLE001
             self._wlog("fetch_balance 실패: %s", e)
             return {}
