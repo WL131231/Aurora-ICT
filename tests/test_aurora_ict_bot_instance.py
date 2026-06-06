@@ -360,6 +360,9 @@ class _StubStore:
     def record(self, ev) -> None:
         self.events.append(ev)
 
+    def all_events(self) -> list:
+        return list(self.events)
+
 
 @pytest.mark.asyncio
 async def test_sync_close_records_sl_hit_with_exchange_pnl() -> None:
@@ -870,3 +873,67 @@ async def test_fetch_recent_close_accepts_record_within_tolerance() -> None:
     ev = bot._trades_store.events[0]
     assert ev.event_type is TradeEventType.SL_HIT
     assert ev.pnl_usdt == -50.0  # 정상 매칭, 거래소 실현치 박힘
+
+
+# ============================================================
+# #RECONCILE — 재기동 중 청산 누락 ENTRY 보충
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_reconcile_fills_orphan_entry() -> None:
+    """청산 누락 ENTRY(orphan)를 거래소 closed-pnl 매칭해 SYNC_CLOSE 로 보충."""
+    from types import SimpleNamespace
+
+    from aurora_ict.interfaces.trades_store import TradeEventType
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    # opened_at_ts=0 → 시간 체크 skip, symbol+direction 으로만 매칭.
+    cp = SimpleNamespace(
+        symbol="BTCUSDT", direction="short",
+        exit_price=60000.0, pnl_usd=12.5, opened_at_ts=0,
+    )
+    client.fetch_closed_positions = AsyncMock(return_value=[cp])
+    bot = BotIctInstance(client=client, symbol="BTCUSDT")
+    bot._trades_store = _StubStore()
+    # 청산 이벤트 없는 ENTRY (orphan).
+    bot._record_trade(
+        TradeEventType.ENTRY, direction=Direction.SHORT,
+        price=60500.0, qty=0.1, setup_ts_ms=111,
+    )
+    await bot._reconcile_orphan_entries()
+    syncs = [e for e in bot._trades_store.events if e.event_type is TradeEventType.SYNC_CLOSE]
+    assert len(syncs) == 1
+    assert syncs[0].setup_ts_ms == 111
+    assert syncs[0].pnl_usdt == 12.5   # 거래소 closed-pnl 값
+
+
+@pytest.mark.asyncio
+async def test_reconcile_skips_already_closed_entry() -> None:
+    """이미 청산 이벤트(SL_HIT)가 있는 ENTRY 는 보충하지 않음."""
+    from types import SimpleNamespace
+
+    from aurora_ict.interfaces.trades_store import TradeEventType
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    cp = SimpleNamespace(
+        symbol="BTCUSDT", direction="short",
+        exit_price=60000.0, pnl_usd=12.5, opened_at_ts=0,
+    )
+    client.fetch_closed_positions = AsyncMock(return_value=[cp])
+    bot = BotIctInstance(client=client, symbol="BTCUSDT")
+    bot._trades_store = _StubStore()
+    bot._record_trade(
+        TradeEventType.ENTRY, direction=Direction.SHORT,
+        price=60500.0, qty=0.1, setup_ts_ms=222,
+    )
+    bot._record_trade(
+        TradeEventType.SL_HIT, direction=Direction.SHORT,
+        price=60000.0, qty=0.1, setup_ts_ms=222, entry_for_pnl=60500.0,
+    )
+    before = len(bot._trades_store.events)
+    await bot._reconcile_orphan_entries()
+    # SYNC_CLOSE 가 추가되지 않아야 (이미 SL_HIT 청산됨).
+    assert len([e for e in bot._trades_store.events
+                if e.event_type is TradeEventType.SYNC_CLOSE]) == 0
+    assert len(bot._trades_store.events) == before
