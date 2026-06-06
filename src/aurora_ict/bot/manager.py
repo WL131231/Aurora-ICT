@@ -100,6 +100,7 @@ class BotManager:
             min_confluence=self.settings.min_confluence,
             high_rr_bypass_min_rr=self.settings.high_rr_bypass_min_rr,
             fvg_min_size_pct=self.settings.fvg_min_size_pct,
+            smt_enabled=self.settings.smt_enabled,
             step_interval_sec=self.settings.step_interval_sec,
             ohlcv_limit=self.settings.ohlcv_limit,
             # v0.4.30 이후 진입 완화 옵션 — settings 에서 명시 주입.

@@ -32,6 +32,7 @@ from aurora_ict.indicators.cisd import CisdType, detect_cisd
 from aurora_ict.indicators.daily_bias import compute_daily_bias
 from aurora_ict.indicators.dol import compute_dol
 from aurora_ict.indicators.liquidity import detect_liquidity_sweeps
+from aurora_ict.indicators.smt import SmtType, detect_smt_divergence
 from aurora_ict.indicators.structure import TrendDirection
 from aurora_ict.indicators.swing_points import detect_swing_points
 from aurora_ict.interfaces.trades_store import (
@@ -137,6 +138,13 @@ _FALLBACK_SL_PCT = 0.005
 # 이만큼 깎아 B+ 게이트(min_confluence)에서 걸러지게 함. 2 = 보통 setup 은 컷, A급만 통과.
 _DOL_COUNTER_PENALTY = 2
 
+# SMT divergence 상관 페어 (#SMT 2026-06-06). BTC↔ETH 만 — 상관도 높아 다이버전스
+# 신뢰도 유효. 짝 없는 알트 심볼은 SMT 평가 skip (매핑에 없으면 None).
+_SMT_CORR_PAIRS: dict[str, str] = {
+    "BTCUSDT": "ETHUSDT",
+    "ETHUSDT": "BTCUSDT",
+}
+
 
 @dataclass(slots=True)
 class _ActivePosition:
@@ -221,6 +229,8 @@ class BotIctInstance:
     step_interval_sec: int = 60
     ohlcv_limit: int = 200
     fvg_min_size_pct: float = 0.0005
+    # SMT divergence (BTC↔ETH 상관) confluence 가점 활성 — #SMT 2026-06-06.
+    smt_enabled: bool = True
     # FVG 이후 N 봉 안에 retest 없으면 진입 skip. 1h → 10시간.
     setup_stale_bars: int = 10
     # LuxAlgo SB Strict mode — True 면 FVG mean threshold 까지 retrace 된 setup 만 진입.
@@ -693,6 +703,9 @@ class BotIctInstance:
         # #CISD 2026-06-06: 가격 전달 전환(CISD)이 setup 방향과 일치하면 confluence +1.
         # MSS 1캔들 micro 신호 — 게이트·qty 산정 전에 적용돼야 효과.
         self._apply_cisd_boost(signal.setup, df)
+        # #SMT 2026-06-06: 상관 자산(BTC↔ETH) divergence 가 setup 방향과 일치하면 +1.
+        # 게이트·qty 산정 전에 적용. corr 심볼 OHLCV fetch 필요해 async.
+        await self._apply_smt_boost(signal.setup, df)
         # B+ 등급 게이트 (#1/#8) — HTF boost 까지 반영된 최종 score 가 기준 미만이면 skip.
         # 빈도↓·품질↑ (하루 ~4~5개 목표). min_confluence=0 이면 비활성(기존 동작).
         if signal.setup.confluence_score < self.min_confluence:
@@ -887,9 +900,14 @@ class BotIctInstance:
         """OHLCV fetch + DataFrame 변환 (Trade TF)."""
         return await self._fetch_ohlcv_tf(self.timeframe, self.ohlcv_limit)
 
-    async def _fetch_ohlcv_tf(self, tf: str, limit: int) -> pd.DataFrame:
-        """임의 timeframe OHLCV fetch + DataFrame 변환."""
-        rows = await self.client.fetch_ohlcv(self.symbol, tf, limit)
+    async def _fetch_ohlcv_tf(
+        self, tf: str, limit: int, *, symbol: str | None = None,
+    ) -> pd.DataFrame:
+        """임의 timeframe OHLCV fetch + DataFrame 변환.
+
+        symbol 미지정 시 self.symbol. SMT 등 상관 심볼 fetch 용으로 symbol 주입 가능.
+        """
+        rows = await self.client.fetch_ohlcv(symbol or self.symbol, tf, limit)
         df = pd.DataFrame(
             rows,
             columns=["ts_ms", "open", "high", "low", "close", "volume"],
@@ -1736,6 +1754,47 @@ class BotIctInstance:
             logger.info(
                 "CISD 순응 가점 — setup=%s cisd=%s score→%d",
                 setup.direction.value, cisd.value, setup.confluence_score,
+            )
+
+    async def _apply_smt_boost(
+        self, setup: SilverBulletSetup, df: pd.DataFrame,
+    ) -> None:
+        """SMT divergence(상관 자산) 순응 시 confluence +1 (#SMT 2026-06-06).
+
+        정통 ICT: 두 상관 자산(BTC↔ETH)이 같은 시점 swing 에서 한쪽만 새 고/저점을
+        박으면 '기관 흐름 누설' — 못 따라온 쪽의 반전 신호. self.symbol swing 과 상관
+        심볼 OHLCV 를 비교해 최근 divergence 방향이 setup 과 일치하면 가점.
+        짝 없는 알트 심볼·비활성·fetch 실패·divergence 없음 → 무영향(가점 X).
+        """
+        if not self.smt_enabled:
+            return
+        corr_symbol = _SMT_CORR_PAIRS.get(self.symbol)
+        if corr_symbol is None:
+            return  # 상관 짝 없는 심볼 — SMT 적용 불가.
+        main_swings = detect_swing_points(df)
+        if len(main_swings) < 2:
+            return
+        try:
+            corr_df = await self._fetch_ohlcv_tf(
+                self.timeframe, self.ohlcv_limit, symbol=corr_symbol,
+            )
+        except Exception as e:  # noqa: BLE001 — corr fetch 실패가 진입 막으면 안 됨
+            logger.debug("SMT corr OHLCV fetch 실패 (%s): %s — skip", corr_symbol, e)
+            return
+        if len(corr_df) == 0:
+            return
+        events = detect_smt_divergence(main_swings, corr_df)
+        if not events:
+            return
+        latest = events[-1]
+        want = SmtType.BULLISH if setup.direction is Direction.LONG else SmtType.BEARISH
+        if latest.type is want:
+            setup.confluence_score += 1
+            setup.confluences.append(f"smt={latest.type.value}@{latest.ts_ms}")
+            logger.info(
+                "SMT 순응 가점 — setup=%s smt=%s (corr=%s) score→%d",
+                setup.direction.value, latest.type.value, corr_symbol,
+                setup.confluence_score,
             )
 
     async def _fetch_equity(self) -> float:

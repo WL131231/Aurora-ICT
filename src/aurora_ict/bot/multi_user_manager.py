@@ -317,6 +317,7 @@ class MultiUserBotManager:
             min_confluence=settings.min_confluence,
             high_rr_bypass_min_rr=settings.high_rr_bypass_min_rr,
             fvg_min_size_pct=settings.fvg_min_size_pct,
+            smt_enabled=settings.smt_enabled,
             step_interval_sec=settings.step_interval_sec,
             ohlcv_limit=settings.ohlcv_limit,
             setup_stale_bars=settings.setup_stale_bars,
