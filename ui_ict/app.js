@@ -37,7 +37,8 @@ const MARKER_LIMIT = 2000;
 let _chartViewInitialized = false;
 // 기본 줌 — 최근 N봉만 보이게(봉 크게). autoScale 가 보이는 봉 기준으로 가격축
 // 자동 맞춤 → 최근 가격대에 집중된 뷰. (값 ↓ = 더 확대)
-const CHART_INIT_VISIBLE_BARS = 90;
+// 2026-06-06 파트너 요청: 살짝 축소 — 약 1.5시간(90봉) → 약 5시간(300봉) 뷰.
+const CHART_INIT_VISIBLE_BARS = 300;
 // 마지막 setData 봉 수 — 우측 가격축 클릭 리셋 + 봉 추적(auto-scroll) 판정용.
 let _lastCandleCount = 0;
 
