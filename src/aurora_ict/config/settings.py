@@ -138,6 +138,11 @@ class IctSettings(BaseSettings):
     # rr 2.5+ 1점 셋업은 confluence 게이트 우회 (손익비 좋은 단일신호 살리기).
     # 2026-06-05: 매매 빈도 너무 낮아 2.5 → 2.3 하향 (1점 셋업 진입 문턱 완화).
     high_rr_bypass_min_rr: float = Field(default=2.3, ge=0.0)
+    # SMT divergence (BTC↔ETH 상관) confluence 가점 — #SMT 2026-06-06.
+    # 두 상관 자산이 같은 시점 swing 에서 한쪽만 새 고/저점을 박으면 '기관 흐름
+    # 누설' → 못 따라온 쪽 반전 신호. setup 방향과 일치 시 confluence +1.
+    # 짝 없는 알트 심볼은 자동 skip. False 면 SMT 평가 자체 안 함.
+    smt_enabled: bool = Field(default=True)
     # FVG 최소 % size — 지난 12거래 분석 결과 작은 FVG 노이즈 비중 커서 0.0004 → 0.0006 상향.
     fvg_min_size_pct: float = Field(default=0.0006, ge=0)
     step_interval_sec: int = Field(default=60, ge=10)

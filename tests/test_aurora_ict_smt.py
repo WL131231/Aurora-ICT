@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Any
+from unittest.mock import AsyncMock
+
 import pandas as pd
 import pytest
 
+from aurora_ict.bot.bot_ict_instance import BotIctInstance
 from aurora_ict.indicators.smt import (
     SmtType,
     detect_smt_divergence,
@@ -14,6 +18,7 @@ from aurora_ict.indicators.swing_points import (
     SwingType,
     detect_swing_points,
 )
+from aurora_ict.strategy.silver_bullet import Direction, SilverBulletSetup
 
 
 def _make_df(bars: list[tuple[float, float, float, float]]) -> pd.DataFrame:
@@ -202,3 +207,83 @@ def test_smt_pipeline_integration() -> None:
     events = detect_smt_divergence(swings, corr_df)
     bearish = [e for e in events if e.type is SmtType.BEARISH]
     assert len(bearish) >= 1
+
+
+# ============================================================
+# bot 통합 — _apply_smt_boost (#SMT 2026-06-06, confluence 가점 배선)
+# ============================================================
+
+
+def _main_df_ll() -> pd.DataFrame:
+    """main(BTC) swing low pair = LL (95 → 92). swing high 는 idx2 단일(pair 없음)."""
+    return _make_df([
+        (100, 100, 99, 100),
+        (98, 98, 95, 96),     # swing low 1 = 95
+        (100, 100, 99, 100),  # swing high (단일)
+        (98, 98, 92, 93),     # swing low 2 = 92 (LL)
+        (100, 100, 99, 100),
+        (100, 100, 99, 100),
+        (100, 100, 99, 100),
+    ])
+
+
+def _corr_rows_hl() -> list[list[Any]]:
+    """corr(ETH) — 같은 시점 low 가 HL (195 → 198): main LL 과 divergence → bullish."""
+    lows = [199, 195, 199, 198, 199, 199, 199]
+    return [[i * 60_000, 200.0, 201.0, lo, 200.0, 100.0] for i, lo in enumerate(lows)]
+
+
+def _setup(direction: Direction) -> SilverBulletSetup:
+    return SilverBulletSetup(
+        ts_ms=0, direction=direction, window="am_sb",
+        entry=100.0, stop_loss=99.0, take_profit=103.0, risk_reward=3.0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_smt_boost_adds_score_on_match() -> None:
+    """bullish SMT(main LL + corr HL) + LONG setup → confluence +1."""
+    client = AsyncMock()
+    client.fetch_ohlcv = AsyncMock(return_value=_corr_rows_hl())
+    bot = BotIctInstance(client=client, symbol="BTCUSDT", smt_enabled=True)
+    setup = _setup(Direction.LONG)
+    await bot._apply_smt_boost(setup, _main_df_ll())
+    assert setup.confluence_score == 1
+    assert any(c.startswith("smt=bullish") for c in setup.confluences)
+    # corr 심볼(ETHUSDT)로 fetch 했는지 확인.
+    assert client.fetch_ohlcv.await_args_list[0].args[0] == "ETHUSDT"
+
+
+@pytest.mark.asyncio
+async def test_apply_smt_boost_no_score_on_mismatch() -> None:
+    """bullish SMT + SHORT setup → 가점 없음 (방향 불일치)."""
+    client = AsyncMock()
+    client.fetch_ohlcv = AsyncMock(return_value=_corr_rows_hl())
+    bot = BotIctInstance(client=client, symbol="BTCUSDT", smt_enabled=True)
+    setup = _setup(Direction.SHORT)
+    await bot._apply_smt_boost(setup, _main_df_ll())
+    assert setup.confluence_score == 0
+
+
+@pytest.mark.asyncio
+async def test_apply_smt_boost_skips_when_disabled() -> None:
+    """smt_enabled=False → corr fetch 자체를 안 하고 가점 없음."""
+    client = AsyncMock()
+    client.fetch_ohlcv = AsyncMock(return_value=_corr_rows_hl())
+    bot = BotIctInstance(client=client, symbol="BTCUSDT", smt_enabled=False)
+    setup = _setup(Direction.LONG)
+    await bot._apply_smt_boost(setup, _main_df_ll())
+    assert setup.confluence_score == 0
+    client.fetch_ohlcv.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_smt_boost_skips_unpaired_symbol() -> None:
+    """상관 짝 없는 알트 심볼 → SMT 적용 안 함 (가점 0, fetch 0)."""
+    client = AsyncMock()
+    client.fetch_ohlcv = AsyncMock(return_value=_corr_rows_hl())
+    bot = BotIctInstance(client=client, symbol="SOLUSDT", smt_enabled=True)
+    setup = _setup(Direction.LONG)
+    await bot._apply_smt_boost(setup, _main_df_ll())
+    assert setup.confluence_score == 0
+    client.fetch_ohlcv.assert_not_awaited()
