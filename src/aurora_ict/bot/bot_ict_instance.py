@@ -63,7 +63,7 @@ from aurora_ict.strategy.multi_tf_bias import (
 )
 from aurora_ict.strategy.silver_bullet import Direction, SilverBulletSetup
 from aurora_ict.strategy.trend_state import TrendState, evaluate_trend
-from aurora_ict.timing.killzone import classify_killzone
+from aurora_ict.timing.killzone import classify_killzone, in_trade_window_sub
 
 logger = logging.getLogger(__name__)
 
@@ -642,6 +642,22 @@ class BotIctInstance:
             else str(signal.setup.source),
             signal.setup.window,
         )
+
+        # #KZ-ENTRY 2026-06-06 (파트너 신고): 진입 '시점' 킬존 게이트 — sub_*
+        # (disable_time_filter=False) 한정. silver_bullet 의 시간 필터는 FVG '생성
+        # 시점'(fvg.ts_ms)만 검사하므로, 킬존에 형성된 셋업이 retrace 로 한참 뒤
+        # '진입 시점'엔 킬존 밖일 수 있다 (13:16 KST=미장 밖 진입 발견). 진입 직전
+        # 현재(마지막 닫힌) 봉도 in_trade_window_sub 통과하는지 재확인.
+        # referral(24h)·disable_time_filter=True 사용자는 영향 없음.
+        if not self.disable_time_filter:
+            last_ts_ms = int(df.index[-1].value // 10**6)
+            if not in_trade_window_sub(last_ts_ms):
+                logger.info(
+                    "진입 skip — 현재 봉 킬존 밖 (sub_* 시간 필터, setup window=%s)",
+                    signal.setup.window,
+                )
+                self._last_setup_ts_ms = signal.setup.ts_ms
+                return signal
 
         # 2026-05-29 #SILENT-1: 복원 실패 상태에서는 신규 진입 차단.
         # 거래소 측 활성 포지션이 있는데 봇이 인식 못 하면 중복 진입 위험.

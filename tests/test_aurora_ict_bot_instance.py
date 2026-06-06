@@ -115,6 +115,50 @@ async def test_step_executes_long_setup() -> None:
 
 
 @pytest.mark.asyncio
+async def test_step_blocks_entry_outside_killzone_for_sub_license() -> None:
+    """#KZ-ENTRY 2026-06-06: sub_* (disable_time_filter=False) — FVG 가 킬존(미장)에
+    형성됐어도 진입 '시점'(마지막 닫힌 봉)이 킬존 밖이면 진입 skip.
+
+    구성: NY 15:48 시작 14봉 1분봉 → 앞 봉들은 PM 킬존(NYSE 09:30-16:00 내, FVG
+    통과), 마지막 봉(16:01)은 NYSE 마감 후 → 진입 게이트가 차단.
+    """
+    start = datetime(2026, 5, 12, 15, 48, tzinfo=NY)
+    rows = _ohlcv_rows(start, _bars_long_setup())
+    client = _mock_client(rows)
+    bot = BotIctInstance(
+        client=client,
+        symbol="BTCUSDT",
+        min_rr=1.0,
+        fvg_min_size_pct=0.001,
+        disable_time_filter=False,  # sub_* 라이선스 정책
+    )
+    sig = await bot.step()
+    # 셋업 자체는 검출됨(FVG 가 킬존에 형성) — 진입 '게이트'가 막은 것임을 확정.
+    assert sig.action is SignalAction.ENTER_LONG
+    assert client.place_order.await_count == 0   # 킬존 밖 진입 차단
+    assert bot.active_position is None
+
+
+@pytest.mark.asyncio
+async def test_step_allows_entry_inside_killzone_for_sub_license() -> None:
+    """#KZ-ENTRY: sub_* 여도 진입 시점이 킬존 안이면 정상 진입 (게이트 통과 확인)."""
+    start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)  # 전부 London Close 킬존
+    rows = _ohlcv_rows(start, _bars_long_setup())
+    client = _mock_client(rows)
+    bot = BotIctInstance(
+        client=client,
+        symbol="BTCUSDT",
+        min_rr=1.0,
+        fvg_min_size_pct=0.001,
+        disable_time_filter=False,
+    )
+    sig = await bot.step()
+    assert sig.action is SignalAction.ENTER_LONG
+    assert client.place_order.await_count == 1
+    assert bot.active_position is not None
+
+
+@pytest.mark.asyncio
 async def test_step_grade_gate_skips_low_confluence() -> None:
     """B+ 등급 게이트 (#1/#8) — 최종 confluence_score 미달이면 신호는 잡혀도 진입 skip."""
     start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
