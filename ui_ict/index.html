@@ -295,18 +295,15 @@
   .pair-add-btn:hover:not(:disabled) { border-color: #34d399; color: #34d399; }
   .pair-add-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .pair-select-btn {
-    /* 2026-06-06: 차트 페어 버튼 살짝 축소 (toolbar 정렬) — flex-grow 없음(안 커짐). */
-    padding: 5px 10px;
+    padding: 6px 12px;
     background: var(--surface);
     border: 1px solid var(--line);
     color: var(--text-1);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     border-radius: 4px;
     cursor: pointer;
     font-family: inherit;
-    flex: 0 0 auto;
-    white-space: nowrap;
   }
   .pair-select-btn:hover { border-color: var(--line-strong); }
   .pair-picker-overlay {
@@ -379,10 +376,7 @@
   .chart-toolbar {
     display: flex;
     align-items: center;
-    /* 2026-06-06: space-between(4요소 균등분산) → flex-start + gap 으로 좌측 정렬.
-       빈 공간 제거 + 요소 간 일정 간격. 심볼 라벨만 margin-left:auto 로 우측 끝. */
-    justify-content: flex-start;
-    gap: 10px;
+    justify-content: space-between;
     padding: 8px 16px;
     background: var(--bg-2);
     border-bottom: 1px solid var(--line);
@@ -425,7 +419,7 @@
     border-radius: 4px;
     padding: 2px;
     border: 1px solid var(--line);
-    /* margin-left 제거 — chart-toolbar gap 이 간격 처리 (2026-06-06). */
+    margin-left: 12px;
   }
   .viz-toggle button {
     width: auto;
@@ -467,9 +461,6 @@
     font-size: 11px;
     letter-spacing: 0.1em;
     color: var(--text-2);
-    /* toolbar 좌측 정렬(flex-start)에서 심볼 라벨만 우측 끝으로 (2026-06-06). */
-    margin-left: auto;
-    white-space: nowrap;
   }
   /* 연결 상태 표시 (사이드바) */
   .row .v.conn-ok    { color: #34d399; }
