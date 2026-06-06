@@ -1496,6 +1496,13 @@
     color: var(--text-1);
     border-color: var(--line-strong);
   }
+  /* 2026-06-06 파트너 요청: DEMO 모드 UI 제거 — 실매매(LIVE)만. 백엔드 demo
+     코드는 유지(dormant)하고 진입점만 숨김. app.js 의 demo 요소 참조는 살아있어
+     (display:none) null 에러 없음. */
+  #btn-demo,
+  #cred-mode-toggle button[data-cred-mode="demo"],
+  #cred-slot-demo { display: none !important; }
+
   /* 2026-05-29: Live 모드 — DEMO/LIVE 슬롯 분리 UI */
   .cred-mode-toggle {
     display: flex;
@@ -2100,14 +2107,14 @@
          Bybit 은 Demo / Live 가 별도 시스템 → 키도 별도 발급 필요. -->
     <div class="cred-form" id="cred-form-block">
       <div class="cred-mode-toggle" id="cred-mode-toggle">
-        <button type="button" data-cred-mode="demo" class="active">DEMO</button>
-        <button type="button" data-cred-mode="live">LIVE</button>
+        <button type="button" data-cred-mode="demo">DEMO</button>
+        <button type="button" data-cred-mode="live" class="active">LIVE</button>
       </div>
       <input id="cred-api-key" type="password" placeholder="API Key" autocomplete="off" />
       <input id="cred-api-secret" type="password" placeholder="API Secret" autocomplete="off" />
       <button id="btn-save-cred">SAVE KEYS</button>
       <p class="cred-hint" id="cred-form-hint">
-        <b>DEMO</b> 슬롯 — Bybit Demo Trading 키
+        <b>LIVE</b> 슬롯 — Bybit 실거래 키
       </p>
     </div>
     <!-- 등록 완료 상태 — 두 모드 슬롯 각각 표시 (2026-05-29 분리).

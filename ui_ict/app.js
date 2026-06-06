@@ -1062,7 +1062,7 @@ $("btn-save-cred").onclick = async () => {
   const activeBtn = document.querySelector(
     "#cred-mode-toggle button[data-cred-mode].active",
   );
-  const mode = activeBtn ? activeBtn.dataset.credMode : "demo";
+  const mode = activeBtn ? activeBtn.dataset.credMode : "live";
   // LIVE 슬롯 등록 시 한 번 더 확인 — 실수로 LIVE 슬롯에 데모 키 넣는 사고 방지.
   if (mode === "live") {
     const ok = confirm(
