@@ -280,6 +280,20 @@ def _aggregate_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+async def _resolve_seed(seed_provider: Any, user_code: str) -> float | None:
+    """seed_provider(user_code) 안전 호출 — 미주입/실패 시 None.
+
+    매매기록 화면의 '현재 시드' 카드용. 거래소 조회 실패가 매매기록 표시
+    자체를 막지 않도록 예외를 삼키고 None 반환.
+    """
+    if seed_provider is None:
+        return None
+    try:
+        return await seed_provider(user_code)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class _LicenseUpdateRequest(BaseModel):
     """라이선스 정보 정정 요청 — admin 만 호출 가능 (2026-05-29)."""
 
@@ -295,6 +309,7 @@ def create_trades_router(
     *,
     secure_cookie: bool = True,
     auth_db_path: Path | None = None,
+    seed_provider: Any = None,
 ) -> APIRouter:
     """매매 로그 router — auth dep 를 주입 (SaaS / .exe 양쪽 호환).
 
@@ -308,6 +323,9 @@ def create_trades_router(
         auth_db_path: users.db 경로. 라이선스 admin endpoint
             (``/admin/user/license``) 가 사용. None 이면 license endpoint 등록
             안 함 (단일 사용자 / .exe 흐름 호환).
+        seed_provider: async (user_code) -> float | None. 사용자의 현재 USDT
+            지갑 잔고(시드) 조회 콜백. SaaS 는 mu_manager.get_seed_usdt 주입,
+            단일/.exe 는 None(시드 표시 생략).
 
     Returns:
         FastAPI APIRouter — prefix 없음 (`/ict/trades`, `/admin/trades` 등).
@@ -332,6 +350,7 @@ def create_trades_router(
             "trades": rows,
             "count": len(rows),
             "stats": _aggregate_stats(rows),
+            "current_seed_usdt": await _resolve_seed(seed_provider, user_code),
         }
 
     @router.get("/ict/trades/export")
@@ -373,6 +392,7 @@ def create_trades_router(
             "trades": rows,
             "count": len(rows),
             "stats": _aggregate_stats(rows),
+            "current_seed_usdt": await _resolve_seed(seed_provider, user_code),
         }
 
     @router.get("/admin/trades/export")

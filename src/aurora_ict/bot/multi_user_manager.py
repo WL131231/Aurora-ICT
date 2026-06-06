@@ -783,6 +783,55 @@ class MultiUserBotManager:
             "running_symbols": running_symbols,
         }
 
+    async def get_seed_usdt(self, user_code: str) -> float | None:
+        """사용자의 현재 USDT 지갑 잔고(시드) 조회 — 매매기록 화면 표시용.
+
+        가동 중이면 해당 슬롯의 client 를 재사용(추가 연결 없음), 비가동이면
+        LIVE 키로 임시 client 를 만들어 1회 조회 후 즉시 닫는다. 키 미등록·무효
+        (retCode 10003)·조회 실패 시 None (UI 는 '—' 로 표시).
+
+        Args:
+            user_code: 대상 사용자 라이선스 코드.
+
+        Returns:
+            USDT total 잔고(float) 또는 None.
+        """
+        # 1) 가동 중 슬롯 client 재사용 — 기존 세션이라 부하 최소.
+        for (u, _sym), slot in self._slots.items():
+            if u == user_code and slot.client is not None:
+                return await self._usdt_total(slot.client)
+        # 2) 비가동 — LIVE 키가 있으면 임시 client 로 1회 조회 후 닫는다.
+        if users_db.get_api_keys(self.db_path, user_code, "live") is None:
+            return None
+        try:
+            settings = self._build_user_settings(
+                user_code, _DEFAULT_SYMBOL, force_run_mode=RunMode.LIVE,
+            )
+            client = await self.client_factory(settings)
+        except Exception:  # noqa: BLE001
+            return None
+        try:
+            return await self._usdt_total(client)
+        finally:
+            await self._safe_close_client(client)
+
+    @staticmethod
+    async def _usdt_total(client: object) -> float | None:
+        """client.fetch_balance() 에서 USDT total 추출. 실패/부재 시 None."""
+        fetch = getattr(client, "fetch_balance", None)
+        if not callable(fetch):
+            return None
+        try:
+            bal = await fetch()
+        except Exception:  # noqa: BLE001
+            return None
+        usdt = (bal or {}).get("USDT") or {}
+        total = usdt.get("total")
+        try:
+            return float(total) if total is not None else None
+        except (TypeError, ValueError):
+            return None
+
     async def stop_all(self) -> None:
         """모든 사용자 × 모든 symbol 봇 정지 — 서버 종료 시 호출.
 

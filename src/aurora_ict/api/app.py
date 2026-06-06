@@ -283,6 +283,7 @@ def _register_multi_user_routes(
             require_auth,
             secure_cookie=secure_cookie,
             auth_db_path=db_path,
+            seed_provider=mu_manager.get_seed_usdt,
         ),
     )
 

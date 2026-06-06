@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -95,7 +96,12 @@ def _create_user_trades(
     return db_path
 
 
-def _make_app(data_dir: Path, current_user: str = "AICT-TEST-USER-0001") -> FastAPI:
+def _make_app(
+    data_dir: Path,
+    current_user: str = "AICT-TEST-USER-0001",
+    *,
+    seed_provider: Any = None,
+) -> FastAPI:
     """trades_router 만 등록한 가벼운 FastAPI app — require_auth 는 고정 코드 반환.
 
     secure_cookie=False — TestClient 는 HTTP 라 Secure 쿠키가 후속 요청에
@@ -107,7 +113,10 @@ def _make_app(data_dir: Path, current_user: str = "AICT-TEST-USER-0001") -> Fast
         return current_user
 
     app.include_router(
-        create_trades_router(data_dir, _fake_require_auth, secure_cookie=False),
+        create_trades_router(
+            data_dir, _fake_require_auth, secure_cookie=False,
+            seed_provider=seed_provider,
+        ),
     )
     return app
 
@@ -214,7 +223,40 @@ def test_get_my_trades_returns_empty_when_no_db(data_dir):
     client = TestClient(app)
     r = client.get("/ict/trades")
     assert r.status_code == 200
-    assert r.json() == {"trades": [], "count": 0, "stats": _aggregate_stats([])}
+    assert r.json() == {
+        "trades": [],
+        "count": 0,
+        "stats": _aggregate_stats([]),
+        "current_seed_usdt": None,
+    }
+
+
+def test_my_trades_includes_seed_when_provider_set(data_dir):
+    """seed_provider 주입 시 current_seed_usdt 에 잔고 반영."""
+    async def _seed(user_code: str) -> float:
+        return 1234.56
+
+    app = _make_app(
+        data_dir, current_user="AICT-SEED-SEED-SEED", seed_provider=_seed,
+    )
+    client = TestClient(app)
+    r = client.get("/ict/trades")
+    assert r.status_code == 200
+    assert r.json()["current_seed_usdt"] == 1234.56
+
+
+def test_my_trades_seed_none_when_provider_raises(data_dir):
+    """seed_provider 가 예외를 던져도 매매기록은 정상 + current_seed_usdt=None."""
+    async def _seed_boom(user_code: str) -> float:
+        raise RuntimeError("거래소 조회 실패")
+
+    app = _make_app(
+        data_dir, current_user="AICT-SEED-BOOM-0001", seed_provider=_seed_boom,
+    )
+    client = TestClient(app)
+    r = client.get("/ict/trades")
+    assert r.status_code == 200
+    assert r.json()["current_seed_usdt"] is None
 
 
 # ============================================================
