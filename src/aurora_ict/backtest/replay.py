@@ -47,6 +47,7 @@ class BacktestConfig:
     expand_to_killzone: bool = False
     # --- 시뮬/비용 ---
     window: int = 500  # 슬라이딩 lookback 봉 수 (detect 입력 길이)
+    entry_ttl_bars: int = 5  # limit 체결 대기 봉 수 (entry_limit_ttl_sec 300s / 60s @1m)
     leverage: float = 20.0
     size_pct: float = 0.3  # 시드 대비 포지션 (고정 — 상대 비교용)
     sl_priority: bool = True  # 같은 봉 SL/TP 동시 도달 시 SL 우선(보수)
@@ -114,6 +115,28 @@ def _gate_pass(score: int, rr: float, cfg: BacktestConfig) -> bool:
     )
 
 
+def _simulate_fill(
+    highs, lows, signal_idx: int, direction: Direction,
+    limit: float, ttl_bars: int,
+) -> int | None:
+    """limit(setup.entry) 가격이 ttl_bars 봉 내 닿으면 체결 봉 idx, 안 닿으면 None.
+
+    ICT 는 retrace limit 진입 — 신호 후 가격이 FVG mean(entry) 까지 되돌아와야
+    체결. TTL 안에 안 닿으면 타점 포기(미체결). bot 의 marketable limit + TTL 재현.
+
+    - LONG: 가격이 내려와 low <= entry 면 체결
+    - SHORT: 가격이 올라와 high >= entry 면 체결
+    """
+    n = len(highs)
+    end = min(signal_idx + 1 + ttl_bars, n)
+    for j in range(signal_idx + 1, end):
+        if direction is Direction.LONG and float(lows[j]) <= limit:
+            return j
+        if direction is Direction.SHORT and float(highs[j]) >= limit:
+            return j
+    return None
+
+
 def _simulate_exit(
     highs, lows, closes, entry_idx: int, direction: Direction,
     sl: float, tp: float, cfg: BacktestConfig,
@@ -174,24 +197,29 @@ def run_backtest(df: pd.DataFrame, cfg: BacktestConfig) -> BacktestResult:
         if not _gate_pass(setup.confluence_score, setup.risk_reward, cfg):
             i += 1
             continue
-        # 진입 — 계획 limit 즉시 체결 가정 + 진입 슬리피지 (불리 방향).
-        d_val = setup.direction.value
-        slip = slip_pct(
-            float(window["high"].iloc[-1]),
-            float(window["low"].iloc[-1]),
-            float(window["close"].iloc[-1]),
+        # 체결 시뮬 — limit(setup.entry)에 ttl 봉 내 가격이 닿아야 체결. 미체결이면 skip.
+        fill_idx = _simulate_fill(
+            highs, lows, i, setup.direction, setup.entry, cfg.entry_ttl_bars,
         )
-        entry = apply_slippage(setup.entry, d_val, "entry", slip)
+        if fill_idx is None:
+            i += 1
+            continue  # 타점 미도달 — 미체결(타점 포기)
+        d_val = setup.direction.value
+        # limit 체결이라 entry 슬리피지 0 (계획가 그대로). 청산만 슬리피지(시장가 발동).
+        entry = setup.entry
         exit_idx, exit_raw, outcome = _simulate_exit(
-            highs, lows, closes, i, setup.direction,
+            highs, lows, closes, fill_idx, setup.direction,
             setup.stop_loss, setup.take_profit, cfg,
         )
-        exit_price = apply_slippage(exit_raw, d_val, "exit", slip)
+        exit_slip = slip_pct(
+            float(highs[exit_idx]), float(lows[exit_idx]), float(closes[exit_idx]),
+        )
+        exit_price = apply_slippage(exit_raw, d_val, "exit", exit_slip)
         sign = 1.0 if setup.direction is Direction.LONG else -1.0
         raw_pnl_pct = (exit_price - entry) / entry * sign
         net_pnl_pct, _ = apply_costs(raw_pnl_pct, cfg.size_pct, cfg.leverage)
         trades.append(Trade(
-            entry_idx=i, exit_idx=exit_idx, direction=d_val,
+            entry_idx=fill_idx, exit_idx=exit_idx, direction=d_val,
             entry=entry, exit_price=exit_price, outcome=outcome,
             raw_pnl_pct=raw_pnl_pct, net_pnl_pct=net_pnl_pct,
             confluence_score=setup.confluence_score,
