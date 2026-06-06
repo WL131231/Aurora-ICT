@@ -274,6 +274,10 @@ function _addBoxSeries(startSec, endSec, top, bottom, fillColor, lineColor) {
     priceLineVisible: false,
     lastValueVisible: false,
     crosshairMarkerVisible: false,
+    // 2026-06-06: 존 박스(OB/FVG/IFVG/Breaker/Sweep)는 가격축 autoScale 계산에서
+    // 제외. 멀리 떨어진 존 때문에 가격축이 넓어져 캔들이 위아래로 압축되는 문제
+    // 해결 — 캔들 기준으로만 스케일하고, 존은 그 범위 안에서만 보이게 한다.
+    autoscaleInfoProvider: () => null,
   });
   series.setData([
     { time: startSec, value: top },
@@ -359,6 +363,8 @@ function renderBosSegments(structureList) {
       priceLineVisible: false,
       lastValueVisible: false,
       crosshairMarkerVisible: false,
+      // 구조 segment(BOS/CHoCH)도 가격축 autoScale 에서 제외 — 캔들 기준 유지.
+      autoscaleInfoProvider: () => null,
     });
     series.setData([
       { time: t1, value: ev.broken_level },
@@ -396,6 +402,8 @@ function renderEqlSegments(equalLevels) {
       priceLineVisible: false,
       lastValueVisible: false,
       crosshairMarkerVisible: false,
+      // EQH/EQL segment 도 가격축 autoScale 에서 제외 — 캔들 기준 유지.
+      autoscaleInfoProvider: () => null,
     });
     series.setData([
       { time: t1, value: lvl.price },
