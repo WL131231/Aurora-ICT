@@ -320,13 +320,23 @@ def _register_multi_user_routes(
 
     @app.post("/ict/start")
     async def start_mu(
-        symbol: str = Query(default=_DEFAULT_SYMBOL),
+        symbol: str | None = Query(default=None),
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
-        # 2026-05-29 PR C: ?symbol= 쿼리 — 사용자가 BTC + ETH 등 여러 페어를
-        # 각각 가동할 수 있게. 한 사용자가 BTC 가동 중에도 ETH 별도 가동 가능.
-        # 2026-05-29 진단 로그: ETH 가동 즉시 꺼짐 보고 추적 — symbol 별로 어느
-        # 단계에서 실패하는지 정확히 찾기 위해 시도/성공/실패 모두 로깅.
+        # 2026-06-06: symbol 미지정(전체 START 버튼)이면 선호 페어(last_active_pairs)
+        # 를 모두 복원 가동 — STOP→START 시 BTC 만 켜지던 문제 해소. symbol 명시
+        # (페어 추가/모달)면 그 페어만 개별 가동(기존 동작).
+        if not symbol:
+            logger.info("/ict/start 전체 — code=%s 선호 페어 복원", user_code)
+            try:
+                restored = await mu_manager.start_preferred(user_code)
+            except Exception as e:  # noqa: BLE001
+                logger.exception("/ict/start 복원 예외 — code=%s", user_code)
+                raise HTTPException(
+                    status_code=500, detail=f"가동 중 내부 오류: {e}",
+                ) from e
+            logger.info("/ict/start 복원 — code=%s pairs=%s", user_code, restored)
+            return await mu_manager.status(user_code)
         logger.info("/ict/start 호출 — code=%s symbol=%s", user_code, symbol)
         try:
             await mu_manager.start(user_code, symbol)
@@ -356,9 +366,20 @@ def _register_multi_user_routes(
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
         # 2026-05-29 PR C: ?symbol= 쿼리 — 사용자가 BTC 만 정지하고 ETH 는
-        # 계속 가동하는 부분 정지 가능. 미지정 시 BTC default.
+        # 계속 가동하는 부분 정지 가능. 미지정 시 BTC default. 페어 칩으로 끄는
+        # 경우라 forget_preference=True(기본) — 선호에서도 제거.
         await mu_manager.stop(user_code, symbol)
         return await mu_manager.status(user_code, symbol)
+
+    @app.post("/ict/stop-all")
+    async def stop_all_mu(
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        # 2026-06-06: 전체 STOP 버튼 — 모든 가동 페어 정지하되 선호(last_active)는
+        # 유지해서 START 시 복원되게 한다(개별 칩 stop 과 구분).
+        stopped = await mu_manager.stop_user(user_code)
+        logger.info("/ict/stop-all — code=%s stopped=%s", user_code, stopped)
+        return await mu_manager.status(user_code)
 
     @app.get("/ict/running-pairs")
     async def running_pairs_mu(

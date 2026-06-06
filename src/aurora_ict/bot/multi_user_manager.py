@@ -535,6 +535,10 @@ class MultiUserBotManager:
                 users_db.set_bot_running(
                     self.db_path, user_code, True, symbol=symbol,
                 )
+                # 2026-06-06: 선호 페어 집합에도 추가 — 전체 STOP→START 시 복원용.
+                users_db.set_last_active_pair(
+                    self.db_path, user_code, symbol, True,
+                )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "사용자 %s/%s bot_running 영속화 실패 (무시): %s",
@@ -561,6 +565,7 @@ class MultiUserBotManager:
 
     async def stop(
         self, user_code: str, symbol: str = _DEFAULT_SYMBOL,
+        *, forget_preference: bool = True,
     ) -> None:
         """사용자 × symbol 봇 정지 + client close.
 
@@ -575,6 +580,8 @@ class MultiUserBotManager:
         Args:
             user_code: 대상 사용자 라이선스 코드.
             symbol: ccxt 형식 페어 (기본 BTC).
+            forget_preference: True(기본)면 선호 페어 집합에서도 제거(페어 칩으로
+                끈 경우). 전체 STOP 은 False 로 호출해 선호를 유지 → START 시 복원.
         """
         key: SlotKey = (user_code, symbol)
         slot = self._slots.get(key)
@@ -585,6 +592,11 @@ class MultiUserBotManager:
             users_db.set_bot_running(
                 self.db_path, user_code, False, symbol=symbol,
             )
+            # 2026-06-06: 페어 칩으로 끈 경우만 선호에서 제거. 전체 STOP 은 유지.
+            if forget_preference:
+                users_db.set_last_active_pair(
+                    self.db_path, user_code, symbol, False,
+                )
         except Exception as e:  # noqa: BLE001
             logger.warning(
                 "사용자 %s/%s bot_running 영속화 실패 (무시): %s",
@@ -599,6 +611,51 @@ class MultiUserBotManager:
             "MultiUserBotManager: 사용자 %s 봇 정지 (symbol=%s)",
             user_code, symbol,
         )
+
+    async def start_preferred(
+        self, user_code: str, *, force_run_mode: RunMode | None = None,
+    ) -> list[str]:
+        """선호 페어(last_active_pairs)를 모두 가동 — 전체 START 복원용.
+
+        2026-06-06: 봇 STOP→START 시 BTC 만 켜지던 문제 해소. 사용자가 마지막에
+        가동했던 페어들을 그대로 복원한다. 선호가 비어있으면 기본 BTC 1개.
+
+        Returns:
+            가동된 symbol 목록.
+        """
+        pairs = users_db.get_last_active_pairs(self.db_path, user_code)
+        if not pairs:
+            pairs = [_DEFAULT_SYMBOL]
+        started: list[str] = []
+        for sym in pairs:
+            try:
+                await self.start(user_code, sym, force_run_mode=force_run_mode)
+                started.append(sym)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "start_preferred 실패 %s/%s: %s", user_code, sym, e,
+                )
+        return started
+
+    async def stop_user(self, user_code: str) -> list[str]:
+        """사용자의 모든 가동 페어 정지 — 전체 STOP. 선호(last_active)는 유지.
+
+        2026-06-06: bot_running_symbols + 현재 슬롯을 합쳐 모든 페어 정지하되,
+        선호 페어 집합은 안 건드려 START 시 복원되게 한다(forget_preference=False).
+
+        Returns:
+            정지된 symbol 목록.
+        """
+        syms = set(users_db.get_bot_running_symbols(self.db_path, user_code))
+        syms |= {s for (u, s) in self._slots if u == user_code}
+        stopped: list[str] = []
+        for sym in syms:
+            try:
+                await self.stop(user_code, sym, forget_preference=False)
+                stopped.append(sym)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("stop_user 실패 %s/%s: %s", user_code, sym, e)
+        return stopped
 
     async def _close_client(self, slot: _UserBotSlot) -> None:
         """ccxt async exchange 의 aiohttp ClientSession 명시 close.
