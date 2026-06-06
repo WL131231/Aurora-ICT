@@ -1009,31 +1009,19 @@ $("btn-start").onclick = async () => {
   // 2026-05-27: 즉시 시각 응답 — fetchAndRender 까지 기다리지 않고 클릭 직후 active.
   $("btn-start").classList.add("active");
   $("btn-stop").classList.remove("active");
-  // 2026-05-29 PR C: START = "현재 차트에 보이는 페어" 가동 (default BTC).
-  // 다른 페어 (ETH 등) 도 가동하려면 사이드바 페어 토글로 별도 클릭.
+  // 2026-06-06: START = 선호 페어(마지막 가동했던 페어들) 모두 복원 가동.
+  // /ict/start 를 symbol 없이 호출하면 백엔드가 last_active_pairs 를 복원한다.
   try { await api("/ict/start", "POST"); toast("봇 시작됨"); await fetchAndRender(); await refreshRunningPairs(); }
   catch (e) { toast(e.message, true); }
 };
 $("btn-stop").onclick = async () => {
-  // 2026-05-27: STOP 클릭 즉시 빨간 glow 표시. /ict/stop 가 pending 미체결 자동 취소.
+  // 2026-05-27: STOP 클릭 즉시 빨간 glow 표시. /ict/stop-all 가 pending 미체결 자동 취소.
   $("btn-stop").classList.add("active");
   $("btn-start").classList.remove("active");
-  // 2026-05-29 PR C: STOP = 사용자의 모든 가동 중 페어 일괄 정지. BTC + ETH 동시
-  // 가동 중이었어도 한 번에 정지. 부분 정지는 페어 토글 사용.
+  // 2026-06-06: 전체 STOP — /ict/stop-all 이 모든 페어 정지하되 선호(last_active)는
+  // 유지 → START 시 복원. (개별 페어 정지는 페어 칩 클릭 = /ict/stop?symbol=)
   try {
-    const r = await api("/ict/running-pairs");
-    const running = (r.running_symbols || []);
-    if (running.length === 0) {
-      // 가동 중 페어 없으면 BTC default 로 stop 호출 (멱등, DB 정리만).
-      await api("/ict/stop", "POST");
-    } else {
-      // 페어별 정지 — 동시 발사 (Promise.all 로 빠르게).
-      await Promise.all(
-        running.map((sym) =>
-          api(`/ict/stop?symbol=${encodeURIComponent(sym)}`, "POST"),
-        ),
-      );
-    }
+    await api("/ict/stop-all", "POST");
     toast("봇 중지됨");
     await fetchAndRender();
     await refreshRunningPairs();

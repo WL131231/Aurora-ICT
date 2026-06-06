@@ -171,6 +171,28 @@ def _ensure_bot_running_symbols_column(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_last_active_pairs_column(conn: sqlite3.Connection) -> None:
+    """2026-06-06: 봇 STOP→START 시 페어 선택 기억 — last_active_pairs JSON 배열.
+
+    bot_running_symbols(현재 가동 중)와 별개로, 사용자가 마지막으로 선택한 페어
+    집합. 전체 STOP 시에도 유지돼 START 시 복원된다(페어 칩으로 끄면 제거).
+
+    마이그레이션: 컬럼 idempotent 추가 + 기존 bot_running_symbols 를 초기값으로
+    복사(이미 가동 중인 사용자의 선호 보존).
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "last_active_pairs" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN last_active_pairs TEXT")
+    conn.execute(
+        """
+        UPDATE users
+        SET last_active_pairs = bot_running_symbols
+        WHERE (last_active_pairs IS NULL OR last_active_pairs = '')
+          AND bot_running_symbols IS NOT NULL AND bot_running_symbols != ''
+        """,
+    )
+
+
 def _ensure_bot_running_column(conn: sqlite3.Connection) -> None:
     """기존 users 테이블에 ``bot_running`` 컬럼 없으면 ALTER TABLE 로 추가.
 
@@ -257,6 +279,8 @@ def init_db(db_path: Path | str) -> None:
         _ensure_bot_running_symbols_column(conn)
         # 2026-05-29 hot-fix: LIVE 사용자 자동 재가동 버그 해소용 last_run_mode.
         _ensure_last_run_mode_column(conn)
+        # 2026-06-06: 봇 STOP→START 시 페어 선택 기억용 last_active_pairs.
+        _ensure_last_active_pairs_column(conn)
         conn.commit()
     # 2026-05-28: 공지사항 테이블도 같은 파일에 idempotent 생성.
     from aurora_ict.auth.notices_db import init_notices_table
@@ -747,6 +771,54 @@ def set_bot_running(
             WHERE code = ?
             """,
             (new_json, legacy_flag, now, code),
+        )
+        conn.commit()
+        return True
+
+
+def get_last_active_pairs(db_path: Path | str, code: str) -> list[str]:
+    """사용자가 마지막으로 선택한 페어 집합 — 봇 STOP→START 복원용.
+
+    bot_running_symbols(현재 가동 중)와 달리 전체 STOP 시에도 유지된다.
+    """
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT last_active_pairs FROM users WHERE code = ?", (code,),
+        ).fetchone()
+    if row is None:
+        return []
+    return _parse_running_symbols(row["last_active_pairs"])
+
+
+def set_last_active_pair(
+    db_path: Path | str,
+    code: str,
+    symbol: str,
+    active: bool,
+) -> bool:
+    """선호 페어 집합에 symbol 추가(active=True)/제거(False).
+
+    페어 가동 시 add, 페어 칩으로 끌 때 remove. 전체 STOP 은 이 값을 안 건드려
+    START 시 복원된다.
+
+    Returns:
+        True 면 UPDATE 성공, False 면 code 미존재(no-op).
+    """
+    now = _utcnow_iso()
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT last_active_pairs FROM users WHERE code = ?", (code,),
+        ).fetchone()
+        if row is None:
+            return False
+        cur = set(_parse_running_symbols(row["last_active_pairs"]))
+        if active:
+            cur.add(symbol)
+        else:
+            cur.discard(symbol)
+        conn.execute(
+            "UPDATE users SET last_active_pairs = ?, updated_at = ? WHERE code = ?",
+            (json.dumps(sorted(cur), ensure_ascii=False), now, code),
         )
         conn.commit()
         return True

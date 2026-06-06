@@ -902,6 +902,34 @@ async def test_list_market_tickers_caches(
     assert tc.calls == 2
 
 
+def test_last_active_pairs_persistence(db_path) -> None:
+    """선호 페어 add/remove — 봇 STOP→START 복원 기반(last_active_pairs)."""
+    code = "AICT-LAP1-LAP1-LAP1"
+    users_db.create_user(db_path, code)
+    assert users_db.get_last_active_pairs(db_path, code) == []
+    # 페어 가동 → 선호 추가.
+    users_db.set_last_active_pair(db_path, code, "BTC/USDT:USDT", True)
+    users_db.set_last_active_pair(db_path, code, "ETH/USDT:USDT", True)
+    assert set(users_db.get_last_active_pairs(db_path, code)) == {
+        "BTC/USDT:USDT", "ETH/USDT:USDT",
+    }
+    # 페어 칩으로 ETH 끄기 → 선호에서 제거.
+    users_db.set_last_active_pair(db_path, code, "ETH/USDT:USDT", False)
+    assert users_db.get_last_active_pairs(db_path, code) == ["BTC/USDT:USDT"]
+
+
+def test_last_active_independent_from_bot_running(db_path) -> None:
+    """전체 STOP(bot_running 비움)이 선호(last_active)를 안 건드리는지 — 분리 확인."""
+    code = "AICT-LAP2-LAP2-LAP2"
+    users_db.create_user(db_path, code)
+    users_db.set_bot_running(db_path, code, True, symbol="BTC/USDT:USDT")
+    users_db.set_last_active_pair(db_path, code, "BTC/USDT:USDT", True)
+    # 전체 STOP 시뮬 — bot_running 만 비움, last_active 유지.
+    users_db.set_bot_running(db_path, code, False, symbol="BTC/USDT:USDT")
+    assert users_db.get_bot_running_symbols(db_path, code) == []
+    assert users_db.get_last_active_pairs(db_path, code) == ["BTC/USDT:USDT"]
+
+
 @pytest.mark.asyncio
 async def test_list_market_tickers_empty_when_no_client(
     db_path, base_settings, master_key,
