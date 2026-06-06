@@ -647,6 +647,17 @@
     color: #fbbf24;
     opacity: 1;
   }
+  /* 주말 휴장 배지 — killzone(노랑 "매매중")과 대비되는 슬레이트 톤(휴장). */
+  .weekend-badge[hidden] { display: none; }
+  .weekend-badge.active {
+    background: rgba(148, 163, 184, 0.14);
+    border-color: #94a3b8;
+  }
+  .weekend-badge.active .kz-name,
+  .weekend-badge.active .kz-time {
+    color: #94a3b8;
+    opacity: 1;
+  }
 
   /* 2026-05-28: 공지 banner — 우상단 (햄버거 옆), dismissible.
      관리자가 Telegram bot 또는 /admin/notice 로 등록 → 모든 로그인 사용자에게 표시. */
@@ -2217,6 +2228,12 @@
              data-ny-start="13:30" data-ny-end="16:00">
           <div class="kz-name" data-i18n="kz.pm">NY PM</div>
           <div class="kz-time">—</div>
+        </div>
+        <!-- 2026-06-06: 주말(NY 토·일) 휴장 안내 — 봇은 NYSE 평일만 매매.
+             평일엔 hidden, NY 요일이 토/일이면 app.js 가 표시 + active. -->
+        <div class="kz-badge weekend-badge" id="weekend-badge" hidden>
+          <div class="kz-name" data-i18n="kz.weekend">주말 휴장</div>
+          <div class="kz-time" data-i18n="kz.weekend_sub">매매 없음</div>
         </div>
       </div>
       <!-- 2026-05-28: 공지 banner — JS 가 /ict/notice 응답에 따라 display:flex 토글 -->

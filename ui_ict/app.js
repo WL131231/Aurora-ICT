@@ -1971,9 +1971,24 @@ function _getActiveKillzoneNY() {
   return null;
 }
 
+// NY 요일이 토/일이면 주말(NYSE 휴장) — 봇은 평일만 매매.
+function _isNYWeekend() {
+  const wd = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York", weekday: "short",
+  }).format(new Date());
+  return wd === "Sat" || wd === "Sun";
+}
+
 function _updateKillzoneBar() {
-  const active = _getActiveKillzoneNY();
-  document.querySelectorAll("#killzone-bar .kz-badge").forEach((el) => {
+  const weekend = _isNYWeekend();
+  // 주말이면 어떤 killzone 도 활성 아님 + 주말 배지 표시.
+  const active = weekend ? null : _getActiveKillzoneNY();
+  const wkEl = document.getElementById("weekend-badge");
+  if (wkEl) {
+    wkEl.hidden = !weekend;
+    wkEl.classList.toggle("active", weekend);
+  }
+  document.querySelectorAll("#killzone-bar .kz-badge:not(.weekend-badge)").forEach((el) => {
     el.classList.toggle("active", el.dataset.kz === active);
     // 2026-05-30 i18n: data-ny-start / data-ny-end (NY local "HH:mm") 를
     // window.AuroraI18n.nyTimeToUserTz 로 사용자 timezone 으로 변환.
