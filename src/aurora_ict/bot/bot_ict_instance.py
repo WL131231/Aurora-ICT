@@ -1483,34 +1483,112 @@ class BotIctInstance:
         await self._emergency_close()
         return False
 
+    @staticmethod
+    def _exchange_position_direction(pos: dict[str, Any]) -> Direction | None:
+        """거래소 fetch_position 응답에서 포지션 방향 추출 (recover 로직과 동일).
+
+        Bybit ccxt: side="long"/"short" (또는 "buy"/"sell"). 인식 실패 시 None.
+
+        Args:
+            pos: fetch_position 응답 dict.
+
+        Returns:
+            Direction.LONG / SHORT, 또는 side 인식 실패 시 None.
+        """
+        side = (pos.get("side") or "").lower()
+        if side in ("long", "buy"):
+            return Direction.LONG
+        if side in ("short", "sell"):
+            return Direction.SHORT
+        return None
+
+    async def _reconcile_open_position(self, ex_pos: dict[str, Any]) -> None:
+        """거래소에 열린 포지션이 봇 인식과 방향·수량 일치하는지 검증 + 보정.
+
+        #POS-SYNC 2026-06-06 (04:14 사건): 기존 sync 는 "거래소에 포지션 있기만
+        하면" 통과시켜, 거래소 롱 vs 봇 숏 같은 방향 불일치를 못 잡아 SL/비상청산이
+        전부 헛발질했다. 거래소를 진실로 삼아 어긋남을 직접 처리한다.
+
+        - 방향 불일치: 봇이 의도 안 한 포지션 → 즉시 비상청산 (파트너 결정 2026-06-06).
+        - 같은 방향 수량 불일치 (사용자 부분 수동 청산 등): 봇 qty 를 거래소 실제로 보정.
+
+        Args:
+            ex_pos: fetch_position 응답 (contracts != 0 확인된 상태).
+        """
+        last_known = self.active_position
+        if last_known is None:
+            return
+        ex_dir = self._exchange_position_direction(ex_pos)
+        if ex_dir is None:
+            return  # 방향 인식 실패 — 오판 방지 위해 보정 보류.
+        if ex_dir is not last_known.direction:
+            logger.error(
+                "포지션 방향 불일치 — 봇=%s 거래소=%s. 의도 안 한 포지션 → 즉시 비상청산.",
+                last_known.direction.value, ex_dir.value,
+            )
+            await self._emergency_close()
+            return
+        # 같은 방향 — 수량이 1% 초과 차이면 부분 청산 등으로 간주, 거래소 실제로 보정.
+        contracts = float(ex_pos.get("contracts", 0) or 0)
+        if contracts > 0 and abs(contracts - last_known.qty) > last_known.qty * 0.01:
+            logger.warning(
+                "포지션 수량 불일치 — 봇=%.4f 거래소=%.4f. 거래소 기준 보정 (부분 청산 등).",
+                last_known.qty, contracts,
+            )
+            last_known.qty = contracts
+
     async def _emergency_close(self) -> None:
-        """위험(무SL 등) 상황에서 active_position 을 시장가 reduce_only 로 청산.
+        """위험(무SL 등) 상황에서 포지션을 시장가 reduce_only 로 청산.
 
         2026-05-29 #SILENT-4: 비상청산 자체가 실패하면 active_position 을 None
         으로 만들면 안 된다 — 거래소에 포지션이 남아있는데 봇이 "닫혔다고 인식"
         하면 더 큰 risk (중복 진입 / SL 없는 포지션 방치). 실패 시 ERROR 로
         알람 + active_position 유지 → 다음 step 의 sync 에서 재확인 + 필요 시
         재시도 가능.
+
+        #POS-SYNC 2026-06-06 (04:14 사건): 봇 인식 방향이 거래소 실제와 어긋났을
+        수 있다(봇=숏 vs 거래소=롱 → reduce_only same-side 110017 거부 → 무SL 방치).
+        fetch_position 으로 실제 방향·수량을 진실로 삼아 청산한다. 조회 실패 시에만
+        봇 인식으로 fallback.
         """
         pos = self.active_position
         if pos is None:
             return
-        close_side = "buy" if pos.direction is Direction.SHORT else "sell"
+        close_dir = pos.direction
+        close_qty = pos.qty
+        try:
+            ex_pos = await self.client.fetch_position(self.symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("비상청산 전 fetch_position 실패: %s — 봇 인식 방향으로 진행", e)
+            ex_pos = None
+        if ex_pos is not None:
+            contracts = float(ex_pos.get("contracts", 0) or 0)
+            if contracts <= 0:
+                # 거래소엔 이미 포지션 없음 — 봇 상태만 정리 (중복 reduce_only 방지).
+                logger.info("비상청산 불필요 — 거래소 포지션 없음. active_position 정리.")
+                self.active_position = None
+                return
+            ex_dir = self._exchange_position_direction(ex_pos)
+            if ex_dir is not None:
+                close_dir = ex_dir
+                close_qty = contracts
+        # 청산 = 포지션 반대 방향 reduce_only.
+        close_side = "buy" if close_dir is Direction.SHORT else "sell"
         try:
             await self.client.place_order(
-                self.symbol, side=close_side, qty=pos.qty,
+                self.symbol, side=close_side, qty=close_qty,
                 price=None, reduce_only=True,
             )
             self._record_trade(
                 TradeEventType.MANUAL_CLOSE,
-                direction=pos.direction,
+                direction=close_dir,
                 price=pos.entry,
-                qty=pos.qty,
+                qty=close_qty,
                 reason="SL 적용 실패 비상청산 (무SL 방지)",
             )
             logger.info(
                 "비상청산 완료 — %s %s qty=%.4f",
-                self.symbol, pos.direction.value, pos.qty,
+                self.symbol, close_dir.value, close_qty,
             )
             self.active_position = None
         except Exception as e:  # noqa: BLE001
@@ -2112,6 +2190,9 @@ class BotIctInstance:
             logger.info("recover_position 사후 복원 — sync 성공으로 신규 진입 재허용")
             self._recovery_failed = False
         if pos is not None and float(pos.get("contracts", 0) or 0) != 0:
+            # 거래소에 포지션 잔존 — '있음'만 보지 말고 방향·수량이 봇 인식과
+            # 일치하는지 검증 (#POS-SYNC 2026-06-06, 04:14 방향 불일치 사건).
+            await self._reconcile_open_position(pos)
             return
         last_known = self.active_position
         if last_known is None:

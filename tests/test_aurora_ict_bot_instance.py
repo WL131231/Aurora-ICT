@@ -9,7 +9,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from aurora_ict.bot.bot_ict_instance import BotIctInstance, BotState
+from aurora_ict.bot.bot_ict_instance import (
+    BotIctInstance,
+    BotState,
+    _ActivePosition,
+)
 from aurora_ict.indicators.structure import TrendDirection
 from aurora_ict.signal.ict_signal import SignalAction
 from aurora_ict.strategy.silver_bullet import Direction
@@ -69,6 +73,75 @@ def _mock_client(ohlcv_rows: list[list[Any]]) -> AsyncMock:
     client.fetch_closed_positions = AsyncMock(return_value=[])
     client.set_position_tpsl = AsyncMock(return_value={"retCode": 0})
     return client
+
+
+def _ex_pos(side: str, contracts: float, entry: float = 60000.0) -> dict[str, Any]:
+    """거래소 fetch_position 응답 흉내 (#POS-SYNC 테스트용)."""
+    return {"contracts": contracts, "side": side, "entryPrice": entry}
+
+
+def _short_position(qty: float = 0.107) -> _ActivePosition:
+    """봇 active_position — BTC 숏 (04:14 사건 재현용)."""
+    return _ActivePosition(
+        direction=Direction.SHORT, entry=60379.0, stop_loss=60667.0,
+        take_profit=59234.0, qty=qty, setup_ts_ms=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_sync_emergency_close_on_direction_mismatch() -> None:
+    """#POS-SYNC 04:14: 봇=숏인데 거래소=롱 → 즉시 비상청산 (거래소 방향 반대로)."""
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.fetch_position = AsyncMock(return_value=_ex_pos("long", 0.107))
+    bot = BotIctInstance(client=client, symbol="BTCUSDT")
+    bot.active_position = _short_position()
+    await bot._sync_position_state()
+    assert client.place_order.await_count == 1
+    kw = client.place_order.await_args_list[0].kwargs
+    assert kw["side"] == "sell"          # 거래소 실제(롱)의 반대 — same-side 110017 회피
+    assert kw["reduce_only"] is True
+    assert kw["qty"] == pytest.approx(0.107)
+    assert bot.active_position is None
+
+
+@pytest.mark.asyncio
+async def test_sync_corrects_qty_on_partial_manual_close() -> None:
+    """#POS-SYNC: 사용자가 일부 수동 청산 → 청산 안 하고 봇 qty 만 거래소 실제로 보정."""
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.fetch_position = AsyncMock(return_value=_ex_pos("short", 0.05))
+    bot = BotIctInstance(client=client, symbol="BTCUSDT")
+    bot.active_position = _short_position(qty=0.107)
+    await bot._sync_position_state()
+    assert client.place_order.await_count == 0
+    assert bot.active_position is not None
+    assert bot.active_position.qty == pytest.approx(0.05)
+
+
+@pytest.mark.asyncio
+async def test_emergency_close_uses_exchange_direction_and_qty() -> None:
+    """#POS-SYNC: 비상청산이 봇 인식 아닌 거래소 실제 방향·수량 기준 (110017 방지)."""
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.fetch_position = AsyncMock(return_value=_ex_pos("long", 0.107))
+    bot = BotIctInstance(client=client, symbol="BTCUSDT")
+    bot.active_position = _short_position(qty=0.2)  # 봇은 숏 0.2 로 착각
+    await bot._emergency_close()
+    kw = client.place_order.await_args_list[0].kwargs
+    assert kw["side"] == "sell"               # 거래소 롱의 반대
+    assert kw["qty"] == pytest.approx(0.107)   # 거래소 실제 수량
+    assert kw["reduce_only"] is True
+    assert bot.active_position is None
+
+
+@pytest.mark.asyncio
+async def test_emergency_close_skips_when_exchange_flat() -> None:
+    """#POS-SYNC: 비상청산 시점에 거래소 포지션 없으면 주문 없이 봇 상태만 정리."""
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.fetch_position = AsyncMock(return_value=_ex_pos("none", 0.0))
+    bot = BotIctInstance(client=client, symbol="BTCUSDT")
+    bot.active_position = _short_position()
+    await bot._emergency_close()
+    assert client.place_order.await_count == 0   # 이미 닫힘 — 중복 reduce_only 안 보냄
+    assert bot.active_position is None
 
 
 @pytest.mark.asyncio
