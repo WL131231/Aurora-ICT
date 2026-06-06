@@ -394,6 +394,13 @@ class BotIctInstance:
                 logger.warning("symbol meta 로드 실패 (%s): %s", self.symbol, e)
                 self._symbol_meta = {}
         await self._recover_position_from_exchange()
+        # #RECONCILE 2026-06-06: 재기동(crash) 중 청산돼 trades DB 에 청산 이벤트가
+        # 누락된 ENTRY(orphan)를 거래소 closed-pnl 로 대조해 보충. 봇 진행 막지 않게
+        # 실패는 무시.
+        try:
+            await self._reconcile_orphan_entries()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("reconcile 실패 (무시, 봇 진행): %s", e)
         self.state = BotState.RUNNING
         self._task = asyncio.create_task(self._run_loop())
         # 변경 7: 실시간 flip watcher 가동 (mode C + 활성화 시).
@@ -2151,6 +2158,93 @@ class BotIctInstance:
             ))
         except Exception as e:  # noqa: BLE001
             logger.warning("trades record 실패: %s", e)
+
+    async def _reconcile_orphan_entries(self) -> None:
+        """startup — 청산 누락 ENTRY(orphan)를 거래소 closed-pnl 로 보충 (#RECONCILE).
+
+        재기동(crash) 중 청산된 포지션은 active_position 이 없어 _sync_position_state
+        가 SYNC_CLOSE 를 기록하지 못한다 → trades DB 에 ENTRY 만 남는다. 거래소
+        closed-pnl 과 setup_ts / 진입시각·방향으로 대조해 누락 청산을 SYNC_CLOSE 로
+        채운다. 현재 열려있는 포지션의 ENTRY 는 closed-pnl 에 없어 자동 제외된다.
+        """
+        if self._trades_store is None:
+            store_dir = self.trades_data_dir or _ict_data_dir()
+            try:
+                self._trades_store = TradesStore(store_dir)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("reconcile: TradesStore init 실패 — skip: %s", e)
+                return
+        try:
+            events = self._trades_store.all_events()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("reconcile: all_events 실패 — skip: %s", e)
+            return
+        # 이 심볼의 청산된 setup_ts 집합 + 청산 안 된 ENTRY 수집.
+        close_types = {
+            TradeEventType.SL_HIT, TradeEventType.TP_HIT,
+            TradeEventType.SYNC_CLOSE, TradeEventType.MANUAL_CLOSE,
+            TradeEventType.FLIP_CLOSE,
+        }
+        closed_ts: set[int] = set()
+        entries: list[TradeEvent] = []
+        for ev in events:
+            if ev.symbol != self.symbol:
+                continue
+            if ev.event_type in close_types and ev.setup_ts_ms:
+                closed_ts.add(ev.setup_ts_ms)
+            elif ev.event_type is TradeEventType.ENTRY and ev.setup_ts_ms:
+                entries.append(ev)
+        orphans = [e for e in entries if e.setup_ts_ms not in closed_ts]
+        if not orphans:
+            return
+        logger.info(
+            "reconcile: 청산 누락 ENTRY %d건 — 거래소 closed-pnl 대조 시작 (%s)",
+            len(orphans), self.symbol,
+        )
+        oldest = min(e.ts_ms for e in orphans)
+        try:
+            closed = await self.client.fetch_closed_positions(
+                since_ms=oldest - 60_000, limit=200,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("reconcile: closed-pnl 조회 실패 — skip: %s", e)
+            return
+        tol = self._PNL_MATCH_OPENED_TOLERANCE_MS
+        used_opened: set[int] = set()  # cp 1건당 orphan 1건 매칭 (중복 방지).
+        filled = 0
+        for orphan in orphans:
+            match = None
+            for cp in closed:
+                if getattr(cp, "symbol", None) != self.symbol:
+                    continue
+                if getattr(cp, "direction", None) != orphan.direction:
+                    continue
+                cp_opened = int(getattr(cp, "opened_at_ts", 0) or 0)
+                if cp_opened in used_opened:
+                    continue
+                # orphan 진입 ts 와 cp opened ±10분 — 같은 거래 인정.
+                if cp_opened > 0 and abs(cp_opened - orphan.ts_ms) > tol:
+                    continue
+                match = cp
+                break
+            if match is None:
+                continue
+            used_opened.add(int(getattr(match, "opened_at_ts", 0) or 0))
+            direction = (
+                Direction.LONG if orphan.direction == "long" else Direction.SHORT
+            )
+            self._record_trade(
+                TradeEventType.SYNC_CLOSE,
+                direction=direction,
+                price=float(getattr(match, "exit_price", 0.0) or 0.0),
+                qty=orphan.qty,
+                entry_for_pnl=orphan.price,
+                setup_ts_ms=orphan.setup_ts_ms,
+                reason="reconcile: 재기동 중 청산 보충 (closed-pnl)",
+                pnl_override=float(getattr(match, "pnl_usd", 0.0) or 0.0),
+            )
+            filled += 1
+        logger.info("reconcile: 청산 누락 %d/%d건 보충 완료 (%s)", filled, len(orphans), self.symbol)
 
     # 2026-05-29 #PNL-MATCH-FIX: cp.opened_at_ts 와 active_position.entry_ts_ms
     # 허용 차이 (Bybit demo 의 createdTime 정밀도 + 봇 fill 인식 지연 흡수).
