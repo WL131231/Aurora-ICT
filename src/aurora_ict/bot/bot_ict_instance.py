@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from aurora_ict.bot.structure_trail import compute_structure_trail
+from aurora_ict.indicators.cisd import CisdType, detect_cisd
 from aurora_ict.indicators.daily_bias import compute_daily_bias
 from aurora_ict.indicators.dol import compute_dol
 from aurora_ict.indicators.liquidity import detect_liquidity_sweeps
@@ -689,6 +690,9 @@ class BotIctInstance:
         await self._apply_htf_supporting_boost(signal.setup, df)
         # #3 보완: Draw on Liquidity 역방향 진입은 confluence 감점 (게이트 전에 적용).
         self._apply_dol_bias(signal.setup, df)
+        # #CISD 2026-06-06: 가격 전달 전환(CISD)이 setup 방향과 일치하면 confluence +1.
+        # MSS 1캔들 micro 신호 — 게이트·qty 산정 전에 적용돼야 효과.
+        self._apply_cisd_boost(signal.setup, df)
         # B+ 등급 게이트 (#1/#8) — HTF boost 까지 반영된 최종 score 가 기준 미만이면 skip.
         # 빈도↓·품질↑ (하루 ~4~5개 목표). min_confluence=0 이면 비활성(기존 동작).
         if signal.setup.confluence_score < self.min_confluence:
@@ -1712,6 +1716,26 @@ class BotIctInstance:
             logger.info(
                 "DOL 역방향 감점 — setup=%s draw=%s score→%d",
                 setup.direction.value, draw.value, setup.confluence_score,
+            )
+
+    def _apply_cisd_boost(self, setup: SilverBulletSetup, df: pd.DataFrame) -> None:
+        """CISD(Change in State of Delivery) 순응 시 confluence +1 (#CISD 2026-06-06).
+
+        CISD = 가격 전달 방향 전환의 1캔들 micro 신호 (MSS 의 빠른 버전). 직전 연속
+        반대 캔들들의 시초가 라인을 현재 봉이 돌파하면 발생. setup 방향과 같은 방향의
+        CISD 가 잡히면 "전환 순응" 가점을 준다 — 정통에서 빠른 진입 confirmation.
+        in-place 가산.
+        """
+        cisd = detect_cisd(df)
+        if cisd is None:
+            return
+        want = CisdType.BULLISH if setup.direction is Direction.LONG else CisdType.BEARISH
+        if cisd is want:
+            setup.confluence_score += 1
+            setup.confluences.append(f"cisd={cisd.value}")
+            logger.info(
+                "CISD 순응 가점 — setup=%s cisd=%s score→%d",
+                setup.direction.value, cisd.value, setup.confluence_score,
             )
 
     async def _fetch_equity(self) -> float:
