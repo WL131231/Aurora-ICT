@@ -216,7 +216,14 @@ class MultiUserBotManager:
                 settings.run_mode = RunMode.LIVE
             elif last_mode_str == "demo":
                 settings.run_mode = RunMode.DEMO
-            # 둘 다 아니면 base.run_mode 그대로 (last_run_mode 미설정 = 첫 가동).
+            elif settings.run_mode is RunMode.DEMO:
+                # 2026-06-06 DEMO UI 제거(실매매 전용): 첫 가동(last_run_mode 미설정) +
+                # base 가 DEMO 기본일 때, live 키가 등록돼 있으면 LIVE 로 보정. 신규
+                # 베타는 LIVE 키만 등록하므로 LIVE 가동 → "DEMO 키 미등록" 해소.
+                # base 가 명시 LIVE 면 그대로 두고 아래 live 키 검사에 맡긴다.
+                _live_keys = users_db.get_api_keys(self.db_path, user_code, "live")
+                if _live_keys is not None:
+                    settings.run_mode = RunMode.LIVE
         effective_mode = settings.run_mode
 
         # 양쪽 모드 키 로드 — 있는 것만 박는다.

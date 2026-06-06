@@ -187,18 +187,25 @@ def client(mu, db_path, master_key) -> TestClient:
 
 def _register_user(
     client: TestClient, code: str = "AICT-SAAS-SAAS-SAAS",
+    with_live_key: bool = True,
 ) -> None:
-    """setup-pin + api-keys 세팅 — 이후 cookie 가 client 에 박힘."""
+    """setup-pin + api-keys 세팅 — 이후 cookie 가 client 에 박힘.
+
+    with_live_key=True(기본): demo+live 둘 다 등록 — 첫 가동이 LIVE 기본
+    (2026-06-06 DEMO UI 제거)이라 live 키 필요. False 면 demo 만 (live 키 가드 테스트용).
+    """
     r = client.post(
         "/auth/setup-pin",
         json={"code": code, "pin": "Aa1!aaaa", "pin_confirm": "Aa1!aaaa"},
     )
     assert r.status_code == 200, r.text
-    r = client.post(
-        "/auth/api-keys",
-        json={"api_key": "pub_xx", "api_secret": "sec_xx"},
-    )
-    assert r.status_code == 200, r.text
+    modes = ("demo", "live") if with_live_key else ("demo",)
+    for _mode in modes:
+        r = client.post(
+            "/auth/api-keys",
+            json={"api_key": "pub_xx", "api_secret": "sec_xx", "mode": _mode},
+        )
+        assert r.status_code == 200, r.text
 
 
 # ============================================================
@@ -481,7 +488,7 @@ def test_run_mode_demo_to_live(client: TestClient) -> None:
     _register_user 는 demo 키만 등록 → 바로 LIVE 전환 시 400 (해당 모드 키 없음).
     Live 키 별도 등록 후엔 200.
     """
-    _register_user(client)
+    _register_user(client, with_live_key=False)
     # demo 키만 있는 상태에서 LIVE 전환 시도 → 안전 가드로 400.
     r = client.post("/ict/run-mode", json={"mode": "live"})
     assert r.status_code == 400
@@ -502,7 +509,7 @@ def test_run_mode_demo_to_live(client: TestClient) -> None:
 
 def test_run_mode_live_blocked_when_no_live_key(client: TestClient) -> None:
     """LIVE 전환 안전 가드 — live 키 등록되지 않은 사용자는 400 (2026-05-29)."""
-    _register_user(client)  # demo 키만 등록
+    _register_user(client, with_live_key=False)  # demo 키만 등록
     r = client.post("/ict/run-mode", json={"mode": "live"})
     assert r.status_code == 400
     assert "LIVE" in r.json()["detail"]
