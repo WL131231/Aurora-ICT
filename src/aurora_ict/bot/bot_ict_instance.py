@@ -326,6 +326,8 @@ class BotIctInstance:
     _pending_entry: _PendingEntry | None = field(default=None)
     _task: asyncio.Task[None] | None = field(default=None)
     _last_setup_ts_ms: int = field(default=0)  # 동일 setup 중복 진입 방지
+    # 2026-06-09: 방향까지 기록 — 같은 봉의 반대 방향(롱→숏 전환)은 차단 안 함.
+    _last_setup_direction: Direction | None = field(default=None)
     _last_heartbeat_ms: int = field(default=0)
     # HTF 봉 캐시 — (tf, last_ts_ms) → DataFrame. 같은 봉이면 재fetch 안 함.
     _htf_cache: dict[str, tuple[int, pd.DataFrame]] = field(default_factory=dict)
@@ -715,7 +717,7 @@ class BotIctInstance:
                     "진입 skip — 현재 봉 킬존 밖 (sub_* 시간 필터, setup window=%s)",
                     signal.setup.window,
                 )
-                self._last_setup_ts_ms = signal.setup.ts_ms
+                self._remember_setup(signal.setup)
                 return signal
 
         # 2026-05-29 #SILENT-1: 복원 실패 상태에서는 신규 진입 차단.
@@ -728,16 +730,21 @@ class BotIctInstance:
             return signal
 
         # 동일 setup으로 재진입 방지 (중복 주문 X)
-        if signal.setup.ts_ms == self._last_setup_ts_ms:
-            # 2026-05-28: 중복 setup skip — 빈도 매우 낮음 (같은 봉 안에서만).
+        if (
+            signal.setup.ts_ms == self._last_setup_ts_ms
+            and signal.setup.direction == self._last_setup_direction
+        ):
+            # 2026-06-09: ts + 방향 동일할 때만 중복 skip. 같은 봉의 반대 방향
+            # (롱 청산 직후 숏 진입)은 통과시킨다 — 기존엔 ts 만 봐서 숏 누락.
             logger.info(
-                "setup skip | reason=duplicate_ts ts_ms=%d", signal.setup.ts_ms,
+                "setup skip | reason=duplicate_ts ts_ms=%d dir=%s",
+                signal.setup.ts_ms, signal.setup.direction.value,
             )
             return signal
 
         if not await self._passes_htf_ema_bias(signal.setup.direction):
             # _passes_htf_ema_bias 내부에서 이미 INFO 로그 박힘 (line 743) — 추가 X.
-            self._last_setup_ts_ms = signal.setup.ts_ms
+            self._remember_setup(signal.setup)
             return signal
 
         # 변경 3: HTF FVG override — 진입 직전 반대 방향 HTF FVG 가중치 평가 (flip target).
@@ -778,14 +785,14 @@ class BotIctInstance:
                     signal.setup.confluence_score, self.min_confluence,
                     signal.setup.direction.value, signal.setup.window,
                 )
-                self._last_setup_ts_ms = signal.setup.ts_ms
+                self._remember_setup(signal.setup)
                 return signal
         if self.htf_override_mode == "A" and htf_target is not None:
             logger.info(
                 "HTF override(A) 진입 차단 — setup=%s 반대 HTF FVG=%s",
                 signal.setup.direction.value, htf_target.tf,
             )
-            self._last_setup_ts_ms = signal.setup.ts_ms
+            self._remember_setup(signal.setup)
             return signal
 
         # 2026-05-29 #HTF-LTF-CONFLICT: HTF FVG bull/bear 우세 + LTF 반대 방향 차단.
@@ -811,7 +818,7 @@ class BotIctInstance:
                         "LTF setup=long",
                         bear_w, bull_w, ratio_thr,
                     )
-                    self._last_setup_ts_ms = signal.setup.ts_ms
+                    self._remember_setup(signal.setup)
                     return signal
                 if (not is_long) and (bull_w / bear_w) >= ratio_thr:
                     logger.info(
@@ -819,12 +826,22 @@ class BotIctInstance:
                         "LTF setup=short",
                         bull_w, bear_w, ratio_thr,
                     )
-                    self._last_setup_ts_ms = signal.setup.ts_ms
+                    self._remember_setup(signal.setup)
                     return signal
 
         await self._execute_setup(signal.setup, htf_flip_target=htf_target)
-        self._last_setup_ts_ms = signal.setup.ts_ms
+        self._remember_setup(signal.setup)
         return signal
+
+    def _remember_setup(self, setup: Any) -> None:
+        """동일 setup 재진입 방지 기록 — ts + 방향.
+
+        2026-06-09: 기존엔 ts_ms 만 기록해, 롱 청산 직후 같은 봉에서 나온 숏
+        셋업이 duplicate_ts 로 차단돼 진입 누락(라이브 HYPE 버그). 방향까지
+        기록해 같은 봉의 반대 방향(롱→숏 전환) 셋업은 차단하지 않는다.
+        """
+        self._last_setup_ts_ms = setup.ts_ms
+        self._last_setup_direction = setup.direction
 
     async def _step_multi_tf(self) -> ICTSignal:
         """Multi-TF step — HTF tracker + LTF confirmer 결합 (ICT 정통).
@@ -886,8 +903,11 @@ class BotIctInstance:
         # 가격이 zone 안인 HTF setup 별로 confirm 시도.
         matching = self._htf_tracker.setups_containing_price(current_price)
         for htf_active in matching:
-            # 동일 HTF setup 으로 재진입 방지.
-            if htf_active.setup.ts_ms == self._last_setup_ts_ms:
+            # 동일 HTF setup 으로 재진입 방지 (ts + 방향 — 반대 방향은 허용).
+            if (
+                htf_active.setup.ts_ms == self._last_setup_ts_ms
+                and htf_active.setup.direction == self._last_setup_direction
+            ):
                 continue
             confirmed = confirm_ltf_entry(
                 htf_active,
@@ -899,10 +919,10 @@ class BotIctInstance:
                 continue
             setup = self._confirmed_to_setup(confirmed)
             if not await self._passes_htf_ema_bias(setup.direction):
-                self._last_setup_ts_ms = htf_active.setup.ts_ms
+                self._remember_setup(htf_active.setup)
                 return no_action
             await self._execute_setup(setup)
-            self._last_setup_ts_ms = htf_active.setup.ts_ms
+            self._remember_setup(htf_active.setup)
             return ICTSignal(
                 action=(
                     SignalAction.ENTER_LONG
