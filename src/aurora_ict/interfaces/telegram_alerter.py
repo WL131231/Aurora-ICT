@@ -23,6 +23,10 @@ from aurora_ict.auth import users_db
 
 logger = logging.getLogger(__name__)
 
+# 보안: httpx 는 요청 URL(getUpdates/sendMessage — 봇 토큰 포함)을 INFO 로 로깅해
+# fly 로그에 토큰이 평문 노출된다. WARNING 으로 올려 토큰 URL 이 안 찍히게 한다.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 _API = "https://api.telegram.org/bot{token}/{method}"
 
 # 라이선스 코드 형식 — AICT-XXXX-XXXX-XXXX (영숫자 4자 3블록).
