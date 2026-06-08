@@ -170,6 +170,17 @@ def main() -> int:
         base_settings=base_settings,
     )
 
+    # 2026-06-08: 텔레그램 매매 알림 — 토큰 있으면 alerter 주입(없으면 비활성).
+    from aurora_ict.interfaces.telegram_alerter import TelegramAlerter
+    _tg_token = os.environ.get("AURORA_ICT_TELEGRAM_BOT_TOKEN", "").strip()
+    telegram_alerter = TelegramAlerter(_tg_token, db_path)
+    mu.alerter = telegram_alerter
+    logger.info(
+        "텔레그램 매매 알림 %s",
+        "활성(토큰 설정됨)" if telegram_alerter.enabled
+        else "비활성(AURORA_ICT_TELEGRAM_BOT_TOKEN 미설정)",
+    )
+
     secure_cookie_env = os.environ.get("AURORA_ICT_SECURE_COOKIE", "1").strip()
     secure_cookie = secure_cookie_env not in ("0", "false", "False", "")
     logger.info("secure_cookie=%s (HTTPS 운영 시 1 권장)", secure_cookie)
@@ -210,6 +221,9 @@ def main() -> int:
         # task 참조 보관 — asyncio 는 task 를 weak ref 로만 들고 있어 GC 로 중도
         # 취소될 수 있으므로 app.state 에 보관한다.
         app.state.resume_task = asyncio.create_task(_resume_bg())
+        # 2026-06-08: 텔레그램 알림 봇 폴링 태스크 — 코드 등록 수신. 토큰 없으면
+        # poll_loop 가 즉시 return(비활성). app.state 보관(GC 로 취소 방지).
+        app.state.telegram_task = asyncio.create_task(telegram_alerter.poll_loop())
 
     # FastAPI shutdown 이벤트 — uvicorn graceful 종료 시 모든 사용자 봇 정지.
     #

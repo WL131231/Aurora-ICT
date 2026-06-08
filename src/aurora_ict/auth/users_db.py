@@ -159,6 +159,19 @@ def _ensure_last_timeframe_column(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN last_timeframe TEXT")
 
 
+def _ensure_telegram_chat_id_column(conn: sqlite3.Connection) -> None:
+    """2026-06-08: 사용자별 텔레그램 chat_id 영속화 — 매매 알림 발송용.
+
+    사용자가 텔레그램 봇에 자기 라이선스 코드를 입력하면 그 chat_id 를 코드에
+    연결 저장. 매매 이벤트 시 이 chat_id 로 알림 발송. NULL 허용(미연동).
+
+    마이그레이션: ``telegram_chat_id TEXT`` 컬럼 idempotent 추가.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "telegram_chat_id" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN telegram_chat_id TEXT")
+
+
 def _ensure_bot_running_symbols_column(conn: sqlite3.Connection) -> None:
     """2026-05-29 PR B: 멀티 페어 (BTC + ETH 동시 진입) 영속화 — bot_running
     boolean → bot_running_symbols JSON 배열 컬럼.
@@ -298,6 +311,8 @@ def init_db(db_path: Path | str) -> None:
         _ensure_last_active_pairs_column(conn)
         # 2026-06-08: 가동 중 매매 TF 변경이 재시작 시 회귀하는 버그 — last_timeframe.
         _ensure_last_timeframe_column(conn)
+        # 2026-06-08: 매매 알림 텔레그램 연동 — 사용자별 chat_id.
+        _ensure_telegram_chat_id_column(conn)
         conn.commit()
     # 2026-05-28: 공지사항 테이블도 같은 파일에 idempotent 생성.
     from aurora_ict.auth.notices_db import init_notices_table
@@ -965,6 +980,48 @@ def get_last_timeframe(db_path: Path | str, code: str) -> str | None:
     return str(val) if val else None
 
 
+def set_telegram_chat_id(db_path: Path | str, code: str, chat_id: str) -> bool:
+    """사용자 텔레그램 chat_id 연결 — 매매 알림 발송 대상. 2026-06-08.
+
+    Args:
+        db_path: users.db 경로.
+        code: 대상 사용자 라이선스 코드.
+        chat_id: 텔레그램 chat_id (숫자지만 문자열로 저장).
+
+    Returns:
+        True 면 UPDATE 1건 성공, False 면 code 미존재.
+    """
+    now = _utcnow_iso()
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE users
+            SET telegram_chat_id = ?, updated_at = ?
+            WHERE code = ?
+            """,
+            (str(chat_id), now, code),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_telegram_chat_id(db_path: Path | str, code: str) -> str | None:
+    """사용자 텔레그램 chat_id 조회 — 매매 알림 발송용. 2026-06-08.
+
+    Returns:
+        chat_id 문자열 또는 None (미연동 또는 사용자 미존재).
+    """
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT telegram_chat_id FROM users WHERE code = ?",
+            (code,),
+        ).fetchone()
+    if row is None:
+        return None
+    val = row["telegram_chat_id"]
+    return str(val) if val else None
+
+
 def list_running_codes(db_path: Path | str) -> list[str]:
     """[Deprecated 2026-05-29 PR B] 기존 boolean 흐름 호환용.
 
@@ -1180,6 +1237,8 @@ __all__ = [
     "set_last_run_mode",
     "set_last_timeframe",
     "get_last_timeframe",
+    "set_telegram_chat_id",
+    "get_telegram_chat_id",
     "delete_api_keys",
     "set_license",
     "set_pin",

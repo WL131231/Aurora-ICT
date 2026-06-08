@@ -91,6 +91,9 @@ class MultiUserBotManager:
     db_path: Path | str
     base_settings: IctSettings | None = None
     master_key: bytes | None = None
+    # 2026-06-08: 텔레그램 매매 알림 발송기(TelegramAlerter) — saas 가 주입.
+    # None 이면 알림 비활성(콜백 미주입).
+    alerter: Any = None
     # 2026-05-29 PR B: (user_code, symbol) 복합 키. 한 사용자가 BTC + ETH 등
     # 여러 페어 동시 진입 가능.
     _pair_registry: PairRegistry = field(default_factory=PairRegistry)
@@ -373,6 +376,12 @@ class MultiUserBotManager:
             # 2026-05-29 PR 매매기록 DEMO/LIVE 구분 (파트너 요청): 봇이 매매 시
             # 이 run_mode 가 TradeEvent.mode 에 박힘 → UI 표에 표시.
             run_mode=settings.run_mode.value,
+            # 2026-06-08: 텔레그램 매매 알림 — 소유자 코드 + 알림 콜백 주입.
+            # alerter 미설정(None)이면 콜백도 None → 알림 안 보냄.
+            user_code=user_code,
+            alert_cb=(
+                self.alerter.send_trade_alert if self.alerter is not None else None
+            ),
         )
         self._slots[key] = _UserBotSlot(
             symbol=symbol, settings=settings, bot=bot, client=client,
