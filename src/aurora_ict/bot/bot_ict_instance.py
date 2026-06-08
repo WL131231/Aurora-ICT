@@ -2216,6 +2216,15 @@ class BotIctInstance:
             # 2026-05-29: DEMO/LIVE 구분 — UI 가 "유형" 옆 컬럼에 표시.
             mode=self.run_mode,
         )
+        # 2026-06-09: 매매 이벤트를 fly 로그에도 남긴다 — 진입은 "Execute setup"
+        # 으로만 찍히고 청산(SL/TP)은 DB 만 기록돼 로그 모니터링에서 누락됐다.
+        # event_type(ENTRY/SL_HIT/TP_HIT/FLIP_*/SYNC_CLOSE)이 로그에 찍혀 필터로 잡힘.
+        logger.info(
+            "매매 %s | %s %s price=%.4f qty=%.6f pnl=%s",
+            event.event_type.value.upper(), self.symbol, event.direction,
+            price, qty,
+            f"{pnl_usdt:+.2f}" if pnl_usdt is not None else "—",
+        )
         try:
             self._trades_store.record(event)
         except Exception as e:  # noqa: BLE001
