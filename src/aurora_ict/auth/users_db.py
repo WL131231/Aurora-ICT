@@ -144,6 +144,21 @@ def _ensure_last_run_mode_column(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN last_run_mode TEXT")
 
 
+def _ensure_last_timeframe_column(conn: sqlite3.Connection) -> None:
+    """2026-06-08: 사용자별 마지막 매매 timeframe 영속화.
+
+    배경: 가동 중 매매 TF 변경 시 봇이 재시작되는데, 사용자별 timeframe 저장이
+    없어 재시작이 전역 base_settings.timeframe(기본값)으로 회귀(1h 눌러도 15m
+    로 돌아감). 이 컬럼으로 사용자가 마지막 설정한 TF 를 정확히 복원.
+
+    마이그레이션: ``last_timeframe TEXT`` 컬럼 idempotent 추가. NULL 허용
+    (구식 사용자는 base_settings.timeframe fallback).
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "last_timeframe" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN last_timeframe TEXT")
+
+
 def _ensure_bot_running_symbols_column(conn: sqlite3.Connection) -> None:
     """2026-05-29 PR B: 멀티 페어 (BTC + ETH 동시 진입) 영속화 — bot_running
     boolean → bot_running_symbols JSON 배열 컬럼.
@@ -281,6 +296,8 @@ def init_db(db_path: Path | str) -> None:
         _ensure_last_run_mode_column(conn)
         # 2026-06-06: 봇 STOP→START 시 페어 선택 기억용 last_active_pairs.
         _ensure_last_active_pairs_column(conn)
+        # 2026-06-08: 가동 중 매매 TF 변경이 재시작 시 회귀하는 버그 — last_timeframe.
+        _ensure_last_timeframe_column(conn)
         conn.commit()
     # 2026-05-28: 공지사항 테이블도 같은 파일에 idempotent 생성.
     from aurora_ict.auth.notices_db import init_notices_table
@@ -902,6 +919,52 @@ def get_last_run_mode(db_path: Path | str, code: str) -> str | None:
     return None
 
 
+def set_last_timeframe(db_path: Path | str, code: str, timeframe: str) -> bool:
+    """사용자 마지막 매매 timeframe 영속화 — 2026-06-08.
+
+    Why: 가동 중 매매 TF 변경 시 봇 재시작이 전역 base_settings(기본값)로
+    회귀하는 버그(1h 눌러도 15m). 이 컬럼에 마지막 TF 박아 재시작·재가동 시
+    정확히 복원. TRADE_TIMEFRAMES 검증은 호출처(라우터)에서.
+
+    Args:
+        db_path: users.db 경로.
+        code: 대상 사용자 라이선스 코드.
+        timeframe: 매매 timeframe 문자열.
+
+    Returns:
+        True 면 UPDATE 1건 성공, False 면 code 미존재.
+    """
+    now = _utcnow_iso()
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE users
+            SET last_timeframe = ?, updated_at = ?
+            WHERE code = ?
+            """,
+            (timeframe, now, code),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_last_timeframe(db_path: Path | str, code: str) -> str | None:
+    """사용자 마지막 매매 timeframe 조회 — 2026-06-08.
+
+    Returns:
+        timeframe 문자열 또는 None (미설정 또는 사용자 미존재).
+    """
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT last_timeframe FROM users WHERE code = ?",
+            (code,),
+        ).fetchone()
+    if row is None:
+        return None
+    val = row["last_timeframe"]
+    return str(val) if val else None
+
+
 def list_running_codes(db_path: Path | str) -> list[str]:
     """[Deprecated 2026-05-29 PR B] 기존 boolean 흐름 호환용.
 
@@ -1115,6 +1178,8 @@ __all__ = [
     "get_last_run_mode",
     "list_running_bots",
     "set_last_run_mode",
+    "set_last_timeframe",
+    "get_last_timeframe",
     "delete_api_keys",
     "set_license",
     "set_pin",
