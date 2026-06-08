@@ -314,6 +314,12 @@ class BotIctInstance:
     # None 이면 record 시 None 박힘 (구식 흐름 호환).
     run_mode: str | None = None
 
+    # 2026-06-08: 텔레그램 매매 알림 — 이 봇 소유자 코드 + 알림 콜백.
+    # MultiUserBotManager 가 주입. 콜백 시그니처: async (user_code, TradeEvent).
+    # 미주입(None)이거나 user_code 빈 값이면 알림 안 보냄(.exe / 테스트 호환).
+    user_code: str = ""
+    alert_cb: Any = None
+
     state: BotState = field(default=BotState.STOPPED)
     active_position: _ActivePosition | None = field(default=None)
     # #LIVE-1 fix: marketable limit entry 미체결 대기 상태 (체결되면 active_position 으로 승격).
@@ -2176,23 +2182,31 @@ class BotIctInstance:
         if pnl_usdt is None and entry_for_pnl is not None and qty > 0:
             sign = 1.0 if direction is Direction.LONG else -1.0
             pnl_usdt = sign * (price - entry_for_pnl) * qty
+        event = TradeEvent(
+            ts_ms=int(time.time() * 1000),
+            event_type=event_type,
+            symbol=self.symbol,
+            direction="long" if direction is Direction.LONG else "short",
+            price=price,
+            qty=qty,
+            pnl_usdt=pnl_usdt,
+            setup_ts_ms=setup_ts_ms,
+            reason=reason,
+            context_json=context_json,
+            # 2026-05-29: DEMO/LIVE 구분 — UI 가 "유형" 옆 컬럼에 표시.
+            mode=self.run_mode,
+        )
         try:
-            self._trades_store.record(TradeEvent(
-                ts_ms=int(time.time() * 1000),
-                event_type=event_type,
-                symbol=self.symbol,
-                direction="long" if direction is Direction.LONG else "short",
-                price=price,
-                qty=qty,
-                pnl_usdt=pnl_usdt,
-                setup_ts_ms=setup_ts_ms,
-                reason=reason,
-                context_json=context_json,
-                # 2026-05-29: DEMO/LIVE 구분 — UI 가 "유형" 옆 컬럼에 표시.
-                mode=self.run_mode,
-            ))
+            self._trades_store.record(event)
         except Exception as e:  # noqa: BLE001
             logger.warning("trades record 실패: %s", e)
+        # 2026-06-08: 매매 알림 — 연동된 사용자에게 텔레그램 발송(fire-and-forget).
+        # 미연동·전송 실패는 콜백 내부에서 흡수. 알림이 매매를 막지 않게.
+        if self.alert_cb is not None and self.user_code:
+            try:
+                asyncio.create_task(self.alert_cb(self.user_code, event))
+            except RuntimeError:
+                pass  # 실행 중 이벤트 루프 없음(동기 테스트) — skip
 
     async def _reconcile_orphan_entries(self) -> None:
         """startup — 청산 누락 ENTRY(orphan)를 거래소 closed-pnl 로 보충 (#RECONCILE).
