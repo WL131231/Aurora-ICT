@@ -40,7 +40,7 @@ from aurora_ict.bot.bot_ict_instance import (
     ExchangeClientProtocol,
 )
 from aurora_ict.bot.pair_registry import MAJOR_PAIRS, PairRegistry
-from aurora_ict.config.settings import IctSettings, RunMode
+from aurora_ict.config.settings import TRADE_TIMEFRAMES, IctSettings, RunMode
 
 # 페어 확장 (파트너 결정 2026-06-05):
 #   - 사용자당 동시 가동 페어 상한 (서버 부하 = 사용자수 × 페어수 곱셈 방지).
@@ -186,6 +186,18 @@ class MultiUserBotManager:
         settings.license_type = license_type
         # 2026-05-29 PR B: symbol 강제 (멀티 페어 — 슬롯별 symbol 정확히 박음).
         settings.symbol = symbol
+        # 2026-06-08: 사용자별 마지막 매매 timeframe 복원 — 가동 중 TF 변경 후
+        # 재시작/재가동 시 전역 base 로 회귀하던 버그(1h→15m) 해소. 미설정이면
+        # base 값 유지. 잘못된 값은 무시(유효 TF 만 적용).
+        try:
+            _last_tf = users_db.get_last_timeframe(self.db_path, user_code)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "사용자 %s last_timeframe 조회 실패 (무시): %s", user_code, e,
+            )
+            _last_tf = None
+        if _last_tf and _last_tf in TRADE_TIMEFRAMES:
+            settings.timeframe = _last_tf
         # 페어 확장 2026-06-05: 알트(BTC/ETH 외)는 변동성 커서 레버리지 15배 고정.
         # BTC/ETH 는 사용자 설정값 유지. 거래소 max leverage 가 15 미만이면 가동 시
         # set_leverage 실패 → 실제값 보정(#LEV-1)이 받아냄.

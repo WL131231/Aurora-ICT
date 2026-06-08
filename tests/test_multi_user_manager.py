@@ -200,6 +200,36 @@ async def test_get_or_create_returns_same_instance_on_repeat(
     assert len(clients) == 1
 
 
+def test_build_settings_restores_last_timeframe(
+    db_path, base_settings, master_key,
+) -> None:
+    """set_last_timeframe 로 저장한 TF 를 _build_user_settings 가 복원한다.
+
+    가동 중 매매 TF 변경 → 봇 재시작 시 전역 base(기본값)로 회귀하던 버그
+    (1h 눌러도 15m) 의 회귀 방지. base 와 다른 TF 를 저장해 복원 확인.
+    """
+    code = "AICT-TFTF-TFTF-TFTF"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("plain_secret", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc)
+    users_db.set_last_timeframe(db_path, code, "1h")
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory([]),
+        db_path=db_path,
+        base_settings=base_settings,
+        master_key=master_key,
+    )
+    settings = mu._build_user_settings(code, "BTC/USDT:USDT")
+    assert settings.timeframe == "1h"
+    # 미설정 사용자는 base 값 그대로(회귀 없음).
+    code2 = "AICT-TFNO-TFNO-TFNO"
+    users_db.create_user(db_path, code2)
+    enc2 = keystore.encrypt_secret("plain_secret", key=master_key)
+    users_db.set_api_keys(db_path, code2, "pub", enc2)
+    settings2 = mu._build_user_settings(code2, "BTC/USDT:USDT")
+    assert settings2.timeframe == base_settings.timeframe
+
+
 # ============================================================
 # 2. start / stop / status
 # ============================================================

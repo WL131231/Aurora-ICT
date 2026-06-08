@@ -676,6 +676,10 @@ def _register_multi_user_routes(
             slot.settings.timeframe = req.timeframe
         elif mu_manager.base_settings is not None:
             mu_manager.base_settings.timeframe = req.timeframe
+        # 2026-06-08: 사용자별 영속화 — 재시작/재가동이 전역 base(기본값)로
+        # 회귀하지 않게. _build_user_settings 가 이 값을 복원한다.
+        from aurora_ict.auth import users_db as _users_db_tf
+        _users_db_tf.set_last_timeframe(db_path, user_code, req.timeframe)
         logger.info(
             "[multi-user] %s trade timeframe 변경 → %s", user_code, req.timeframe,
         )
