@@ -981,3 +981,23 @@ async def test_reconcile_skips_already_closed_entry() -> None:
     assert len([e for e in bot._trades_store.events
                 if e.event_type is TradeEventType.SYNC_CLOSE]) == 0
     assert len(bot._trades_store.events) == before
+
+
+def test_remember_setup_records_ts_and_direction() -> None:
+    """_remember_setup 이 ts + 방향을 함께 기록 — 롱→숏 전환 시 같은 봉 숏 누락 방지.
+
+    기존엔 ts_ms 만 기록해, 롱 청산 직후 같은 봉의 숏 셋업이 duplicate_ts 로
+    차단됐다(라이브 HYPE 버그). 방향까지 기록하면 반대 방향은 통과한다.
+    """
+    from types import SimpleNamespace
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    bot = BotIctInstance(client=client, symbol="BTCUSDT")
+    bot._remember_setup(SimpleNamespace(ts_ms=12345, direction=Direction.LONG))
+    assert bot._last_setup_ts_ms == 12345
+    assert bot._last_setup_direction is Direction.LONG
+    # 같은 ts 라도 방향이 다르면 중복으로 보지 않는다(차단 조건이 거짓).
+    assert not (
+        12345 == bot._last_setup_ts_ms
+        and Direction.SHORT == bot._last_setup_direction
+    )
