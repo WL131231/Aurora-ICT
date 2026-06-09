@@ -155,13 +155,20 @@ def _query_trades(
     return [dict(r) for r in rows]
 
 
-def _trades_to_csv(rows: list[dict[str, Any]]) -> str:
-    """CSV 직렬화 — Excel 한국어 호환을 위해 BOM 없이 UTF-8."""
+def _trades_to_csv(
+    rows: list[dict[str, Any]], *, with_user_code: bool = False,
+) -> str:
+    """CSV 직렬화 — Excel 한국어 호환을 위해 BOM 없이 UTF-8.
+
+    with_user_code=True 면 맨 앞에 ``user_code`` 컬럼 추가 — 전체 사용자 일괄
+    export 시 어느 사용자 거래인지 구분용.
+    """
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
-    writer.writerow(_CSV_HEADERS)
+    headers = ["user_code", *_CSV_HEADERS] if with_user_code else list(_CSV_HEADERS)
+    writer.writerow(headers)
     for r in rows:
-        writer.writerow([
+        cols = [
             r.get("ts_ms", ""),
             r.get("event_type", ""),
             r.get("mode") or "",  # DEMO/LIVE — 구식 row 는 빈값.
@@ -172,7 +179,10 @@ def _trades_to_csv(rows: list[dict[str, Any]]) -> str:
             r.get("pnl_usdt") if r.get("pnl_usdt") is not None else "",
             r.get("setup_ts_ms") if r.get("setup_ts_ms") is not None else "",
             r.get("reason", ""),
-        ])
+        ]
+        if with_user_code:
+            cols = [r.get("user_code", ""), *cols]
+        writer.writerow(cols)
     return buf.getvalue()
 
 
@@ -412,6 +422,35 @@ def create_trades_router(
             iter([csv_text]),
             media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @router.get("/admin/trades/export-all")
+    async def admin_export_all_trades_csv(
+        since_ms: int | None = Query(default=None, ge=0),
+        x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+        cookie_token: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
+    ) -> StreamingResponse:
+        """전체 사용자 거래를 한 CSV 로 — user_code 컬럼 포함 (운영 일괄 분석용).
+
+        사용자별로 일일이 받지 않고 모든 사용자 매매를 한 파일로 합쳐 내려준다.
+        """
+        _check_admin_cookie_or_header(cookie_token, x_admin_token)
+        all_rows: list[dict[str, Any]] = []
+        for code in _list_user_codes(data_dir):
+            db = _trades_db_path(data_dir, code)
+            rows = _query_trades(
+                db, limit=200000, since_ms=since_ms, event_type=None,
+            )
+            for r in rows:
+                r["user_code"] = code
+            all_rows.extend(rows)
+        csv_text = _trades_to_csv(all_rows, with_user_code=True)
+        return StreamingResponse(
+            iter([csv_text]),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": 'attachment; filename="trades_all_users.csv"',
+            },
         )
 
     @router.get("/admin/trades/all_users")
