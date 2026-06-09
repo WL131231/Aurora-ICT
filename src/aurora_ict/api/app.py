@@ -79,6 +79,8 @@ class PositionCloseRequest(BaseModel):
     """Close By 수동 청산 — fraction 1.0 = 전체, 0.5 = 50%."""
 
     fraction: float = 1.0  # (0, 1]
+    # 2026-06-10: 멀티 페어 — 어느 심볼 포지션을 청산할지. 미지정 시 기본 심볼.
+    symbol: str | None = None
 
 
 class TimeframeRequest(BaseModel):
@@ -770,7 +772,9 @@ def _register_multi_user_routes(
                 status_code=400,
                 detail=f"fraction은 (0, 1] 범위 — 받은 값: {req.fraction}",
             )
-        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
+        slot = mu_manager._slots.get(
+            (user_code, req.symbol or _DEFAULT_SYMBOL),
+        )
         bot = slot.bot if slot is not None else None
         if bot is None or bot.active_position is None:
             raise HTTPException(status_code=404, detail="active position 없음")
@@ -812,15 +816,15 @@ def _register_multi_user_routes(
             "closed_qty": close_qty, "remaining_qty": remaining, "active": True,
         }
 
-    @app.get("/ict/position")
-    async def get_position_mu(
-        user_code: str = Depends(require_auth),
+    async def _build_position_payload(
+        user_code: str, bot: Any,
     ) -> dict[str, Any]:
-        """현재 active position 상세 — multi-user 사용자별."""
-        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
-        bot = slot.bot if slot is not None else None
+        """단일 봇(페어)의 포지션 상세 — active/pending 포함, symbol 항상 명시.
+
+        멀티 페어(BTC/ETH/HYPE) 동시 포지션을 슬롯별로 만들 때 재사용.
+        """
         pending: dict[str, Any] | None = None
-        if bot is not None and bot._pending_entry is not None:
+        if bot._pending_entry is not None:
             pe = bot._pending_entry
             pending = {
                 "direction": pe.direction.value,
@@ -830,8 +834,8 @@ def _register_multi_user_routes(
                 "qty": pe.qty,
                 "placed_ts_ms": pe.placed_ts_ms,
             }
-        if bot is None or bot.active_position is None:
-            return {"active": False, "pending": pending}
+        if bot.active_position is None:
+            return {"active": False, "symbol": bot.symbol, "pending": pending}
 
         ap = bot.active_position
         ex_unrealized: float | None = None
@@ -853,7 +857,8 @@ def _register_multi_user_routes(
                     ex_entry = float(ep)
         except Exception as e:  # noqa: BLE001
             logger.debug(
-                "[multi-user] %s 거래소 포지션 PnL fetch 실패: %s", user_code, e,
+                "[multi-user] %s %s 거래소 포지션 PnL fetch 실패: %s",
+                user_code, bot.symbol, e,
             )
 
         mark_price = ex_entry
@@ -862,7 +867,10 @@ def _register_multi_user_routes(
             if rows:
                 mark_price = float(rows[-1][4])
         except Exception as e:  # noqa: BLE001
-            logger.debug("[multi-user] %s mark_price fetch 실패: %s", user_code, e)
+            logger.debug(
+                "[multi-user] %s %s mark_price fetch 실패: %s",
+                user_code, bot.symbol, e,
+            )
 
         if ex_unrealized is not None:
             unrealized = ex_unrealized
@@ -899,16 +907,53 @@ def _register_multi_user_routes(
             "pending": pending,
         }
 
+    @app.get("/ict/position")
+    async def get_position_mu(
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """현재 active/pending 포지션 — 사용자의 모든 페어 슬롯 순회(멀티 페어).
+
+        2026-06-10 버그픽스: 기존엔 기본 심볼(BTC) 슬롯 하나만 조회해 ETH/HYPE
+        동시 포지션이 UI 에 안 보였다. 이제 사용자의 전 슬롯을 모아 ``positions``
+        list 로 반환. 레거시 단일 필드는 호환 위해 기본 심볼(없으면 첫 항목)로 유지.
+        """
+        user_slots = sorted(
+            (
+                (sym, slot)
+                for (u, sym), slot in mu_manager._slots.items()
+                if u == user_code
+            ),
+            key=lambda x: x[0],
+        )
+        positions: list[dict[str, Any]] = []
+        for _sym, slot in user_slots:
+            bot = slot.bot if slot is not None else None
+            if bot is None:
+                continue
+            payload = await _build_position_payload(user_code, bot)
+            # active 도 pending 도 없는 페어는 표에서 제외(빈 행 방지).
+            if payload.get("active") or payload.get("pending"):
+                positions.append(payload)
+
+        legacy = next(
+            (p for p in positions if p.get("symbol") == _DEFAULT_SYMBOL),
+            positions[0] if positions else {"active": False, "pending": None},
+        )
+        return {**legacy, "positions": positions}
+
     @app.post("/ict/pending/cancel")
     async def cancel_pending_mu(
+        symbol: str = Query(default=_DEFAULT_SYMBOL),
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
         """대기 중인 지정가 entry 주문 즉시 취소 (사용자 명령, 2026-05-30).
 
         UI 의 positions 표 'CANCEL' 버튼이 호출. 봇이 거래소 cancel_all_orders
         + 내부 ``_pending_entry`` 비움. active 포지션엔 영향 X.
+
+        2026-06-10: 멀티 페어 — ``symbol`` 로 어느 페어 대기주문인지 지정.
         """
-        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
+        slot = mu_manager._slots.get((user_code, symbol))
         bot = slot.bot if slot is not None else None
         if bot is None:
             return {"ok": False, "reason": "bot_not_running"}

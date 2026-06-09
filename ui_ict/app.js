@@ -780,83 +780,17 @@ function _fmt(n, digits = 2) {
   });
 }
 
-function renderPositions(pos) {
-  const tbody = $("positions-tbody");
-  const count = $("positions-count");
-  // 2026-05-28: 모바일 가로 positions fab badge / 강조 — 활성 포지션 유무 동기화.
-  _syncPositionsFab(!!(pos && pos.active));
-
-  // 2026-05-30 파트너 요청: 대기 포지션 (limit 미체결) 도 표시.
-  // active=False 라도 pending 있으면 그것만 row 1개로 표시.
-  if (!pos || (!pos.active && !pos.pending)) {
-    const emptyMsg = window.AuroraI18n
-      ? window.AuroraI18n.t("positions.empty")
-      : "포지션 없음 — 봇 가동 후 진입 시 표시됩니다";
-    tbody.innerHTML = '<tr><td colspan="8" class="pos-empty">' +
-      emptyMsg + '</td></tr>';
-    count.textContent = "0 open";
-    return;
-  }
-
-  // 대기 포지션만 (active 없음) — pending row 1개.
-  if (!pos.active && pos.pending) {
-    const pe = pos.pending;
-    const sideClass = pe.direction === "long" ? "pos-side-long" : "pos-side-short";
-    const sideLabel = pe.direction === "long" ? "LONG" : "SHORT";
-    const tPending = window.AuroraI18n ? window.AuroraI18n.t("positions.pending") : "대기 중";
-    const placedMs = pe.placed_ts_ms || 0;
-    const tz = (window.AuroraI18n && window.AuroraI18n.getTz()) || "Asia/Seoul";
-    let placedStr = "—";
-    if (placedMs) {
-      try {
-        placedStr = new Intl.DateTimeFormat("sv-SE", {
-          timeZone: tz, month: "2-digit", day: "2-digit",
-          hour: "2-digit", minute: "2-digit", hour12: false,
-        }).format(new Date(placedMs));
-      } catch (e) {}
-    }
-    tbody.innerHTML = `
-      <tr class="pos-pending">
-        <td>
-          <div>${pos.symbol || "—"}</div>
-          <div class="${sideClass}" style="font-size:9px; letter-spacing:0.15em">${sideLabel} · LIMIT · ${tPending}</div>
-        </td>
-        <td>${_fmt(pe.qty, 4)}</td>
-        <td>${_fmt(pe.entry, 2)}</td>
-        <td>—</td>
-        <td>—</td>
-        <td>SL ${_fmt(pe.stop_loss, 2)}<br/>TP ${_fmt(pe.take_profit, 2)}</td>
-        <td style="color:var(--text-3)">${placedStr}</td>
-        <td>
-          <div class="pos-actions">
-            <button class="pos-btn-close-full" id="btn-cancel-pending">CANCEL</button>
-          </div>
-        </td>
-      </tr>`;
-    count.textContent = "1 pending";
-    // Cancel 버튼 핸들러 — 2026-05-30: 신규 /ict/pending/cancel endpoint.
-    const cancelBtn = $("btn-cancel-pending");
-    if (cancelBtn) {
-      cancelBtn.onclick = async () => {
-        try {
-          await api("/ict/pending/cancel", "POST");
-          toast("Pending order cancelled");
-          await fetchAndRender();
-        } catch (e) { toast(e.message, true); }
-      };
-    }
-    return;
-  }
-
+// 활성 포지션 한 줄 — data-symbol 로 어느 페어인지 (멀티 페어 청산 라우팅).
+function _posActiveRow(pos) {
   const sideClass = pos.direction === "long" ? "pos-side-long" : "pos-side-short";
   const sideLabel = pos.direction === "long" ? "LONG" : "SHORT";
   const pnlClass = pos.unrealized_pnl >= 0 ? "pos-pnl-pos" : "pos-pnl-neg";
   const pnlSign = pos.unrealized_pnl >= 0 ? "+" : "";
-
-  tbody.innerHTML = `
+  const sym = pos.symbol || "—";
+  return `
     <tr>
       <td>
-        <div>${pos.symbol}</div>
+        <div>${sym}</div>
         <div class="${sideClass}" style="font-size:9px; letter-spacing:0.15em">${sideLabel} · ${pos.leverage}×</div>
       </td>
       <td>${_fmt(pos.qty, 4)}</td>
@@ -870,13 +804,88 @@ function renderPositions(pos) {
       </td>
       <td>
         <div class="pos-actions">
-          <button class="pos-btn-close-half" data-fraction="0.5">CLOSE 50%</button>
-          <button class="pos-btn-close-full" data-fraction="1.0">CLOSE ALL</button>
+          <button class="pos-btn-close-half" data-fraction="0.5" data-symbol="${sym}">CLOSE 50%</button>
+          <button class="pos-btn-close-full" data-fraction="1.0" data-symbol="${sym}">CLOSE ALL</button>
         </div>
       </td>
-    </tr>
-  `;
-  count.textContent = "1 open";
+    </tr>`;
+}
+
+// 대기(미체결 limit) 포지션 한 줄.
+function _posPendingRow(pos, tz, tPending) {
+  const pe = pos.pending;
+  const sideClass = pe.direction === "long" ? "pos-side-long" : "pos-side-short";
+  const sideLabel = pe.direction === "long" ? "LONG" : "SHORT";
+  const sym = pos.symbol || "—";
+  const placedMs = pe.placed_ts_ms || 0;
+  let placedStr = "—";
+  if (placedMs) {
+    try {
+      placedStr = new Intl.DateTimeFormat("sv-SE", {
+        timeZone: tz, month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hour12: false,
+      }).format(new Date(placedMs));
+    } catch (e) {}
+  }
+  return `
+    <tr class="pos-pending">
+      <td>
+        <div>${sym}</div>
+        <div class="${sideClass}" style="font-size:9px; letter-spacing:0.15em">${sideLabel} · LIMIT · ${tPending}</div>
+      </td>
+      <td>${_fmt(pe.qty, 4)}</td>
+      <td>${_fmt(pe.entry, 2)}</td>
+      <td>—</td>
+      <td>—</td>
+      <td>SL ${_fmt(pe.stop_loss, 2)}<br/>TP ${_fmt(pe.take_profit, 2)}</td>
+      <td style="color:var(--text-3)">${placedStr}</td>
+      <td>
+        <div class="pos-actions">
+          <button class="pos-btn-close-full pos-btn-cancel" data-symbol="${sym}">CANCEL</button>
+        </div>
+      </td>
+    </tr>`;
+}
+
+function renderPositions(pos) {
+  const tbody = $("positions-tbody");
+  const count = $("positions-count");
+
+  // 2026-06-10: 멀티 페어 — 백엔드가 positions list 반환(BTC/ETH/HYPE 동시).
+  // 구버전(단일) 응답도 호환: positions 없으면 단건을 wrap.
+  let list = (pos && Array.isArray(pos.positions)) ? pos.positions.slice() : [];
+  if (list.length === 0 && pos && (pos.active || pos.pending)) {
+    list = [pos];
+  }
+  list = list.filter((p) => p && (p.active || p.pending));
+
+  // 모바일 가로 positions fab badge — 활성 포지션 하나라도 있으면 강조.
+  _syncPositionsFab(list.some((p) => p.active));
+
+  if (list.length === 0) {
+    const emptyMsg = window.AuroraI18n
+      ? window.AuroraI18n.t("positions.empty")
+      : "포지션 없음 — 봇 가동 후 진입 시 표시됩니다";
+    tbody.innerHTML = '<tr><td colspan="8" class="pos-empty">' +
+      emptyMsg + '</td></tr>';
+    count.textContent = "0 open";
+    return;
+  }
+
+  const tz = (window.AuroraI18n && window.AuroraI18n.getTz()) || "Asia/Seoul";
+  const tPending = window.AuroraI18n
+    ? window.AuroraI18n.t("positions.pending") : "대기 중";
+  // 활성 먼저, 대기 뒤로 — 보기 좋게 정렬.
+  list.sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0));
+  tbody.innerHTML = list
+    .map((p) => (p.active ? _posActiveRow(p) : _posPendingRow(p, tz, tPending)))
+    .join("");
+
+  const openN = list.filter((p) => p.active).length;
+  const pendN = list.filter((p) => !p.active && p.pending).length;
+  let label = `${openN} open`;
+  if (pendN > 0) label += ` · ${pendN} pending`;
+  count.textContent = label;
 }
 
 // ============================================================
@@ -1105,16 +1114,37 @@ document.addEventListener("click", (e) => {
   if (inp) inp.focus();
 });
 
-// Close By 버튼 (이벤트 위임 — render 후 매번 다시 박은 버튼에도 동작)
+// Close By / Cancel 버튼 (이벤트 위임 — render 후 매번 다시 박은 버튼에도 동작)
 $("positions-tbody").addEventListener("click", async (ev) => {
+  // 대기 주문 취소 — 멀티 페어: 버튼 data-symbol 로 어느 페어인지.
+  const cancelBtn = ev.target.closest("button.pos-btn-cancel");
+  if (cancelBtn) {
+    const symbol = cancelBtn.dataset.symbol || "";
+    cancelBtn.disabled = true;
+    try {
+      const q = symbol ? `?symbol=${encodeURIComponent(symbol)}` : "";
+      await api("/ict/pending/cancel" + q, "POST");
+      toast("Pending order cancelled");
+      await fetchAndRender();
+    } catch (e) {
+      toast(e.message, true);
+      cancelBtn.disabled = false;
+    }
+    return;
+  }
+
   const btn = ev.target.closest("button[data-fraction]");
   if (!btn) return;
   const fraction = parseFloat(btn.dataset.fraction);
+  const symbol = btn.dataset.symbol || "";
   const label = fraction >= 1.0 ? "전체" : `${Math.round(fraction * 100)}%`;
-  if (!confirm(`포지션을 ${label} 청산하시겠습니까? (시장가)`)) return;
+  const symLabel = symbol ? ` (${symbol})` : "";
+  if (!confirm(`포지션을${symLabel} ${label} 청산하시겠습니까? (시장가)`)) return;
   btn.disabled = true;
   try {
-    const result = await api("/ict/position/close", "POST", { fraction });
+    const body = { fraction };
+    if (symbol) body.symbol = symbol;  // 멀티 페어 — 청산 대상 지정.
+    const result = await api("/ict/position/close", "POST", body);
     if (result.active) {
       toast(`${label} 청산 완료 — 남은 ${_fmt(result.remaining_qty, 4)}`);
     } else {
@@ -1484,7 +1514,15 @@ setInterval(refreshNotice, 30 * 1000);
 /** 봇이 지정가 미체결 대기 중이면 차트에 horizontal price line + qty 라벨 표시.
  *  position.pending 없으면 line 제거 (체결됨/취소됨). */
 function renderPendingLimit(position) {
-  const pe = position && position.pending;
+  // 멀티 페어: 현재 차트에 보이는 심볼의 대기주문만 가격선으로 표시.
+  let pe = null;
+  if (position && Array.isArray(position.positions)) {
+    const match = position.positions.find(
+      (p) => p && p.symbol === currentChartSymbol && p.pending);
+    pe = match ? match.pending : null;
+  } else {
+    pe = position && position.pending;  // 레거시(단일) 응답 호환
+  }
   const key = pe ? `${pe.entry}|${pe.qty}|${pe.direction}` : null;
   if (pendingLineKey === key) return;  // 동일 — skip
   // 기존 라인 제거
