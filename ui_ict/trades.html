@@ -427,6 +427,9 @@
       </select>
       <button id="btn-refresh" data-i18n="trades.refresh">새로고침</button>
       <button id="btn-csv" class="accent" data-i18n="trades.csv">CSV 다운로드</button>
+      <!-- 2026-06-10 파트너 요청: 관리자만 — 전체 사용자 매매를 한 CSV 로. -->
+      <button id="btn-csv-all" class="accent" style="display:none"
+              data-i18n="trades.csvAll">전체 CSV 다운로드</button>
     </div>
 
     <table>
@@ -547,6 +550,7 @@
       $("admin-state").className = "admin-state" + (isAdmin ? " on" : "");
       $("btn-admin-login").style.display = isAdmin ? "none" : "";
       $("btn-admin-logout").style.display = isAdmin ? "" : "none";
+      $("btn-csv-all").style.display = isAdmin ? "" : "none";
       $("admin-section").classList.toggle("show", isAdmin);
       if (isAdmin) await loadUserDropdown();
     }
@@ -915,6 +919,20 @@
       const a = document.createElement("a");
       a.href = url;
       a.download = "trades.csv";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    };
+
+    // 전체 사용자 CSV — 관리자 전용. 기간 필터만 반영(사용자/유형 무관).
+    $("btn-csv-all").onclick = () => {
+      const period = parseInt($("f-period").value, 10);
+      const since = period > 0 ? (Date.now() - period) : 0;
+      const params = new URLSearchParams();
+      if (since > 0) params.set("since_ms", String(since));
+      const a = document.createElement("a");
+      a.href = "/admin/trades/export-all?" + params.toString();
+      a.download = "trades_all_users.csv";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

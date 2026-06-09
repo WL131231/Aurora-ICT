@@ -362,6 +362,67 @@ def test_admin_all_users_aggregates(data_dir, monkeypatch):
 
 
 # ============================================================
+# 7. /admin/trades/export-all — 전체 사용자 단일 CSV
+# ============================================================
+
+
+def test_admin_export_all_requires_token(data_dir, monkeypatch):
+    """토큰 없으면 503/401 — 운영 데이터라 admin 게이팅 필수."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    r = client.get("/admin/trades/export-all", headers={"X-Admin-Token": "wrong"})
+    assert r.status_code == 401
+
+
+def test_admin_export_all_combines_users_with_code_column(data_dir, monkeypatch):
+    """모든 사용자 거래가 한 CSV — user_code 컬럼 + 각 사용자 row 포함."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
+    _create_user_trades(data_dir, "AICT-AAAA-AAAA-AAAA", [
+        {"ts_ms": 1000, "event_type": "entry", "direction": "long"},
+    ])
+    _create_user_trades(data_dir, "AICT-BBBB-BBBB-BBBB", [
+        {"ts_ms": 2000, "event_type": "sl_hit", "pnl_usdt": -7.5, "direction": "short"},
+    ])
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    r = client.get(
+        "/admin/trades/export-all",
+        headers={"X-Admin-Token": "secret-token-xyz"},
+    )
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/csv")
+    assert "trades_all_users.csv" in r.headers["content-disposition"]
+    text = r.text
+    # user_code 가 맨 앞 컬럼.
+    assert text.startswith("user_code,ts_ms,event_type,mode,symbol,direction")
+    assert "AICT-AAAA-AAAA-AAAA" in text
+    assert "AICT-BBBB-BBBB-BBBB" in text
+    assert "1000" in text
+    assert "-7.5" in text
+
+
+def test_admin_export_all_since_filter(data_dir, monkeypatch):
+    """since_ms 보다 오래된 row 는 제외 — 기간 필터 동작."""
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "secret-token-xyz")
+    _create_user_trades(data_dir, "AICT-OLDN-OLDN-OLDN", [
+        {"ts_ms": 1000, "event_type": "entry"},
+        {"ts_ms": 9000, "event_type": "sl_hit", "pnl_usdt": -1.0},
+    ])
+    app = _make_app(data_dir)
+    client = TestClient(app)
+    r = client.get(
+        "/admin/trades/export-all?since_ms=5000",
+        headers={"X-Admin-Token": "secret-token-xyz"},
+    )
+    assert r.status_code == 200
+    text = r.text
+    assert "9000" in text
+    # ts=1000 은 since 필터로 제외 — data row 에는 없어야.
+    assert ",1000," not in text
+
+
+# ============================================================
 # 7. /admin/trades/backup — raw JSONL
 # ============================================================
 
