@@ -1266,8 +1266,9 @@ class BotIctInstance:
             # 원인 가능. 봇 자체는 계속 돌아야 하지만 운영자가 즉시 인지해야 한다.
             self._order_failure_count += 1
             logger.error(
-                "place_order 실패 #%d — side=%s qty=%.4f price=%s setup_ts=%d: %s",
-                self._order_failure_count, side, qty, entry_price,
+                "[%s] place_order 실패 #%d — side=%s qty=%.4f price=%s setup_ts=%d: %s",
+                self.user_code or "?", self._order_failure_count, side, qty,
+                entry_price,
                 setup.ts_ms if hasattr(setup, "ts_ms") else 0, e,
             )
             return
