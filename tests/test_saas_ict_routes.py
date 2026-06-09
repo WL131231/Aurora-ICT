@@ -692,6 +692,75 @@ def test_running_pairs_requires_auth(client: TestClient) -> None:
     assert r.status_code == 401
 
 
+def _inject_active(bot: Any, direction: Any, entry: float, qty: float) -> None:
+    """봇에 활성 포지션 주입 — 멀티 페어 표시 테스트용(실제 진입 로직 우회)."""
+    from aurora_ict.bot.bot_ict_instance import _ActivePosition
+    bot.active_position = _ActivePosition(
+        direction=direction,
+        entry=entry,
+        stop_loss=entry * 1.01,
+        take_profit=entry * 0.95,
+        qty=qty,
+        setup_ts_ms=1778598000000,
+    )
+
+
+def test_position_lists_all_pairs(client: TestClient, mu) -> None:
+    """2026-06-10 버그픽스: BTC+ETH 동시 포지션이 모두 positions 에 보여야.
+
+    기존엔 기본 심볼(BTC) 슬롯만 조회해 ETH 가 UI 에서 사라졌다.
+    """
+    from aurora_ict.strategy.silver_bullet import Direction
+    code = "AICT-MULT-MULT-MULT"
+    _register_user(client, code)
+    assert client.post("/ict/start?symbol=BTC/USDT:USDT").status_code == 200
+    assert client.post("/ict/start?symbol=ETH/USDT:USDT").status_code == 200
+
+    btc = mu._slots[(code, "BTC/USDT:USDT")].bot
+    eth = mu._slots[(code, "ETH/USDT:USDT")].bot
+    _inject_active(btc, Direction.SHORT, 100.0, 1.0)
+    _inject_active(eth, Direction.LONG, 50.0, 2.0)
+
+    r = client.get("/ict/position")
+    assert r.status_code == 200
+    d = r.json()
+    syms = {p["symbol"] for p in d["positions"]}
+    assert syms == {"BTC/USDT:USDT", "ETH/USDT:USDT"}
+    # 둘 다 active.
+    assert all(p["active"] for p in d["positions"])
+    # 레거시 단일 필드는 기본 심볼(BTC) 기준.
+    assert d["symbol"] == "BTC/USDT:USDT"
+
+    client.post("/ict/stop?symbol=BTC/USDT:USDT")
+    client.post("/ict/stop?symbol=ETH/USDT:USDT")
+
+
+def test_position_close_routes_by_symbol(client: TestClient, mu) -> None:
+    """청산 ?symbol — ETH 청산이 BTC 포지션을 건드리지 않아야."""
+    from aurora_ict.strategy.silver_bullet import Direction
+    code = "AICT-CLOS-CLOS-CLOS"
+    _register_user(client, code)
+    client.post("/ict/start?symbol=BTC/USDT:USDT")
+    client.post("/ict/start?symbol=ETH/USDT:USDT")
+    btc = mu._slots[(code, "BTC/USDT:USDT")].bot
+    eth = mu._slots[(code, "ETH/USDT:USDT")].bot
+    _inject_active(btc, Direction.SHORT, 100.0, 1.0)
+    _inject_active(eth, Direction.LONG, 50.0, 2.0)
+
+    # ETH 전체 청산.
+    r = client.post(
+        "/ict/position/close", json={"fraction": 1.0, "symbol": "ETH/USDT:USDT"},
+    )
+    assert r.status_code == 200
+    assert r.json()["active"] is False
+    # ETH 는 비고 BTC 는 그대로.
+    assert eth.active_position is None
+    assert btc.active_position is not None
+
+    client.post("/ict/stop?symbol=BTC/USDT:USDT")
+    client.post("/ict/stop?symbol=ETH/USDT:USDT")
+
+
 def test_status_includes_running_symbols_field(
     client: TestClient,
 ) -> None:
