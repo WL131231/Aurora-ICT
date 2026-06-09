@@ -497,7 +497,11 @@
     document.querySelectorAll("[data-i18n]").forEach((el) => {
       const key = el.getAttribute("data-i18n");
       if (!key) return;
-      el.textContent = t(key);
+      const translated = t(key);
+      // 사전에 키가 없으면 t() 가 key 문자열 자체를 반환한다(예: i18n.js 가
+      // 구버전으로 캐시돼 신규 키가 빠진 경우). 그때는 HTML 기본 텍스트를
+      // 그대로 두어 "trades.csvAll" 같은 raw 키 노출을 막는다.
+      if (translated !== key) el.textContent = translated;
     });
     // title 속성도 i18n 처리.
     document.querySelectorAll("[data-i18n-title]").forEach((el) => {
