@@ -12,10 +12,13 @@ python-telegram-bot 대신 httpx 로 텔레그램 HTTP API 직접 호출(의존�
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -34,17 +37,67 @@ _CODE_RE = re.compile(
     r"\bAICT-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}\b", re.IGNORECASE,
 )
 
-# 이벤트별 (이모지, 한국어 라벨).
-_EVENT_LABEL: dict[str, tuple[str, str]] = {
-    "entry": ("🟢", "진입"),
-    "sl_hit": ("🔴", "손절"),
-    "tp_hit": ("✅", "익절"),
-    "flip_open": ("🔄", "플립 진입"),
-    "flip_close": ("🔁", "플립 청산"),
-    "sync_close": ("🔁", "동기화 청산"),
-    "manual_close": ("✋", "수동 청산"),
-    "recovered": ("♻️", "포지션 복구"),
+# 이벤트별 이모지 (언어 무관).
+_EVENT_EMOJI: dict[str, str] = {
+    "entry": "🟢",
+    "sl_hit": "🔴",
+    "tp_hit": "✅",
+    "flip_open": "🔄",
+    "flip_close": "🔁",
+    "sync_close": "🔁",
+    "manual_close": "✋",
+    "recovered": "♻️",
 }
+
+# 언어별 라벨 — UI i18n(ko/en/zh/ja)과 동일 코드 체계. 미지원 언어는 ko fallback.
+_LABELS: dict[str, dict[str, Any]] = {
+    "ko": {
+        "ev": {
+            "entry": "진입", "sl_hit": "손절", "tp_hit": "익절",
+            "flip_open": "플립 진입", "flip_close": "플립 청산",
+            "sync_close": "동기화 청산", "manual_close": "수동 청산",
+            "recovered": "포지션 복구", "event": "이벤트",
+        },
+        "entry_price": "진입가", "tp": "목표가(TP)", "sl": "손절가(SL)",
+        "exit_price": "청산가", "qty": "수량", "grade": "등급", "rr": "손익비",
+        "reason": "사유", "profit": "수익", "loss": "손실", "change": "변동",
+    },
+    "en": {
+        "ev": {
+            "entry": "Entry", "sl_hit": "Stop Loss", "tp_hit": "Take Profit",
+            "flip_open": "Flip Entry", "flip_close": "Flip Close",
+            "sync_close": "Sync Close", "manual_close": "Manual Close",
+            "recovered": "Recovered", "event": "Event",
+        },
+        "entry_price": "Entry", "tp": "Target(TP)", "sl": "Stop(SL)",
+        "exit_price": "Exit", "qty": "Qty", "grade": "Grade", "rr": "RR",
+        "reason": "Reason", "profit": "Profit", "loss": "Loss", "change": "Change",
+    },
+    "zh": {
+        "ev": {
+            "entry": "进场", "sl_hit": "止损", "tp_hit": "止盈",
+            "flip_open": "翻转进场", "flip_close": "翻转平仓",
+            "sync_close": "同步平仓", "manual_close": "手动平仓",
+            "recovered": "恢复仓位", "event": "事件",
+        },
+        "entry_price": "进场价", "tp": "目标价(TP)", "sl": "止损价(SL)",
+        "exit_price": "平仓价", "qty": "数量", "grade": "等级", "rr": "盈亏比",
+        "reason": "原因", "profit": "盈利", "loss": "亏损", "change": "变动",
+    },
+    "ja": {
+        "ev": {
+            "entry": "エントリー", "sl_hit": "損切り", "tp_hit": "利確",
+            "flip_open": "フリップ進入", "flip_close": "フリップ決済",
+            "sync_close": "同期決済", "manual_close": "手動決済",
+            "recovered": "ポジション復旧", "event": "イベント",
+        },
+        "entry_price": "エントリー価", "tp": "目標(TP)", "sl": "損切(SL)",
+        "exit_price": "決済価", "qty": "数量", "grade": "グレード", "rr": "RR",
+        "reason": "理由", "profit": "利益", "loss": "損失", "change": "変動",
+    },
+}
+
+_ENTRY_EVENTS = {"entry", "flip_open"}
 
 
 def _enum_val(v: Any) -> str:
@@ -52,29 +105,102 @@ def _enum_val(v: Any) -> str:
     return str(getattr(v, "value", v) if v is not None else "")
 
 
-def format_trade(user_code: str, event: Any) -> str:
-    """TradeEvent → 텔레그램 메시지(HTML) 텍스트."""
+def _fmt_price(x: Any) -> str:
+    """가격 자릿수 — 크기별 (BTC 6만 vs ONDO 0.36) 가독성."""
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return str(x)
+    if abs(v) >= 100:
+        return f"{v:,.2f}"
+    if abs(v) >= 1:
+        return f"{v:,.4f}"
+    return f"{v:.6f}"
+
+
+def _fmt_time(ts_ms: Any, tz: str) -> str:
+    """이벤트 시각(UTC ms) → 사용자 시간대 'MM-DD HH:MM'. 실패 시 빈 문자열."""
+    try:
+        dt = datetime.fromtimestamp(int(ts_ms) / 1000, ZoneInfo(tz))
+        return dt.strftime("%m-%d %H:%M")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def format_trade(
+    user_code: str, event: Any, lang: str = "ko", tz: str = "Asia/Seoul",
+) -> str:
+    """TradeEvent → 텔레그램 메시지(HTML). 사용자 언어/시간대로 상세 출력.
+
+    진입(entry/flip_open): 진입가 · 목표가(TP) · 손절가(SL) · 수량 · 사유(등급/RR/window).
+    청산: 손익(수익/손실) · 청산가 · 진입대비 변동% · 사유. 모두 context_json 활용.
+    """
+    label_set = _LABELS.get(lang) or _LABELS["ko"]
+    ev_labels = label_set["ev"]
     etv = _enum_val(getattr(event, "event_type", "")).lower()
-    emoji, label = _EVENT_LABEL.get(etv, ("•", etv or "이벤트"))
+    emoji = _EVENT_EMOJI.get(etv, "•")
+    label = ev_labels.get(etv, etv or ev_labels["event"])
     direction = _enum_val(getattr(event, "direction", "")).upper()
     sym = getattr(event, "symbol", "") or ""
-    price = getattr(event, "price", None)
-    qty = getattr(event, "qty", None)
-    pnl = getattr(event, "pnl_usdt", None)
-    reason = getattr(event, "reason", "") or ""
 
-    lines = [f"{emoji} <b>{label}</b>  {sym}  {direction}".rstrip()]
-    if price is not None:
-        row = f"가격 {price:,.2f}"
-        if qty is not None:
-            row += f"  수량 {qty}"
-        lines.append(row)
-    if pnl is not None:
-        sign = "+" if pnl >= 0 else ""
-        lines.append(f"손익 {sign}{pnl:,.2f} USDT")
-    if reason:
-        lines.append(f"<i>{reason}</i>")
-    lines.append(f"<code>{user_code}</code>")
+    ctx: dict[str, Any] = {}
+    raw = getattr(event, "context_json", None)
+    if raw:
+        try:
+            ctx = json.loads(raw)
+        except (ValueError, TypeError):
+            ctx = {}
+
+    head = f"{emoji} <b>{label}</b>"
+    if sym:
+        head += f"  {sym}"
+    if direction:
+        head += f"  {direction}"
+    lines = [head]
+
+    price = getattr(event, "price", None)
+    if etv in _ENTRY_EVENTS:
+        entry = ctx.get("entry", price)
+        if entry is not None:
+            lines.append(f"{label_set['entry_price']} <code>{_fmt_price(entry)}</code>")
+        if isinstance(ctx.get("tp"), (int, float)):
+            lines.append(f"{label_set['tp']} <code>{_fmt_price(ctx['tp'])}</code>")
+        if isinstance(ctx.get("sl"), (int, float)):
+            lines.append(f"{label_set['sl']} <code>{_fmt_price(ctx['sl'])}</code>")
+        qty = getattr(event, "qty", None)
+        if qty:
+            lines.append(f"{label_set['qty']} {qty}")
+        parts: list[str] = []
+        if ctx.get("score") is not None:
+            parts.append(f"{label_set['grade']} {ctx['score']}")
+        if isinstance(ctx.get("rr"), (int, float)):
+            parts.append(f"{label_set['rr']} {ctx['rr']:.2f}")
+        if ctx.get("window"):
+            parts.append(str(ctx["window"]))
+        if parts:
+            lines.append(f"{label_set['reason']} {' · '.join(parts)}")
+        elif getattr(event, "reason", ""):
+            # context_json 이 없으면(구식 이벤트 등) reason 원문 fallback.
+            lines.append(f"{label_set['reason']} {event.reason}")
+    else:
+        pnl = getattr(event, "pnl_usdt", None)
+        if isinstance(pnl, (int, float)):
+            tag = label_set["profit"] if pnl >= 0 else label_set["loss"]
+            sign = "+" if pnl >= 0 else ""
+            lines.append(f"{tag} <b>{sign}{pnl:,.2f} USDT</b>")
+        cprice = ctx.get("close_price", price)
+        if cprice is not None:
+            lines.append(f"{label_set['exit_price']} <code>{_fmt_price(cprice)}</code>")
+        if isinstance(ctx.get("move_pct"), (int, float)):
+            lines.append(f"{label_set['change']} {ctx['move_pct']:+.2f}%")
+        reason = ctx.get("close_reason") or getattr(event, "reason", "")
+        if reason:
+            lines.append(f"{label_set['reason']} <i>{reason}</i>")
+
+    t = _fmt_time(getattr(event, "ts_ms", 0), tz)
+    lines.append(
+        f"<i>{t}</i>  <code>{user_code}</code>" if t else f"<code>{user_code}</code>",
+    )
     return "\n".join(lines)
 
 
@@ -117,7 +243,11 @@ class TelegramAlerter:
         )
 
     async def send_trade_alert(self, user_code: str, event: Any) -> None:
-        """매매 이벤트 → 연동된 chat_id 로 알림. 미연동·실패 시 조용히 skip."""
+        """매매 이벤트 → 연동된 chat_id 로 알림. 미연동·실패 시 조용히 skip.
+
+        사용자 언어/시간대(users_db.get_user_prefs)로 메시지를 포맷한다.
+        미설정 시 ko / Asia/Seoul fallback.
+        """
         if not self.enabled:
             return
         try:
@@ -127,7 +257,14 @@ class TelegramAlerter:
             return
         if not chat_id:
             return
-        await self.send(chat_id, format_trade(user_code, event))
+        lang, tz = "ko", "Asia/Seoul"
+        try:
+            prefs = users_db.get_user_prefs(self.db_path, user_code)
+            lang = prefs.get("language") or "ko"
+            tz = prefs.get("timezone") or "Asia/Seoul"
+        except Exception as e:  # noqa: BLE001
+            logger.debug("%s prefs 조회 실패(기본값 사용): %s", user_code, e)
+        await self.send(chat_id, format_trade(user_code, event, lang, tz))
 
     async def poll_loop(self) -> None:
         """getUpdates 롱폴링 — 라이선스 코드 입력 시 chat_id 연결. 무한 루프."""
