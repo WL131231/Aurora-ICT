@@ -288,6 +288,13 @@ class BotIctInstance:
     htf_ema_bias_enabled: bool = False
     htf_ema_bias_tf: str = "1h"
     htf_ema_bias_period: int = 20
+    # 2026-06-10 #ALIGN: 다중 EMA 정렬 게이트 (백테스트 검증 — 단일 EMA20 strict
+    # 보다 방향 정확도↑). htf_ema_bias_enabled 이고 이게 True 면 EMA20 단일 대신
+    # 인접 EMA 쌍(periods) 정배열/역배열 점수로 방향 게이트. |점수|>=threshold 면
+    # 그 방향만 진입, 미만이면 추세 불명확 → 진입 자제(되돌림/횡보 whipsaw 회피).
+    htf_ema_align_enabled: bool = False
+    htf_ema_align_periods: tuple[int, ...] = (60, 120, 200, 350, 480, 620)
+    htf_ema_align_threshold: int = 2
 
     # 변경 3: HTF FVG override 모드 — "off"/"A"/"C".
     # A = 진입 직전 차단만, C = 진입 + 봉 close 기준 flip + re-entry.
@@ -998,6 +1005,19 @@ class BotIctInstance:
         """
         if not self.htf_ema_bias_enabled:
             return None
+        # 2026-06-10 #ALIGN: 다중 EMA 정렬 점수로 방향 결정 (검증됨 — 단일 EMA20
+        # 보다 방향 정확도↑). 점수 |s|>=threshold 면 그 방향, 미만이면 None(불명확
+        # → 양방향 setup 허용하되 _passes_ema_align_gate 가 진입 자제).
+        if self.htf_ema_align_enabled:
+            score = await self._compute_ema_align_score()
+            if score is None:
+                return None
+            t = max(1, int(self.htf_ema_align_threshold))
+            if score >= t:
+                return Direction.LONG
+            if score <= -t:
+                return Direction.SHORT
+            return None
         period = max(2, int(self.htf_ema_bias_period))
         try:
             df = await self._fetch_ohlcv_tf(self.htf_ema_bias_tf, period + 30)
@@ -1029,7 +1049,12 @@ class BotIctInstance:
         """
         if not self.htf_ema_bias_enabled:
             return True
-        # 변경 4: override 모드 활성이면 ema_bias 는 의미 없음 (override 가 강력).
+        # 2026-06-10 #ALIGN: 다중 EMA 정렬 게이트 — override 와 독립 작동(진입 단계
+        # 방향 필터). override="C"(진입 후 flip)와 공존. 추세 불명확 시 진입 자제 →
+        # prefer_direction=None(양방향 setup)과 짝지어 백테스트 align 동작과 일치.
+        if self.htf_ema_align_enabled:
+            return await self._passes_ema_align_gate(direction)
+        # 변경 4: override 모드 활성이면 단일 EMA bias 는 의미 없음 (override 가 강력).
         if self.htf_override_mode != "off":
             return True
         period = max(2, int(self.htf_ema_bias_period))
@@ -1078,6 +1103,81 @@ class BotIctInstance:
             self.htf_ema_bias_tf, period, ema, last_close,
         )
         return False
+
+    @staticmethod
+    def _ema_last(closes: Any, period: int) -> float:
+        """closes 배열의 EMA 마지막값 — SMA 시드 후 재귀 (단일 EMA 게이트와 동일식)."""
+        k = 2.0 / (period + 1)
+        ema = float(closes[:period].mean())
+        for px in closes[period:]:
+            ema = float(px) * k + ema * (1.0 - k)
+        return ema
+
+    async def _compute_ema_align_score(self) -> int | None:
+        """다중 EMA 정렬 점수 (#ALIGN). 방향 결정·게이트가 공유.
+
+        htf_ema_bias_tf(기본 1h) 봉으로 periods 각 EMA 계산 → 인접 쌍(짧은→긴)이
+        정배열(짧은>긴)이면 +1, 역배열이면 -1 누적. 범위 -(N-1)~+(N-1).
+        강한 상승추세면 +극단, 하락추세면 -극단, 전환/횡보면 0 근처.
+
+        Returns:
+            점수 int, 또는 fetch/미성숙 실패 시 None(게이트 skip).
+        """
+        periods = self.htf_ema_align_periods
+        if not periods or len(periods) < 2:
+            return None
+        pmax = max(periods)
+        try:
+            df = await self._fetch_ohlcv_tf(self.htf_ema_bias_tf, pmax + 50)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "HTF EMA align fetch 실패 (tf=%s): %s — align gate skip",
+                self.htf_ema_bias_tf, e,
+            )
+            return None
+        if len(df) < pmax + 1:
+            return None
+        closes = df["close"].astype(float).to_numpy()
+        emas = [self._ema_last(closes, max(2, int(p))) for p in periods]
+        score = 0
+        for a, b in zip(emas[:-1], emas[1:], strict=False):
+            if a > b:
+                score += 1
+            elif a < b:
+                score -= 1
+        # 추세 라벨 변화 시에만 1줄 INFO (단일 EMA bias 로그와 통일).
+        bias = "bullish" if score >= 1 else ("bearish" if score <= -1 else "neutral")
+        if bias != self._last_logged_htf_ema_bias:
+            if self._last_logged_htf_ema_bias:
+                logger.info(
+                    "HTF EMA align 변화 | %s → %s (score=%d, tf=%s periods=%s)",
+                    self._last_logged_htf_ema_bias, bias, score,
+                    self.htf_ema_bias_tf, periods,
+                )
+            self._last_logged_htf_ema_bias = bias
+        return score
+
+    async def _passes_ema_align_gate(self, direction: Direction) -> bool:
+        """다중 EMA 정렬 방향 게이트 — |점수|>=threshold 면 그 방향만 허용,
+        미만이면 추세 불명확으로 진입 자제(False). 계산 실패 시 안전하게 True.
+        """
+        score = await self._compute_ema_align_score()
+        if score is None:
+            return True
+        t = max(1, int(self.htf_ema_align_threshold))
+        is_long = direction is Direction.LONG
+        if score >= t:
+            ok = is_long       # 상승추세 정렬 → 롱만
+        elif score <= -t:
+            ok = not is_long   # 하락추세 정렬 → 숏만
+        else:
+            ok = False         # 추세 불명확 → 진입 자제
+        if not ok:
+            logger.info(
+                "HTF align 게이트 skip — score=%d(T=%d) setup=%s (tf=%s)",
+                score, t, "buy" if is_long else "sell", self.htf_ema_bias_tf,
+            )
+        return ok
 
     async def _compute_htf_bias(self) -> TrendDirection | None:
         """Trade TF 의 상위 HTF1/HTF2 봉을 fetch 해 bias 산출.
