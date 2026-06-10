@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -60,6 +61,26 @@ class BacktestConfig:
     #   False(기본) = 봉 경로 휴리스틱(bullish 봉 저점 먼저 / bearish 봉 고점 먼저)
     #   True = 무조건 SL 우선(worst-case 보수) — win 과소평가
     sl_priority: bool = False
+    # --- 2026-06-10 #SHORT-BIAS: 실시간 봇 HTF EMA bias 게이트 재현 ---
+    # 실거래는 _passes_htf_ema_bias(1h EMA[period] vs 현재가)로 방향을 거른다.
+    # 백테스트엔 그게 없어 양방향 진입 → 실거래(숏 91%)와 동작 불일치였다.
+    #   "off"    = 게이트 없음(양방향, 기존 백테스트 동작)
+    #   "strict" = 1h close>EMA→롱만 / close<EMA→숏만 (실시간 봇 현행)
+    #   "band"   = EMA ±band_pct 완충대 안이면 양방향 허용(되돌림 whipsaw 회피)
+    #   "align"  = 다중 EMA 정배열/역배열 점수 게이트 (조윤 EMA 가중치 아이디어)
+    htf_ema_bias: str = "off"
+    htf_ema_period: int = 20
+    htf_ema_band_pct: float = 0.0  # "band" 모드 완충 폭 (예: 0.003 = 0.3%)
+    # "align" 모드 — 인접 EMA 쌍 정렬 점수. 60>120>200>... 정배열이면 +1씩(롱),
+    # 역배열이면 -1씩(숏). 범위 -(N-1)~+(N-1). |score|>=threshold 면 그 방향만
+    # 진입, 미만이면 추세 불명확 → 진입 자제(되돌림/횡보 whipsaw 회피).
+    htf_align_periods: tuple[int, ...] = (60, 120, 200, 350, 480, 620)
+    htf_align_threshold: int = 1
+    # 2026-06-10 조윤 동적 전환: 보유 중 EMA 정렬 점수가 보유방향과 반대로
+    # |score|>=flip_threshold 강반전하면 SL/TP 기다리지 않고 그 봉 close 에서
+    # 즉시 청산(outcome="flip"). 반등 조기 포착 — 다음 봉부터 재진입(게이트 적용).
+    htf_align_flip: bool = False
+    htf_align_flip_threshold: int = 3
 
 
 @dataclass(slots=True)
@@ -196,6 +217,7 @@ def _simulate_fill(
 def _simulate_exit(
     opens, highs, lows, closes, entry_idx: int, direction: Direction,
     sl: float, tp: float, cfg: BacktestConfig,
+    align_score: Any = None,
 ) -> tuple[int, float, str]:
     """진입 후 봉들에서 SL/TP 먼저 닿는 지점 → (exit_idx, exit_price, outcome).
 
@@ -203,8 +225,14 @@ def _simulate_exit(
     bullish 봉(close>=open)은 보통 open→저점→고점→close 경로라 **저점 먼저**,
     bearish 봉은 open→고점→저점→close 라 **고점 먼저** 형성됐다고 가정한다.
     sl_priority=True 면 무조건 SL(worst-case 보수).
+
+    align_score 가 주어지고 cfg.htf_align_flip=True 면, 보유 중 EMA 정렬 점수가
+    보유방향과 반대로 |score|>=flip_threshold 강반전한 봉의 close 에서 즉시 청산
+    (outcome="flip") — 조윤 동적 전환. SL/TP 우선, 미도달 시 flip 판정.
     """
     n = len(highs)
+    use_flip = cfg.htf_align_flip and align_score is not None
+    flip_t = cfg.htf_align_flip_threshold
     for j in range(entry_idx + 1, n):
         hi, lo = float(highs[j]), float(lows[j])
         if direction is Direction.LONG:
@@ -222,7 +250,66 @@ def _simulate_exit(
             return j, sl, "sl"
         if hit_tp:
             return j, tp, "tp"
+        # SL/TP 미도달 — EMA 정렬 점수 강반전 시 flip 청산 (조윤 동적 전환).
+        if use_flip:
+            sc = align_score[j]
+            if sc == sc:  # NaN 아니면
+                flipped = (
+                    (direction is Direction.LONG and sc <= -flip_t)
+                    or (direction is Direction.SHORT and sc >= flip_t)
+                )
+                if flipped:
+                    return j, float(closes[j]), "flip"
     return n - 1, float(closes[-1]), "eod"
+
+
+def _precompute_htf_ema(df: pd.DataFrame, period: int) -> pd.Series:
+    """각 1m 봉 시점의 '직전까지 확정된 1h 봉들'로 계산한 EMA 시리즈.
+
+    look-ahead 방지: 진입 시점 i 의 1h EMA 는 그 시점에 이미 '닫힌' 1h 봉들만
+    사용(진행 중 1h 봉 제외). 호출부에서 현재 1m close 와 비교 → 실시간
+    ``_passes_htf_ema_bias``(닫힌 EMA vs 현재가)와 같은 의미.
+
+    Args:
+        df: 1m OHLCV (DatetimeIndex UTC).
+        period: EMA 기간 (1h 봉 기준).
+
+    Returns:
+        df.index 에 정렬된 EMA 시리즈 (초기 구간은 NaN — 게이트 skip).
+    """
+    h1 = df["close"].resample("1h").last()
+    ema_h1 = h1.ewm(span=period, adjust=False).mean()
+    # 직전 확정봉 EMA (현재 진행 1h 봉은 아직 안 닫혔으니 shift 로 제외).
+    ema_valid = ema_h1.shift(1)
+    return ema_valid.reindex(df.index, method="ffill")
+
+
+def _precompute_align_score(
+    df: pd.DataFrame, periods: tuple[int, ...],
+) -> pd.Series:
+    """각 1m 봉 시점의 다중 EMA 정렬 점수 (조윤 EMA 가중치 아이디어).
+
+    1h 봉 기준 EMA[periods] 를 계산하고, 인접 쌍이 정배열(짧은>긴)이면 +1,
+    역배열이면 -1 누적. 전부 정배열이면 +(N-1)(강한 상승추세), 전부 역배열이면
+    -(N-1)(강한 하락). 0 근처면 추세 불명확(되돌림/횡보).
+
+    look-ahead 방지: _precompute_htf_ema 와 동일하게 직전 확정 1h 봉 기준(shift).
+
+    Args:
+        df: 1m OHLCV (DatetimeIndex UTC).
+        periods: EMA 기간들 (짧은→긴 순서, 1h 봉 기준).
+
+    Returns:
+        df.index 에 정렬된 점수 시리즈 (초기 구간 NaN — 게이트 skip).
+    """
+    h1 = df["close"].resample("1h").last()
+    emas = [h1.ewm(span=p, adjust=False).mean() for p in periods]
+    score = pd.Series(0.0, index=h1.index)
+    for a, b in zip(emas[:-1], emas[1:], strict=False):
+        score = score + (a > b).astype(int) - (a < b).astype(int)
+    # NaN(EMA 미성숙) 구간은 무효 처리 — 가장 긴 EMA 가 익은 뒤부터 유효.
+    score = score.where(emas[-1].notna())
+    return score.shift(1).reindex(df.index, method="ffill")
 
 
 def run_backtest(
@@ -243,6 +330,16 @@ def run_backtest(
     highs = df["high"].to_numpy()
     lows = df["low"].to_numpy()
     closes = df["close"].to_numpy()
+    # #SHORT-BIAS: HTF EMA bias 게이트용 1h EMA (off 면 계산 skip).
+    htf_ema = (
+        _precompute_htf_ema(df, cfg.htf_ema_period).to_numpy()
+        if cfg.htf_ema_bias in ("strict", "band") else None
+    )
+    # align 점수 — 진입 게이트("align") 또는 동적 flip 청산 중 하나라도 쓰면 계산.
+    htf_align = (
+        _precompute_align_score(df, cfg.htf_align_periods).to_numpy()
+        if (cfg.htf_ema_bias == "align" or cfg.htf_align_flip) else None
+    )
     trades: list[Trade] = []
     i = cfg.window
     while i < n - 1:
@@ -274,6 +371,38 @@ def run_backtest(
         if not _gate_pass(score, setup.risk_reward, cfg):
             i += 1
             continue
+        # #SHORT-BIAS: HTF EMA bias 방향 게이트 (실시간 _passes_htf_ema_bias 재현).
+        if htf_ema is not None:
+            ema_v = htf_ema[i]
+            if ema_v == ema_v:  # NaN 아니면 (초기 구간 NaN 은 게이트 skip = 허용)
+                cl = float(closes[i])
+                band = ema_v * cfg.htf_ema_band_pct
+                is_long = setup.direction is Direction.LONG
+                if cfg.htf_ema_bias == "strict":
+                    blocked = (cl > ema_v and not is_long) or (cl < ema_v and is_long)
+                else:  # "band" — 완충대 밖에서만 방향 강제, 안이면 양방향 허용
+                    blocked = (
+                        (cl > ema_v + band and not is_long)
+                        or (cl < ema_v - band and is_long)
+                    )
+                if blocked:
+                    i += 1
+                    continue
+        # "align" — 다중 EMA 정렬 점수 게이트 (조윤 EMA 가중치).
+        if htf_align is not None and cfg.htf_ema_bias == "align":
+            sc = htf_align[i]
+            if sc == sc:  # NaN 아니면
+                is_long = setup.direction is Direction.LONG
+                t = cfg.htf_align_threshold
+                if sc >= t:
+                    blocked = not is_long       # 상승추세 → 롱만
+                elif sc <= -t:
+                    blocked = is_long           # 하락추세 → 숏만
+                else:
+                    blocked = True              # 추세 불명확 → 진입 자제
+                if blocked:
+                    i += 1
+                    continue
         # 체결 시뮬 — limit(setup.entry)에 ttl 봉 내 가격이 닿아야 체결. 미체결이면 skip.
         fill_idx = _simulate_fill(
             highs, lows, i, setup.direction, setup.entry, cfg.entry_ttl_bars,
@@ -287,6 +416,7 @@ def run_backtest(
         exit_idx, exit_raw, outcome = _simulate_exit(
             opens, highs, lows, closes, fill_idx, setup.direction,
             setup.stop_loss, setup.take_profit, cfg,
+            align_score=htf_align if cfg.htf_align_flip else None,
         )
         exit_slip = slip_pct(
             float(highs[exit_idx]), float(lows[exit_idx]), float(closes[exit_idx]),
