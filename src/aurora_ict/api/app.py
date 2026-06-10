@@ -154,6 +154,7 @@ def _settings_safe_dict(settings: IctSettings) -> dict[str, Any]:
         "step_interval_sec": settings.step_interval_sec,
         "ohlcv_limit": settings.ohlcv_limit,
         "daily_loss_limit_pct": settings.daily_loss_limit_pct,
+        "daily_profit_limit_pct": settings.daily_profit_limit_pct,
         "has_demo_credentials": bool(
             settings.demo_api_key.get_secret_value()
             and settings.demo_api_secret.get_secret_value(),
@@ -710,7 +711,44 @@ def _register_multi_user_routes(
             "start_equity": 0.0,
             "hit": False,
             "date_ny": "",
+            "profit_limit_pct": settings.daily_profit_limit_pct,
+            "profit_hit": False,
         }
+
+    @app.post("/ict/daily_profit_limit")
+    async def set_daily_profit_limit_mu(
+        req: DailyLossLimitRequest,
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """일일 수익(TP) 한도 설정 — 사용자 slot.settings + 가동 중 bot 갱신.
+
+        2026-06-10 조윤 건의: "하루 몇 % 먹으면 그날 종료". 0 = 비활성, 0~100.
+        """
+        if req.pct < 0 or req.pct > 100:
+            raise HTTPException(
+                status_code=400,
+                detail="daily_profit_limit_pct 는 0~100 범위 (0 = 비활성).",
+            )
+        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
+        if slot is not None:
+            slot.settings.daily_profit_limit_pct = req.pct
+            if slot.bot is not None:
+                slot.bot.daily_profit_limit_pct = req.pct
+                if (
+                    slot.bot._daily_profit_hit
+                    and not slot.bot._is_daily_profit_limit_hit()
+                ):
+                    slot.bot._daily_profit_hit = False
+                    logger.info(
+                        "[multi-user] %s daily profit limit 한도 ↑ — hit flag 해제",
+                        user_code,
+                    )
+        elif mu_manager.base_settings is not None:
+            mu_manager.base_settings.daily_profit_limit_pct = req.pct
+        logger.info(
+            "[multi-user] %s daily profit limit 설정 → %.2f%%", user_code, req.pct,
+        )
+        return {"profit_limit_pct": req.pct}
 
     @app.post("/ict/daily_loss_limit")
     async def set_daily_loss_limit_mu(
@@ -1560,8 +1598,30 @@ def create_app(
                 "start_equity": 0.0,
                 "hit": False,
                 "date_ny": "",
+                "profit_limit_pct": manager.settings.daily_profit_limit_pct,
+                "profit_hit": False,
             }
         return status
+
+    @app.post("/ict/daily_profit_limit")
+    async def set_daily_profit_limit(req: DailyLossLimitRequest) -> dict[str, Any]:
+        """일일 수익(TP) 한도 설정 (단일 사용자) — 0 = 비활성, 0~100 자본 %."""
+        if req.pct < 0 or req.pct > 100:
+            raise HTTPException(
+                status_code=400,
+                detail="daily_profit_limit_pct 는 0~100 범위 (0 = 비활성).",
+            )
+        manager.settings.daily_profit_limit_pct = req.pct
+        if manager.bot is not None:
+            manager.bot.daily_profit_limit_pct = req.pct
+            if (
+                manager.bot._daily_profit_hit
+                and not manager.bot._is_daily_profit_limit_hit()
+            ):
+                manager.bot._daily_profit_hit = False
+                logger.info("daily profit limit 한도 ↑ — hit flag 해제")
+        logger.info("daily profit limit 설정 → %.2f%%", req.pct)
+        return {"profit_limit_pct": req.pct}
 
     @app.post("/ict/daily_loss_limit")
     async def set_daily_loss_limit(req: DailyLossLimitRequest) -> dict[str, Any]:

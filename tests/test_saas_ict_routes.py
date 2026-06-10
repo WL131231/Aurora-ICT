@@ -565,6 +565,29 @@ def test_daily_loss_limit_set_out_of_range_400(client: TestClient) -> None:
     assert r.status_code == 400
 
 
+def test_daily_profit_limit_set_valid(client: TestClient) -> None:
+    """일일 수익(TP) 한도 — 2026-06-10 조윤 건의."""
+    _register_user(client)
+    r = client.post("/ict/daily_profit_limit", json={"pct": 8.0})
+    assert r.status_code == 200
+    assert r.json()["profit_limit_pct"] == 8.0
+
+
+def test_daily_profit_limit_out_of_range_400(client: TestClient) -> None:
+    """수익 한도는 0~100 — 초과 시 400."""
+    _register_user(client)
+    r = client.post("/ict/daily_profit_limit", json={"pct": 150.0})
+    assert r.status_code == 400
+
+
+def test_daily_loss_limit_get_includes_profit_fields(client: TestClient) -> None:
+    """GET 응답에 profit_limit_pct/profit_hit 동봉(UI TP Limit 표시용)."""
+    _register_user(client)
+    d = client.get("/ict/daily_loss_limit").json()
+    assert "profit_limit_pct" in d
+    assert "profit_hit" in d
+
+
 # ============================================================
 # 11. position/close — 활성 포지션 없으면 404
 # ============================================================

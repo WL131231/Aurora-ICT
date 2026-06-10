@@ -1898,6 +1898,11 @@ async function refreshDailyLossLimit() {
     if (document.activeElement !== inp) {
       inp.value = (s.limit_pct > 0) ? s.limit_pct.toFixed(2) : "";
     }
+    // TP Limit (일일 수익 한도) — 2026-06-10 조윤 건의.
+    const tinp = $("tpl-input");
+    if (tinp && document.activeElement !== tinp) {
+      tinp.value = (s.profit_limit_pct > 0) ? s.profit_limit_pct.toFixed(2) : "";
+    }
     const pnl = s.today_pnl_usdt;
     const pct = s.today_pct;
     const sign = pnl > 0 ? "+" : (pnl < 0 ? "" : "±");
@@ -1905,15 +1910,22 @@ async function refreshDailyLossLimit() {
       (s.start_equity > 0)
         ? `${sign}${pnl.toFixed(2)} USDT (${sign}${pct.toFixed(2)}%)`
         : "—";
-    if (s.limit_pct <= 0) {
+    // 상태 — 수익 한도 HIT 가 우선 표시(그날 목표 달성), 다음 손실 HIT, 다음 활성.
+    if (s.profit_hit) {
+      $("dll-status").textContent = "TP HIT — 그날 목표 달성, 진입 중단";
+      $("dll-status").style.color = "#2ecc71";
+    } else if (s.hit) {
+      $("dll-status").textContent = "SL HIT — 새 진입 차단";
+      $("dll-status").style.color = "#e74c3c";
+    } else if (s.limit_pct > 0 || s.profit_limit_pct > 0) {
+      const parts = [];
+      if (s.limit_pct > 0) parts.push(`SL ${s.limit_pct.toFixed(1)}%`);
+      if (s.profit_limit_pct > 0) parts.push(`TP ${s.profit_limit_pct.toFixed(1)}%`);
+      $("dll-status").textContent = `Active @ ${parts.join(" / ")}`;
+      $("dll-status").style.color = "#2ecc71";
+    } else {
       $("dll-status").textContent = "OFF";
       $("dll-status").style.color = "#888";
-    } else if (s.hit) {
-      $("dll-status").textContent = "HIT — 새 진입 차단";
-      $("dll-status").style.color = "#e74c3c";
-    } else {
-      $("dll-status").textContent = `Active @ ${s.limit_pct.toFixed(2)}%`;
-      $("dll-status").style.color = "#2ecc71";
     }
   } catch (e) {
     // 봇 미가동 등 — 조용히 무시
@@ -1925,7 +1937,18 @@ $("btn-dll-set").onclick = async () => {
   const pct = isNaN(v) ? 0 : Math.max(0, Math.min(50, v));
   try {
     await api("/ict/daily_loss_limit", "POST", { pct });
-    toast(pct > 0 ? `Daily loss limit ${pct}% 적용` : "Daily loss limit OFF");
+    toast(pct > 0 ? `SL Limit ${pct}% 적용` : "SL Limit OFF");
+    await refreshDailyLossLimit();
+  } catch (e) { toast(e.message, true); }
+};
+
+const _btnTplSet = $("btn-tpl-set");
+if (_btnTplSet) _btnTplSet.onclick = async () => {
+  const v = parseFloat($("tpl-input").value);
+  const pct = isNaN(v) ? 0 : Math.max(0, Math.min(100, v));
+  try {
+    await api("/ict/daily_profit_limit", "POST", { pct });
+    toast(pct > 0 ? `TP Limit ${pct}% 적용` : "TP Limit OFF");
     await refreshDailyLossLimit();
   } catch (e) { toast(e.message, true); }
 };

@@ -277,8 +277,11 @@ class BotIctInstance:
     max_entry_distance_pct: float = 0.0
     # heartbeat_interval_sec: step loop 살아있음 INFO 로그 주기. 0 = 비활성.
     heartbeat_interval_sec: int = 0
-    # #SAFETY-1: 자본 대비 % 일일 손실 한도. 0 = 비활성. NY local 자정 reset.
+    # #SAFETY-1: 자본 대비 % 일일 손실(SL) 한도. 0 = 비활성. NY local 자정 reset.
     daily_loss_limit_pct: float = 0.0
+    # 2026-06-10 조윤 건의: 자본 대비 % 일일 수익(TP) 한도. 도달 시 그날 신규
+    # 진입 중단(active position 은 유지). 0 = 비활성. NY local 자정 reset.
+    daily_profit_limit_pct: float = 0.0
 
     # HTF EMA bias 필터 — multi_tf 와 별개. 진입 직전 htf_ema_bias_tf EMA20 vs 가격
     # 비교 → setup.direction 이 bias 와 반대면 진입 skip.
@@ -351,6 +354,8 @@ class BotIctInstance:
     _today_date_str: str = field(default="")  # "YYYY-MM-DD" NY local
     _today_start_equity: float = field(default=0.0)
     _daily_limit_hit: bool = field(default=False)
+    # 2026-06-10 조윤 건의: 일일 수익(TP) 한도 도달 flag — NY 자정 reset.
+    _daily_profit_hit: bool = field(default=False)
     # 키 무효(10003) step 연속 실패 카운터 — 임계치 도달 시 봇 자동 정지.
     _auth_fail_streak: int = field(default=0)
 
@@ -1175,6 +1180,15 @@ class BotIctInstance:
                 self._today_realized_pnl_usdt, self._today_start_equity,
             )
             return
+        # 2026-06-10 조윤 건의: 일일 수익(TP) 한도 도달 시 신규 진입 중단.
+        if self._is_daily_profit_limit_hit():
+            logger.info(
+                "setup skip — daily profit limit %.2f%% hit "
+                "(today_pnl=%.2fUSDT / start=%.2f) — 그날 목표 달성, 진입 중단",
+                self.daily_profit_limit_pct,
+                self._today_realized_pnl_usdt, self._today_start_equity,
+            )
+            return
 
         # max_sl_distance_pct skip (비정상 큰 SL 차단). 리스크 기반 sizing 이면
         # SL 거리는 qty 로 관리(손실 고정)되므로 이 상한을 우회한다 → 진입 빈도↑.
@@ -1978,6 +1992,7 @@ class BotIctInstance:
             self._today_realized_pnl_usdt = 0.0
             self._today_start_equity = equity_now if equity_now > 0 else 0.0
             self._daily_limit_hit = False
+            self._daily_profit_hit = False
             logger.info(
                 "daily PnL reset (NY %s) — start_equity=%.2f",
                 ny_date, self._today_start_equity,
@@ -1997,6 +2012,23 @@ class BotIctInstance:
         loss_pct = -self._today_realized_pnl_usdt / self._today_start_equity * 100.0
         return loss_pct >= self.daily_loss_limit_pct
 
+    def _is_daily_profit_limit_hit(self) -> bool:
+        """일일 수익(TP) 한도 초과 여부 (2026-06-10 조윤 건의).
+
+        하루 누적 수익이 ``daily_profit_limit_pct`` 도달하면 그날 신규 진입 중단
+        (active position 은 유지). "몇 % 먹으면 그날 종료" 전략.
+
+        Returns:
+            True 면 새 진입 차단. ``daily_profit_limit_pct == 0`` 또는 시작 equity
+            미정이면 항상 False.
+        """
+        if self.daily_profit_limit_pct <= 0:
+            return False
+        if self._today_start_equity <= 0:
+            return False
+        profit_pct = self._today_realized_pnl_usdt / self._today_start_equity * 100.0
+        return profit_pct >= self.daily_profit_limit_pct
+
     def daily_loss_status(self) -> dict[str, Any]:
         """현재 일일 손익 상태 — API / UI 노출용 (#SAFETY-1).
 
@@ -2014,6 +2046,9 @@ class BotIctInstance:
             "start_equity": self._today_start_equity,
             "hit": self._daily_limit_hit,
             "date_ny": self._today_date_str,
+            # 2026-06-10 조윤 건의: 일일 수익(TP) 한도 상태 동봉.
+            "profit_limit_pct": self.daily_profit_limit_pct,
+            "profit_hit": self._daily_profit_hit,
         }
 
     async def _sync_today_realized_pnl(self) -> None:
@@ -2048,6 +2083,15 @@ class BotIctInstance:
                 "daily loss limit HIT (거래소 동기화) — limit=%.2f%% today=%.2fUSDT "
                 "(start_equity=%.2f)",
                 self.daily_loss_limit_pct,
+                self._today_realized_pnl_usdt,
+                self._today_start_equity,
+            )
+        if self._is_daily_profit_limit_hit() and not self._daily_profit_hit:
+            self._daily_profit_hit = True
+            logger.info(
+                "daily profit limit HIT (거래소 동기화) — limit=%.2f%% today=%.2fUSDT "
+                "(start_equity=%.2f) — 그날 목표 달성",
+                self.daily_profit_limit_pct,
                 self._today_realized_pnl_usdt,
                 self._today_start_equity,
             )

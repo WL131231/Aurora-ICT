@@ -2151,13 +2151,19 @@
       <div class="equity-sub" id="equity-sub" data-i18n="equity.realtimeNote">—</div>
     </div>
 
-    <h2 data-i18n="sidebar.dailyLossLimit">Daily Loss Limit</h2>
-    <!-- 2026-05-29 v3: 파트너 피드백 "아까가 더 낫네" — 인라인 style 복귀. -->
+    <h2 data-i18n="sidebar.dailyLimits">Daily Limits</h2>
+    <!-- 2026-06-10 조윤 건의: SL Limit(손실) + TP Limit(수익) 두 한도. -->
     <div class="row" style="margin-top:4px">
-      <span class="k" data-i18n="label.limitPct">Limit %</span>
+      <span class="k" data-i18n="label.slLimitPct">SL Limit %</span>
       <input id="dll-input" type="number" step="0.1" min="0" max="50" placeholder="0 = off"
              style="width:78px;background:#1a1a1a;border:1px solid #333;color:#ddd;padding:3px 6px;border-radius:3px"/>
       <button id="btn-dll-set" data-i18n="btn.set" style="margin-left:4px;padding:3px 10px">SET</button>
+    </div>
+    <div class="row" style="margin-top:4px">
+      <span class="k" data-i18n="label.tpLimitPct">TP Limit %</span>
+      <input id="tpl-input" type="number" step="0.1" min="0" max="100" placeholder="0 = off"
+             style="width:78px;background:#1a1a1a;border:1px solid #333;color:#ddd;padding:3px 6px;border-radius:3px"/>
+      <button id="btn-tpl-set" data-i18n="btn.set" style="margin-left:4px;padding:3px 10px">SET</button>
     </div>
     <div class="row"><span class="k" data-i18n="label.todayPnl">Today PnL</span><span id="dll-today" class="v">—</span></div>
     <div class="row"><span class="k" data-i18n="label.status">Status</span><span id="dll-status" class="v">—</span></div>
