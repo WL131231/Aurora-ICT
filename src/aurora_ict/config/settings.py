@@ -213,6 +213,11 @@ class IctSettings(BaseSettings):
     # 누적 손실 / 시작 equity * 100 ≥ 한도 → 새 진입 skip (active position 은 SL/TP 진행).
     # Reset 시점: NY local 자정 (ICT 정통 일일 boundary 일관).
     daily_loss_limit_pct: float = Field(default=0.0, ge=0.0, le=50.0)
+    # daily_profit_limit_pct (2026-06-10 조윤 건의):
+    # 자본 대비 % 단위 일일 수익(TP) 한도. 0 = 비활성. > 0 면 활성:
+    # 누적 수익 / 시작 equity * 100 ≥ 한도 → 그날 새 진입 중단 ("몇 % 먹고 종료").
+    # Reset 시점: 손실 한도와 동일하게 NY local 자정.
+    daily_profit_limit_pct: float = Field(default=0.0, ge=0.0, le=100.0)
 
     # HTF EMA bias 필터 — multi_tf 와 별개의 단순 directional filter.
     # 진입 직전 htf_ema_bias_tf (기본 1h) EMA20 vs 가격 비교 → 추세 방향 setup 만 진입.

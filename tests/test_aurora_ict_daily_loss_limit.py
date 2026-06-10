@@ -101,3 +101,50 @@ def test_daily_loss_status_response() -> None:
     assert s["start_equity"] == 1000.0
     assert s["hit"] is False
     assert s["date_ny"] == "2026-05-21"
+    # 2026-06-10 조윤 건의: 수익 한도 필드 동봉.
+    assert s["profit_limit_pct"] == 0.0
+    assert s["profit_hit"] is False
+
+
+# ============================================================
+# 일일 수익(TP) 한도 — 2026-06-10 조윤 건의 (손실 한도와 대칭)
+# ============================================================
+
+
+def _bot_profit(profit_pct: float = 0.0) -> BotIctInstance:
+    return BotIctInstance(client=AsyncMock(), daily_profit_limit_pct=profit_pct)
+
+
+def test_profit_disabled_when_limit_zero() -> None:
+    """profit_limit_pct = 0 → 항상 False."""
+    bot = _bot_profit(0.0)
+    bot._today_start_equity = 1000.0
+    bot._today_realized_pnl_usdt = 500.0  # +50%
+    assert bot._is_daily_profit_limit_hit() is False
+
+
+def test_profit_hit_when_gain_exceeds_limit() -> None:
+    """누적 수익 / equity * 100 ≥ 한도 → True."""
+    bot = _bot_profit(8.0)
+    bot._today_start_equity = 1000.0
+    bot._today_realized_pnl_usdt = 80.0  # 정확히 8%
+    assert bot._is_daily_profit_limit_hit() is True
+    bot._today_realized_pnl_usdt = 79.99  # 미달
+    assert bot._is_daily_profit_limit_hit() is False
+
+
+def test_loss_never_triggers_profit_hit() -> None:
+    """손실 (negative PnL) 은 수익 한도 도달 안 함."""
+    bot = _bot_profit(8.0)
+    bot._today_start_equity = 1000.0
+    bot._today_realized_pnl_usdt = -500.0
+    assert bot._is_daily_profit_limit_hit() is False
+
+
+def test_profit_hit_reset_on_new_ny_day() -> None:
+    """NY 자정 reset 시 profit_hit flag 도 풀림."""
+    bot = _bot_profit(8.0)
+    bot._today_date_str = "2025-01-01"
+    bot._daily_profit_hit = True
+    bot._maybe_reset_daily_pnl(equity_now=2000.0)
+    assert bot._daily_profit_hit is False
