@@ -103,6 +103,61 @@ def test_user_prefs_roundtrip(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_call_retries_then_succeeds(tmp_path) -> None:
+    """_call — 첫 호출 네트워크 실패 후 재시도로 성공(알림 누락 방지)."""
+    al = TelegramAlerter("dummytoken", tmp_path / "u.db")
+    calls: list[int] = []
+
+    class _Resp:
+        def json(self) -> dict:
+            return {"ok": True}
+
+    async def _post(url: str, json: dict) -> _Resp:  # noqa: A002, ARG001
+        calls.append(1)
+        if len(calls) < 2:
+            raise RuntimeError("일시 네트워크 오류")
+        return _Resp()
+
+    al._client.post = _post  # type: ignore[method-assign]  # self-spy
+    r = await al._call("sendMessage", {}, retries=2)
+    assert r == {"ok": True}
+    assert len(calls) == 2  # 1실패 + 1성공(재시도)
+    await al.aclose()
+
+
+@pytest.mark.asyncio
+async def test_send_trade_alert_fallback_on_format_error(tmp_path, monkeypatch) -> None:
+    """format_trade 예외 시에도 fallback 메시지로 알림이 나간다(통째 누락 방지)."""
+    db = tmp_path / "users.db"
+    users_db.init_db(db)
+    code = "AICT-FBCK-FBCK-FBCK"
+    users_db.create_user(db, code)
+    users_db.set_telegram_chat_id(db, code, "1")
+
+    al = TelegramAlerter("dummytoken", db)
+    sent: list[str] = []
+
+    async def _spy(chat_id: str, text: str) -> None:
+        sent.append(text)
+
+    al.send = _spy  # type: ignore[method-assign]
+
+    import aurora_ict.interfaces.telegram_alerter as ta
+
+    def _boom(*a, **k):  # noqa: ANN002, ANN003, ANN202, ARG001
+        raise ValueError("format 깨짐")
+
+    monkeypatch.setattr(ta, "format_trade", _boom)
+    ev = TradeEvent(
+        ts_ms=0, event_type=TradeEventType.ENTRY, symbol="BTC/USDT:USDT",
+        direction="short", price=1.0, qty=1.0,
+    )
+    await al.send_trade_alert(code, ev)
+    assert sent and "매매" in sent[0] and code in sent[0]  # fallback 발송됨
+    await al.aclose()
+
+
+@pytest.mark.asyncio
 async def test_send_trade_alert_uses_user_prefs(tmp_path) -> None:
     """send_trade_alert 가 사용자 언어 설정으로 포맷(en)."""
     db = tmp_path / "users.db"
