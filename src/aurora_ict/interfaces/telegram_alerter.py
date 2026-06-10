@@ -222,16 +222,40 @@ class TelegramAlerter:
     def enabled(self) -> bool:
         return bool(self.token)
 
-    async def _call(self, method: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-        """텔레그램 API 호출 — 실패 시 None(예외 삼킴)."""
-        try:
-            r = await self._client.post(
-                _API.format(token=self.token, method=method), json=payload,
-            )
-            return r.json()
-        except Exception as e:  # noqa: BLE001
-            logger.warning("텔레그램 %s 실패: %s", method, e)
-            return None
+    async def _call(
+        self, method: str, payload: dict[str, Any], retries: int = 2,
+    ) -> dict[str, Any] | None:
+        """텔레그램 API 호출 — 네트워크/429 일시 실패 시 재시도 (알림 누락 방지).
+
+        2026-06-10: 기존엔 1회 실패 시 영구 손실이라 rate limit(429)·타임아웃에
+        알림이 사라졌다. 429 는 retry_after, 그 외 예외는 exponential backoff 로
+        retries 회 재시도. 최종 실패만 WARNING.
+        """
+        last_err: Exception | None = None
+        for attempt in range(retries + 1):
+            try:
+                r = await self._client.post(
+                    _API.format(token=self.token, method=method), json=payload,
+                )
+                data = r.json()
+                # 429 rate limit — 텔레그램이 알려준 retry_after 만큼 대기 후 재시도.
+                if isinstance(data, dict) and data.get("error_code") == 429:
+                    wait = float(
+                        data.get("parameters", {}).get("retry_after", 1),
+                    )
+                    if attempt < retries:
+                        await asyncio.sleep(min(wait, 5.0))
+                        continue
+                return data
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                if attempt < retries:
+                    await asyncio.sleep(1.5 * (attempt + 1))  # backoff
+                    continue
+        logger.warning(
+            "텔레그램 %s 실패(재시도 %d회 소진): %s", method, retries, last_err,
+        )
+        return None
 
     async def send(self, chat_id: str, text: str) -> None:
         """단일 메시지 발송 — 실패는 무시."""
@@ -264,7 +288,15 @@ class TelegramAlerter:
             tz = prefs.get("timezone") or "Asia/Seoul"
         except Exception as e:  # noqa: BLE001
             logger.debug("%s prefs 조회 실패(기본값 사용): %s", user_code, e)
-        await self.send(chat_id, format_trade(user_code, event, lang, tz))
+        # format_trade 예외로 알림 통째 누락 방지 — 실패 시 최소 정보 fallback.
+        try:
+            text = format_trade(user_code, event, lang, tz)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("%s format_trade 실패(fallback 발송): %s", user_code, e)
+            etv = _enum_val(getattr(event, "event_type", "")).upper()
+            sym = getattr(event, "symbol", "") or ""
+            text = f"매매 {etv} {sym}\n<code>{user_code}</code>"
+        await self.send(chat_id, text)
 
     async def poll_loop(self) -> None:
         """getUpdates 롱폴링 — 라이선스 코드 입력 시 chat_id 연결. 무한 루프."""

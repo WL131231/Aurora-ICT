@@ -70,6 +70,20 @@ from aurora_ict.timing.killzone import classify_killzone, in_trade_window_sub
 
 logger = logging.getLogger(__name__)
 
+
+def _log_alert_task_exc(task: asyncio.Task) -> None:
+    """매매 알림 fire-and-forget task 의 done callback — 예외를 로그로 남긴다.
+
+    2026-06-10: create_task 로 던진 알림 task 가 실패(format/네트워크)해도
+    아무도 결과를 안 봐서 silent 로 묻혔다. 이 콜백으로 예외를 가시화한다.
+    """
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        return
+    if exc is not None:
+        logger.warning("매매 알림 발송 task 실패(silent 방지): %s", exc)
+
 # 키 무효(retCode 10003)가 step 에서 이 횟수만큼 연속되면 봇 자동 정지 —
 # 무한 재시도로 인한 로그 폭증·502 차단. 사용자는 거래소 키 재등록 후 재가동.
 _AUTH_FAIL_STOP_THRESHOLD = 3
@@ -2378,7 +2392,10 @@ class BotIctInstance:
         # 미연동·전송 실패는 콜백 내부에서 흡수. 알림이 매매를 막지 않게.
         if self.alert_cb is not None and self.user_code:
             try:
-                asyncio.create_task(self.alert_cb(self.user_code, event))
+                task = asyncio.create_task(self.alert_cb(self.user_code, event))
+                # 2026-06-10: fire-and-forget task 예외가 silent 로 묻히던 문제 —
+                # done callback 으로 알림 task 실패를 로그에 남겨 진단 가능하게.
+                task.add_done_callback(_log_alert_task_exc)
             except RuntimeError:
                 pass  # 실행 중 이벤트 루프 없음(동기 테스트) — skip
 
