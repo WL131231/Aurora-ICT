@@ -480,9 +480,22 @@
     } catch (e) {}
     return "ko";
   }
+  // 2026-06-10: 언어/시간대를 서버에도 저장 — 텔레그램 알림이 이 값으로 출력.
+  // 인증 페이지에서만 의미. 실패(미인증/legacy)는 조용히 무시(localStorage 는 이미 저장됨).
+  function _savePrefsToServer(body) {
+    try {
+      fetch("/ict/preferences", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify(body),
+      }).catch(function () {});
+    } catch (e) { /* noop */ }
+  }
   function setLang(lang) {
     if (!SUPPORTED_LANGS.includes(lang)) return;
     try { localStorage.setItem(LANG_KEY, lang); } catch (e) {}
+    _savePrefsToServer({ language: lang });
   }
   function getTz() {
     try {
@@ -494,6 +507,7 @@
   function setTz(tz) {
     if (!Object.prototype.hasOwnProperty.call(SUPPORTED_TZS, tz)) return;
     try { localStorage.setItem(TZ_KEY, tz); } catch (e) {}
+    _savePrefsToServer({ timezone: tz });
   }
 
   // ============================================================

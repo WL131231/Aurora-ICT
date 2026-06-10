@@ -159,6 +159,22 @@ def _ensure_last_timeframe_column(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN last_timeframe TEXT")
 
 
+def _ensure_pref_columns(conn: sqlite3.Connection) -> None:
+    """2026-06-10: 사용자별 언어/시간대 영속화 — 텔레그램 알림 출력용.
+
+    UI 언어/시간대는 브라우저 localStorage 에만 있어 서버(텔레그램 발송)가
+    몰랐다. 이 컬럼으로 서버가 사용자 언어/시간대를 알아 알림을 해당 언어·
+    시간대로 보낸다. NULL 허용(미설정 → ko / Asia/Seoul fallback).
+
+    마이그레이션: ``pref_language`` / ``pref_timezone`` TEXT idempotent 추가.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "pref_language" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN pref_language TEXT")
+    if "pref_timezone" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN pref_timezone TEXT")
+
+
 def _ensure_telegram_chat_id_column(conn: sqlite3.Connection) -> None:
     """2026-06-08: 사용자별 텔레그램 chat_id 영속화 — 매매 알림 발송용.
 
@@ -313,6 +329,7 @@ def init_db(db_path: Path | str) -> None:
         _ensure_last_timeframe_column(conn)
         # 2026-06-08: 매매 알림 텔레그램 연동 — 사용자별 chat_id.
         _ensure_telegram_chat_id_column(conn)
+        _ensure_pref_columns(conn)
         conn.commit()
     # 2026-05-28: 공지사항 테이블도 같은 파일에 idempotent 생성.
     from aurora_ict.auth.notices_db import init_notices_table
@@ -1022,6 +1039,60 @@ def get_telegram_chat_id(db_path: Path | str, code: str) -> str | None:
     return str(val) if val else None
 
 
+def set_user_prefs(
+    db_path: Path | str,
+    code: str,
+    language: str | None = None,
+    timezone: str | None = None,
+) -> bool:
+    """사용자 언어/시간대 저장 — 텔레그램 알림 출력용. 2026-06-10.
+
+    None 인 인자는 갱신하지 않음(부분 업데이트). 둘 다 None 이면 no-op True.
+
+    Returns:
+        True 면 UPDATE 성공(또는 갱신할 값 없음), False 면 code 미존재.
+    """
+    sets: list[str] = []
+    params: list[Any] = []
+    if language is not None:
+        sets.append("pref_language = ?")
+        params.append(language)
+    if timezone is not None:
+        sets.append("pref_timezone = ?")
+        params.append(timezone)
+    if not sets:
+        return True
+    sets.append("updated_at = ?")
+    params.append(_utcnow_iso())
+    params.append(code)
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            f"UPDATE users SET {', '.join(sets)} WHERE code = ?",  # noqa: S608
+            params,
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_user_prefs(db_path: Path | str, code: str) -> dict[str, str | None]:
+    """사용자 언어/시간대 조회 — 미설정/미존재면 값 None. 2026-06-10.
+
+    Returns:
+        ``{"language": str|None, "timezone": str|None}``.
+    """
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT pref_language, pref_timezone FROM users WHERE code = ?",
+            (code,),
+        ).fetchone()
+    if row is None:
+        return {"language": None, "timezone": None}
+    return {
+        "language": row["pref_language"] or None,
+        "timezone": row["pref_timezone"] or None,
+    }
+
+
 def list_running_codes(db_path: Path | str) -> list[str]:
     """[Deprecated 2026-05-29 PR B] 기존 boolean 흐름 호환용.
 
@@ -1239,6 +1310,8 @@ __all__ = [
     "get_last_timeframe",
     "set_telegram_chat_id",
     "get_telegram_chat_id",
+    "set_user_prefs",
+    "get_user_prefs",
     "delete_api_keys",
     "set_license",
     "set_pin",

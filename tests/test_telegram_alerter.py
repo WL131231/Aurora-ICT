@@ -36,6 +36,98 @@ def test_format_trade_tp_with_pnl() -> None:
     assert "+13.36" in text
 
 
+def test_format_trade_entry_detail_from_context() -> None:
+    """진입 — context_json 의 진입가/TP/SL/등급/window 상세 표시."""
+    import json
+    ctx = json.dumps({
+        "entry": 61844.8, "sl": 62210.0, "tp": 61000.0,
+        "score": 2, "rr": 3.75, "window": "turtle",
+    })
+    ev = TradeEvent(
+        ts_ms=0, event_type=TradeEventType.ENTRY, symbol="BTC/USDT:USDT",
+        direction="short", price=61844.8, qty=0.018, context_json=ctx,
+    )
+    text = format_trade("AICT-X-X-X", ev)
+    assert "진입가" in text and "61,844" in text
+    assert "목표가(TP)" in text and "61,000" in text
+    assert "손절가(SL)" in text and "62,210" in text
+    assert "등급 2" in text
+    assert "turtle" in text
+
+
+def test_format_trade_close_detail_from_context() -> None:
+    """청산 — 손실 라벨 + 청산가 + 변동% + 사유."""
+    import json
+    ctx = json.dumps({
+        "close_price": 62211.9, "move_pct": 0.59,
+        "close_reason": "SL_HIT", "pnl_usd": -7.32,
+    })
+    ev = TradeEvent(
+        ts_ms=0, event_type=TradeEventType.SL_HIT, symbol="BTC/USDT:USDT",
+        direction="short", price=62211.9, qty=0.018, pnl_usdt=-7.32,
+        context_json=ctx,
+    )
+    text = format_trade("AICT-X-X-X", ev)
+    assert "손절" in text
+    assert "손실" in text  # pnl < 0 → loss 라벨
+    assert "-7.32" in text
+    assert "청산가" in text and "62,211" in text
+    assert "변동" in text and "+0.59%" in text
+    assert "SL_HIT" in text
+
+
+def test_format_trade_language_en() -> None:
+    """영어 라벨 출력."""
+    ev = TradeEvent(
+        ts_ms=0, event_type=TradeEventType.TP_HIT, symbol="ETH/USDT:USDT",
+        direction="long", price=1589.0, qty=1.4, pnl_usdt=13.36,
+    )
+    text = format_trade("AICT-X-X-X", ev, lang="en")
+    assert "Take Profit" in text
+    assert "Profit" in text
+    assert "+13.36" in text
+
+
+def test_user_prefs_roundtrip(tmp_path) -> None:
+    """users_db 언어/시간대 부분 업데이트 round-trip."""
+    db = tmp_path / "users.db"
+    users_db.init_db(db)
+    code = "AICT-PR2W-PR2W-PR2W"
+    users_db.create_user(db, code)
+    assert users_db.get_user_prefs(db, code) == {"language": None, "timezone": None}
+    users_db.set_user_prefs(db, code, language="ja")
+    assert users_db.get_user_prefs(db, code)["language"] == "ja"
+    users_db.set_user_prefs(db, code, timezone="Asia/Tokyo")
+    p = users_db.get_user_prefs(db, code)
+    assert p["language"] == "ja" and p["timezone"] == "Asia/Tokyo"  # 부분 유지
+
+
+@pytest.mark.asyncio
+async def test_send_trade_alert_uses_user_prefs(tmp_path) -> None:
+    """send_trade_alert 가 사용자 언어 설정으로 포맷(en)."""
+    db = tmp_path / "users.db"
+    users_db.init_db(db)
+    code = "AICT-PREF-PREF-PREF"
+    users_db.create_user(db, code)
+    users_db.set_telegram_chat_id(db, code, "999")
+    users_db.set_user_prefs(db, code, language="en", timezone="America/New_York")
+
+    al = TelegramAlerter("dummytoken", db)
+    sent: list[tuple[str, str]] = []
+
+    async def _spy(chat_id: str, text: str) -> None:
+        sent.append((chat_id, text))
+
+    al.send = _spy  # type: ignore[method-assign]
+    ev = TradeEvent(
+        ts_ms=0, event_type=TradeEventType.TP_HIT, symbol="ETH/USDT:USDT",
+        direction="long", price=1589.0, qty=1.4, pnl_usdt=13.36,
+    )
+    await al.send_trade_alert(code, ev)
+    assert sent and "Take Profit" in sent[0][1]
+    await al.aclose()
+
+
 @pytest.mark.asyncio
 async def test_handle_message_registers_chat_id(tmp_path) -> None:
     """유효 코드 입력 → chat_id 연동 + 완료 메시지."""

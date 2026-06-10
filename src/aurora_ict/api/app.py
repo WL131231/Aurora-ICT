@@ -95,6 +95,13 @@ class DailyLossLimitRequest(BaseModel):
     pct: float
 
 
+class PreferencesRequest(BaseModel):
+    """2026-06-10 사용자 언어/시간대 — 텔레그램 알림 출력용. 부분 업데이트."""
+
+    language: str | None = None
+    timezone: str | None = None
+
+
 def _env_path() -> Path:
     """`.env` 위치 — frozen(.exe 옆) / dev(cwd) 분기."""
     if getattr(sys, "frozen", False):
@@ -694,6 +701,32 @@ def _register_multi_user_routes(
             "allowed": list(TRADE_TIMEFRAMES),
             "restarted": was_running,
         }
+
+    @app.post("/ict/preferences")
+    async def set_preferences_mu(
+        req: PreferencesRequest,
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """사용자 언어/시간대 저장 — 텔레그램 알림이 이 값으로 출력 (2026-06-10).
+
+        UI 언어/시간대는 그동안 브라우저에만 있어 서버 발송(텔레그램)이 몰랐다.
+        """
+        from zoneinfo import ZoneInfo  # noqa: PLC0415
+
+        from aurora_ict.auth import users_db as _users_db_pref  # noqa: PLC0415
+        if req.language is not None and req.language not in ("ko", "en", "zh", "ja"):
+            raise HTTPException(status_code=400, detail="지원 언어: ko/en/zh/ja")
+        if req.timezone is not None:
+            try:
+                ZoneInfo(req.timezone)
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(
+                    status_code=400, detail=f"invalid timezone: {req.timezone}",
+                ) from e
+        _users_db_pref.set_user_prefs(
+            db_path, user_code, req.language, req.timezone,
+        )
+        return {"ok": True}
 
     @app.get("/ict/daily_loss_limit")
     async def get_daily_loss_limit_mu(

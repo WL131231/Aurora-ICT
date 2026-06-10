@@ -588,6 +588,29 @@ def test_daily_loss_limit_get_includes_profit_fields(client: TestClient) -> None
     assert "profit_hit" in d
 
 
+def test_set_preferences_valid(client: TestClient) -> None:
+    """언어/시간대 저장 — 텔레그램 알림 출력용 (2026-06-10)."""
+    _register_user(client)
+    r = client.post(
+        "/ict/preferences",
+        json={"language": "en", "timezone": "America/New_York"},
+    )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+
+def test_set_preferences_invalid_language_400(client: TestClient) -> None:
+    _register_user(client)
+    r = client.post("/ict/preferences", json={"language": "xx"})
+    assert r.status_code == 400
+
+
+def test_set_preferences_invalid_timezone_400(client: TestClient) -> None:
+    _register_user(client)
+    r = client.post("/ict/preferences", json={"timezone": "Not/AZone"})
+    assert r.status_code == 400
+
+
 # ============================================================
 # 11. position/close — 활성 포지션 없으면 404
 # ============================================================
