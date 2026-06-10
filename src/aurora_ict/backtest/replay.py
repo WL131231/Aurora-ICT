@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -75,6 +76,11 @@ class BacktestConfig:
     # 진입, 미만이면 추세 불명확 → 진입 자제(되돌림/횡보 whipsaw 회피).
     htf_align_periods: tuple[int, ...] = (60, 120, 200, 350, 480, 620)
     htf_align_threshold: int = 1
+    # 2026-06-10 조윤 동적 전환: 보유 중 EMA 정렬 점수가 보유방향과 반대로
+    # |score|>=flip_threshold 강반전하면 SL/TP 기다리지 않고 그 봉 close 에서
+    # 즉시 청산(outcome="flip"). 반등 조기 포착 — 다음 봉부터 재진입(게이트 적용).
+    htf_align_flip: bool = False
+    htf_align_flip_threshold: int = 3
 
 
 @dataclass(slots=True)
@@ -211,6 +217,7 @@ def _simulate_fill(
 def _simulate_exit(
     opens, highs, lows, closes, entry_idx: int, direction: Direction,
     sl: float, tp: float, cfg: BacktestConfig,
+    align_score: Any = None,
 ) -> tuple[int, float, str]:
     """진입 후 봉들에서 SL/TP 먼저 닿는 지점 → (exit_idx, exit_price, outcome).
 
@@ -218,8 +225,14 @@ def _simulate_exit(
     bullish 봉(close>=open)은 보통 open→저점→고점→close 경로라 **저점 먼저**,
     bearish 봉은 open→고점→저점→close 라 **고점 먼저** 형성됐다고 가정한다.
     sl_priority=True 면 무조건 SL(worst-case 보수).
+
+    align_score 가 주어지고 cfg.htf_align_flip=True 면, 보유 중 EMA 정렬 점수가
+    보유방향과 반대로 |score|>=flip_threshold 강반전한 봉의 close 에서 즉시 청산
+    (outcome="flip") — 조윤 동적 전환. SL/TP 우선, 미도달 시 flip 판정.
     """
     n = len(highs)
+    use_flip = cfg.htf_align_flip and align_score is not None
+    flip_t = cfg.htf_align_flip_threshold
     for j in range(entry_idx + 1, n):
         hi, lo = float(highs[j]), float(lows[j])
         if direction is Direction.LONG:
@@ -237,6 +250,16 @@ def _simulate_exit(
             return j, sl, "sl"
         if hit_tp:
             return j, tp, "tp"
+        # SL/TP 미도달 — EMA 정렬 점수 강반전 시 flip 청산 (조윤 동적 전환).
+        if use_flip:
+            sc = align_score[j]
+            if sc == sc:  # NaN 아니면
+                flipped = (
+                    (direction is Direction.LONG and sc <= -flip_t)
+                    or (direction is Direction.SHORT and sc >= flip_t)
+                )
+                if flipped:
+                    return j, float(closes[j]), "flip"
     return n - 1, float(closes[-1]), "eod"
 
 
@@ -282,7 +305,7 @@ def _precompute_align_score(
     h1 = df["close"].resample("1h").last()
     emas = [h1.ewm(span=p, adjust=False).mean() for p in periods]
     score = pd.Series(0.0, index=h1.index)
-    for a, b in zip(emas[:-1], emas[1:]):
+    for a, b in zip(emas[:-1], emas[1:], strict=False):
         score = score + (a > b).astype(int) - (a < b).astype(int)
     # NaN(EMA 미성숙) 구간은 무효 처리 — 가장 긴 EMA 가 익은 뒤부터 유효.
     score = score.where(emas[-1].notna())
@@ -312,9 +335,10 @@ def run_backtest(
         _precompute_htf_ema(df, cfg.htf_ema_period).to_numpy()
         if cfg.htf_ema_bias in ("strict", "band") else None
     )
+    # align 점수 — 진입 게이트("align") 또는 동적 flip 청산 중 하나라도 쓰면 계산.
     htf_align = (
         _precompute_align_score(df, cfg.htf_align_periods).to_numpy()
-        if cfg.htf_ema_bias == "align" else None
+        if (cfg.htf_ema_bias == "align" or cfg.htf_align_flip) else None
     )
     trades: list[Trade] = []
     i = cfg.window
@@ -365,7 +389,7 @@ def run_backtest(
                     i += 1
                     continue
         # "align" — 다중 EMA 정렬 점수 게이트 (조윤 EMA 가중치).
-        if htf_align is not None:
+        if htf_align is not None and cfg.htf_ema_bias == "align":
             sc = htf_align[i]
             if sc == sc:  # NaN 아니면
                 is_long = setup.direction is Direction.LONG
@@ -392,6 +416,7 @@ def run_backtest(
         exit_idx, exit_raw, outcome = _simulate_exit(
             opens, highs, lows, closes, fill_idx, setup.direction,
             setup.stop_loss, setup.take_profit, cfg,
+            align_score=htf_align if cfg.htf_align_flip else None,
         )
         exit_slip = slip_pct(
             float(highs[exit_idx]), float(lows[exit_idx]), float(closes[exit_idx]),
