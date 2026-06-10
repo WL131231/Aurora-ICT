@@ -226,6 +226,15 @@ class IctSettings(BaseSettings):
     htf_ema_bias_enabled: bool = Field(default=True)
     htf_ema_bias_tf: str = Field(default="1h")
     htf_ema_bias_period: int = Field(default=20, ge=2, le=200)
+    # 2026-06-10 #ALIGN: 다중 EMA 정렬 게이트 (백테스트 10국면 검증 — 단일 EMA20
+    # 보다 방향 정확도↑, 반등·상승장에서 숏 고착 완화). htf_ema_bias_enabled 이고
+    # 이게 True 면 prefer_direction 과 진입 게이트를 인접 EMA 쌍(periods) 정배열/
+    # 역배열 점수로 결정. |점수|>=threshold 면 그 방향만, 미만이면 진입 자제.
+    htf_ema_align_enabled: bool = Field(default=True)
+    htf_ema_align_periods: tuple[int, ...] = Field(
+        default=(60, 120, 200, 350, 480, 620),
+    )
+    htf_ema_align_threshold: int = Field(default=2, ge=1, le=5)
 
     # --- 신규 (변경 3) HTF FVG 가중치 override ----------------------------
     # off → 사용 안 함, A → 진입 직전 차단만, C → 진입 + 봉 close 기준 flip + re-entry.
