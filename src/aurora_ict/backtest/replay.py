@@ -81,6 +81,11 @@ class BacktestConfig:
     # 즉시 청산(outcome="flip"). 반등 조기 포착 — 다음 봉부터 재진입(게이트 적용).
     htf_align_flip: bool = False
     htf_align_flip_threshold: int = 3
+    # 2026-06-10 흑자 탐색: SL 거리(entry~setup.stop_loss)를 mult 배 (1.0=원본,
+    # >1 넓힘=stop-hunt 회피·손실 큼, <1 좁힘). tp_keeps_rr=True 면 TP 를 원 RR
+    # 유지하게 재계산(SL 비례), False 면 TP 고정(RR 변동).
+    sl_dist_mult: float = 1.0
+    tp_keeps_rr: bool = True
 
 
 @dataclass(slots=True)
@@ -413,9 +418,22 @@ def run_backtest(
         d_val = setup.direction.value
         # limit 체결이라 entry 슬리피지 0 (계획가 그대로). 청산만 슬리피지(시장가 발동).
         entry = setup.entry
+        # 흑자 탐색: SL 거리 변형 (stop-hunt 회피 vs 손실크기 트레이드오프).
+        sl, tp = setup.stop_loss, setup.take_profit
+        if cfg.sl_dist_mult != 1.0:
+            risk = abs(entry - sl)
+            if risk > 0:
+                rr0 = abs(tp - entry) / risk
+                new_risk = risk * cfg.sl_dist_mult
+                if setup.direction is Direction.LONG:
+                    sl = entry - new_risk
+                    tp = entry + new_risk * rr0 if cfg.tp_keeps_rr else tp
+                else:
+                    sl = entry + new_risk
+                    tp = entry - new_risk * rr0 if cfg.tp_keeps_rr else tp
         exit_idx, exit_raw, outcome = _simulate_exit(
             opens, highs, lows, closes, fill_idx, setup.direction,
-            setup.stop_loss, setup.take_profit, cfg,
+            sl, tp, cfg,
             align_score=htf_align if cfg.htf_align_flip else None,
         )
         exit_slip = slip_pct(
