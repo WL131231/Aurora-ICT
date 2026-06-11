@@ -109,6 +109,40 @@ def test_subscription_respects_more_conservative_values(monkeypatch):
     assert s.entry_limit_ttl_sec == 10800
 
 
+def test_subscription_freshness_30m_converted_by_tf(monkeypatch):
+    """2026-06-12 #FRESH-30: 구독제 신선도 30분 — TF 봉수 환산 상한."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "sub_90d")
+    monkeypatch.setenv("AURORA_ICT_TIMEFRAME", "5m")
+    s = IctSettings(_env_file=None)
+    assert s.setup_stale_bars == 6  # 30분 / 5m = 6봉 (기본 120 → 상한)
+    monkeypatch.setenv("AURORA_ICT_TIMEFRAME", "15m")
+    s = IctSettings(_env_file=None)
+    assert s.setup_stale_bars == 2  # 30/15
+    monkeypatch.setenv("AURORA_ICT_TIMEFRAME", "1h")
+    s = IctSettings(_env_file=None)
+    assert s.setup_stale_bars == 1  # 최소 1봉
+
+
+def test_subscription_freshness_keeps_stricter_user_value(monkeypatch):
+    """사용자가 더 신선하게(작게) 설정했으면 유지."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "sub_90d")
+    monkeypatch.setenv("AURORA_ICT_TIMEFRAME", "5m")
+    monkeypatch.setenv("AURORA_ICT_SETUP_STALE_BARS", "3")
+    s = IctSettings(_env_file=None)
+    assert s.setup_stale_bars == 3  # 3 < 6 유지
+
+
+def test_referral_keeps_stale_bars(monkeypatch):
+    """레퍼럴은 신선도 강제 X."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "referral")
+    monkeypatch.setenv("AURORA_ICT_TIMEFRAME", "5m")
+    s = IctSettings(_env_file=None)
+    assert s.setup_stale_bars == 120  # 기본값 그대로
+
+
 def test_referral_keeps_user_values(monkeypatch):
     """레퍼럴은 #EDGE-V2 강제 X — 사용자/기본값 그대로."""
     _clean_env(monkeypatch)
