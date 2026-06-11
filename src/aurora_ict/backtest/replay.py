@@ -101,6 +101,9 @@ class Trade:
     raw_pnl_pct: float
     net_pnl_pct: float
     confluence_score: int
+    # 멀티 TF 백테스트(run_backtest_multitf)에서 이 setup 이 나온 TF 라벨("5m"/"15m"/"1h").
+    # 단일 TF run_backtest 는 비워 둠(None) — 기존 동작/시그니처 불변.
+    source_tf: str | None = None
 
 
 @dataclass(slots=True)
@@ -469,3 +472,269 @@ def _aggregate(cfg: BacktestConfig, trades: list[Trade]) -> BacktestResult:
         long_count=longs,
         short_count=n_trades - longs,
     )
+
+
+# 멀티 TF 기본 스펙: (TF 라벨, resample rule, ttl_bars=체결 대기 1m 봉 수).
+# ttl_bars 를 TF 봉 길이(분)와 같게 둬서 "그 TF 한 봉 동안 retrace 체결을 기다린다".
+# (파트너 핵심 아이디어 — 높은 TF setup 은 더 오래 기다려 준다.)
+_DEFAULT_TF_SPECS: tuple[tuple[str, str, int], ...] = (
+    ("5m", "5min", 5),
+    ("15m", "15min", 15),
+    ("1h", "1h", 60),
+)
+
+
+def _latest_closed_tf_idx(
+    tf_index: pd.DatetimeIndex, tf_delta: pd.Timedelta, now_ts: pd.Timestamp,
+) -> int:
+    """now_ts(현재 1m 봉 시각) 시점에 '이미 닫힌' 마지막 TF 봉의 위치(없으면 -1).
+
+    look-ahead 방지의 핵심: TF 봉 라벨(open time) L 은 [L, L+tf_delta) 구간을 덮고
+    L+tf_delta 에 비로소 '확정(닫힘)'된다. 따라서 현재 1m 시각 now_ts 에서 사용
+    가능한 마지막 TF 봉은 ``L + tf_delta <= now_ts`` 를 만족하는 마지막 봉이다.
+    진행 중(아직 안 닫힌) TF 봉은 절대 보지 않는다 → 미래 봉 참조 없음.
+
+    Args:
+        tf_index: 해당 TF DataFrame 의 DatetimeIndex (봉 open time, 오름차순).
+        tf_delta: TF 한 봉 길이 (예 5min → Timedelta("5min")).
+        now_ts: 현재 1m 봉의 timestamp.
+
+    Returns:
+        닫힌 마지막 TF 봉의 정수 위치. 아직 닫힌 봉이 없으면 -1.
+    """
+    # 닫힘 시각 = open_time + tf_delta. 그 값이 now_ts 이하인 마지막 봉을 이진탐색.
+    # searchsorted(now_ts - tf_delta, "right") - 1 == (open_time <= now_ts - tf_delta)
+    # 인 마지막 봉 == (open_time + tf_delta <= now_ts) 인 마지막 봉.
+    cutoff = now_ts - tf_delta
+    return int(tf_index.searchsorted(cutoff, side="right")) - 1
+
+
+def run_backtest_multitf(
+    df_1m: pd.DataFrame,
+    cfg: BacktestConfig,
+    tf_specs: list[tuple[str, str, int]] | None = None,
+    corr_df: pd.DataFrame | None = None,
+) -> BacktestResult:
+    """멀티 TF setup 백테스트 — 높은 TF 우선 진입 + TF별 체결 대기.
+
+    단일 TF(5m) setup 만 잡는 ``run_backtest`` 와 비교용. 여러 TF(기본 5m·15m·1h)
+    에서 각각 ``detect_silver_bullet_setups`` 를 돌리고, 매 1m 시점마다 **높은
+    TF(1h>15m>5m) 우선**으로 유효(stale 아님 + 게이트 통과) setup 을 찾아 진입한다.
+    1h setup 이 있으면 그걸, 없으면 15m, 그것도 없으면 5m 을 쓴다.
+
+    게이트/비용/시뮬은 ``run_backtest`` 와 **완전히 동일**:
+        - confluence 게이트 ``_gate_pass`` (boost 는 1m 윈도우 기준 _boost_score),
+        - HTF EMA bias 게이트 (``htf_ema_bias`` strict/band/align, 1m 기준 precompute),
+        - SL 거리 변형 ``sl_dist_mult`` / ``tp_keeps_rr``,
+        - 체결 ``_simulate_fill`` / 청산 ``_simulate_exit`` (둘 다 1m 봉 경로),
+        - 슬리피지/수수료 (apply_slippage / apply_costs).
+    차이는 (1) setup 을 어느 TF 에서 잡는가, (2) **진입 시 그 setup 이 나온 TF 의
+    ttl_bars 로 체결 대기**한다는 점뿐.
+
+    look-ahead 방지:
+        - 각 TF setup 은 그 시점까지 **닫힌** TF 봉들로만 검출한다
+          (``_latest_closed_tf_idx``: open_time+tf_delta <= 현재 1m 시각). 진행 중
+          TF 봉은 절대 포함하지 않는다.
+        - 체결/청산은 1m 배열에서 진입 시점 **이후** 봉만 전방 탐색.
+        - HTF EMA / align 점수도 기존 함수가 직전 확정 1h 봉(shift)만 쓴다.
+
+    성능:
+        매 1m 마다 3개 TF 를 전부 re-detect 하면 5년치를 못 돌린다. TF별로 **그 TF
+        봉이 새로 닫혔을 때만** detect 하고 그 결과를 캐시한다(``_tf_cache``). 1m 시각이
+        같은 TF 봉 구간 안이면 캐시 재사용 → detect 호출 수가 1m 수가 아니라 TF 봉
+        수로 줄어든다.
+
+    Args:
+        df_1m: 1m OHLCV (DatetimeIndex UTC). ``load_ohlcv_parquet`` 산출.
+        cfg: 파라미터 (``run_backtest`` 와 공유). ``cfg.entry_ttl_bars`` 는 무시되고
+            TF별 ``tf_specs`` 의 ttl_bars 가 쓰인다. ``cfg.window`` 는 각 TF detect 의
+            lookback 봉 수로 그대로 쓴다.
+        tf_specs: ``[(라벨, resample_rule, ttl_bars=분), ...]``. 기본 5m/15m/1h.
+            **낮은→높은 TF 순으로 줄 것** (내부에서 진입은 높은 TF 부터 시도).
+        corr_df: SMT boost 용 상관 심볼 1m OHLCV (apply_smt=True 시).
+
+    Returns:
+        BacktestResult — ``run_backtest`` 와 동일 집계. 각 Trade.source_tf 에 진입
+        TF 라벨이 기록된다.
+    """
+    if tf_specs is None:
+        tf_specs = list(_DEFAULT_TF_SPECS)
+    # 진입은 높은 TF(긴 봉) 우선 — ttl_bars(분) 큰 순. 입력 순서 무관하게 정렬.
+    specs_hi_to_lo = sorted(tf_specs, key=lambda s: s[2], reverse=True)
+
+    n = len(df_1m)
+    opens = df_1m["open"].to_numpy()
+    highs = df_1m["high"].to_numpy()
+    lows = df_1m["low"].to_numpy()
+    closes = df_1m["close"].to_numpy()
+    index_1m = df_1m.index
+
+    # #SHORT-BIAS 게이트용 1m 기준 precompute (run_backtest 와 동일 — look-ahead 안전).
+    htf_ema = (
+        _precompute_htf_ema(df_1m, cfg.htf_ema_period).to_numpy()
+        if cfg.htf_ema_bias in ("strict", "band") else None
+    )
+    htf_align = (
+        _precompute_align_score(df_1m, cfg.htf_align_periods).to_numpy()
+        if (cfg.htf_ema_bias == "align" or cfg.htf_align_flip) else None
+    )
+
+    # TF별 리샘플 + 봉 길이 Timedelta + detect 결과 캐시 준비.
+    tf_frames: dict[str, dict[str, Any]] = {}
+    for label, rule, ttl in specs_hi_to_lo:
+        tf_df = resample_ohlcv(df_1m, rule)
+        tf_frames[label] = {
+            "df": tf_df,
+            "delta": pd.Timedelta(rule),
+            "ttl": ttl,
+            "last_detect_pos": -2,        # 마지막으로 detect 한 닫힌 TF 봉 위치
+            "cached_setup": None,         # 캐시된 (setup, score) — 게이트 전 raw
+        }
+
+    def info_rule(label: str) -> str:
+        """label → resample rule (corr_df TF 정렬용)."""
+        for lb, rule, _ in specs_hi_to_lo:
+            if lb == label:
+                return rule
+        return "5min"
+
+    def _tf_setup_at(label: str, now_ts: pd.Timestamp, i_1m: int):
+        """해당 TF 에서 now_ts 시점에 유효한 setup (stale·게이트 통과) 또는 None.
+
+        그 TF 봉이 새로 닫혔을 때만 detect 하고 캐시. 캐시된 setup 에 stale 검사 +
+        boost + _gate_pass + EMA/align 방향 게이트를 (현재 1m 시점 기준) 적용한다.
+        """
+        info = tf_frames[label]
+        tf_df: pd.DataFrame = info["df"]
+        tf_index: pd.DatetimeIndex = tf_df.index
+        closed_pos = _latest_closed_tf_idx(tf_index, info["delta"], now_ts)
+        if closed_pos < 0:
+            return None
+        # 새 TF 봉이 닫혔을 때만 detect — 같은 봉 구간이면 캐시 재사용 (성능).
+        if closed_pos != info["last_detect_pos"]:
+            info["last_detect_pos"] = closed_pos
+            lo = max(0, closed_pos + 1 - cfg.window)
+            window = tf_df.iloc[lo : closed_pos + 1]  # 닫힌 봉까지만 (look-ahead 차단)
+            setups = detect_silver_bullet_setups(
+                window,
+                min_rr=cfg.min_rr,
+                fvg_min_size_pct=cfg.fvg_min_size_pct,
+                min_confluence=0,
+                expand_to_killzone=cfg.expand_to_killzone,
+                disable_time_filter=cfg.disable_time_filter,
+                min_sl_distance_pct=cfg.min_sl_distance_pct,
+            )
+            if not setups:
+                info["cached_setup"] = None
+            else:
+                setup = setups[-1]
+                bars_since = len(window) - 1 - setup.anchor_idx
+                if bars_since > cfg.setup_stale_bars:
+                    info["cached_setup"] = None
+                else:
+                    # boost 는 그 TF 윈도우 기준 (run_backtest 와 동일 의미).
+                    corr_win = None
+                    if corr_df is not None:
+                        corr_tf = resample_ohlcv(corr_df, info_rule(label))
+                        corr_win = corr_tf.reindex(window.index)
+                    score = _boost_score(
+                        setup.confluence_score, setup.direction, window, corr_win, cfg,
+                    )
+                    info["cached_setup"] = (setup, score)
+        cached = info["cached_setup"]
+        if cached is None:
+            return None
+        setup, score = cached
+        if not _gate_pass(score, setup.risk_reward, cfg):
+            return None
+        # HTF EMA bias 방향 게이트 (현재 1m 시점 — run_backtest 와 동일).
+        is_long = setup.direction is Direction.LONG
+        if htf_ema is not None:
+            ema_v = htf_ema[i_1m]
+            if ema_v == ema_v:
+                cl = float(closes[i_1m])
+                band = ema_v * cfg.htf_ema_band_pct
+                if cfg.htf_ema_bias == "strict":
+                    blocked = (cl > ema_v and not is_long) or (cl < ema_v and is_long)
+                else:  # band
+                    blocked = (
+                        (cl > ema_v + band and not is_long)
+                        or (cl < ema_v - band and is_long)
+                    )
+                if blocked:
+                    return None
+        if htf_align is not None and cfg.htf_ema_bias == "align":
+            sc = htf_align[i_1m]
+            if sc == sc:
+                t = cfg.htf_align_threshold
+                if sc >= t:
+                    blocked = not is_long
+                elif sc <= -t:
+                    blocked = is_long
+                else:
+                    blocked = True
+                if blocked:
+                    return None
+        return setup, score
+
+    trades: list[Trade] = []
+    i = cfg.window
+    while i < n - 1:
+        now_ts = index_1m[i]
+        chosen = None
+        chosen_label = None
+        chosen_ttl = 0
+        # 높은 TF 우선 — 첫 유효 setup 에서 멈춤.
+        for label, _rule, ttl in specs_hi_to_lo:
+            res = _tf_setup_at(label, now_ts, i)
+            if res is not None:
+                chosen, _score = res
+                chosen_label = label
+                chosen_ttl = ttl
+                break
+        if chosen is None:
+            i += 1
+            continue
+        setup = chosen
+        score = _score
+        # 체결 시뮬 — 그 TF 의 ttl_bars(1m 봉 수)로 limit 체결 대기 (TF별 대기시간).
+        fill_idx = _simulate_fill(
+            highs, lows, i, setup.direction, setup.entry, chosen_ttl,
+        )
+        if fill_idx is None:
+            i += 1
+            continue
+        d_val = setup.direction.value
+        entry = setup.entry
+        sl, tp = setup.stop_loss, setup.take_profit
+        if cfg.sl_dist_mult != 1.0:
+            risk = abs(entry - sl)
+            if risk > 0:
+                rr0 = abs(tp - entry) / risk
+                new_risk = risk * cfg.sl_dist_mult
+                if setup.direction is Direction.LONG:
+                    sl = entry - new_risk
+                    tp = entry + new_risk * rr0 if cfg.tp_keeps_rr else tp
+                else:
+                    sl = entry + new_risk
+                    tp = entry - new_risk * rr0 if cfg.tp_keeps_rr else tp
+        exit_idx, exit_raw, outcome = _simulate_exit(
+            opens, highs, lows, closes, fill_idx, setup.direction,
+            sl, tp, cfg,
+            align_score=htf_align if cfg.htf_align_flip else None,
+        )
+        exit_slip = slip_pct(
+            float(highs[exit_idx]), float(lows[exit_idx]), float(closes[exit_idx]),
+        )
+        exit_price = apply_slippage(exit_raw, d_val, "exit", exit_slip)
+        sign = 1.0 if setup.direction is Direction.LONG else -1.0
+        raw_pnl_pct = (exit_price - entry) / entry * sign
+        net_pnl_pct, _ = apply_costs(raw_pnl_pct, cfg.size_pct, cfg.leverage)
+        trades.append(Trade(
+            entry_idx=fill_idx, exit_idx=exit_idx, direction=d_val,
+            entry=entry, exit_price=exit_price, outcome=outcome,
+            raw_pnl_pct=raw_pnl_pct, net_pnl_pct=net_pnl_pct,
+            confluence_score=score, source_tf=chosen_label,
+        ))
+        i = exit_idx + 1  # 청산 후 다음 봉부터 재탐색 (동시 포지션 1개)
+    return _aggregate(cfg, trades)

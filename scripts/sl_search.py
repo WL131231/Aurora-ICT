@@ -23,7 +23,7 @@ OUT_PHASES = [
     ("2024-08 급락반등", "2024-08-01", "2024-09-12"),
     ("2026 실거래", "2026-04-28", "2026-06-10"),
 ]
-SL_MULTS = [0.7, 1.0, 1.5, 2.0, 3.0]
+SL_MULTS = [1.0, 1.5, 1.75, 2.0, 2.25, 2.5]
 
 
 def load_slice(sym: str, start: str, end: str) -> pd.DataFrame:
@@ -39,7 +39,8 @@ def _run_set(sym: str, phases: list, mult: float) -> tuple[int, float, int, int]
         df = load_slice(sym, s, e)
         cfg = BacktestConfig(
             htf_ema_bias="align", htf_align_threshold=2,
-            min_confluence=2, min_rr=2.0, sl_dist_mult=mult,
+            min_confluence=3, min_rr=2.0,
+            disable_time_filter=False, sl_dist_mult=mult,
         )
         bt = run_backtest(df, cfg)
         n += bt.n_trades
