@@ -208,6 +208,9 @@ class IctSettings(BaseSettings):
     # 넓힐수록 스탑헌트 생존으로 단조 개선. TP 는 원 RR 유지 비례 확장,
     # risk_based_sizing ON 이면 qty 가 줄어 건당 손실(R) 불변.
     sl_dist_mult: float = Field(default=1.0, ge=0.25, le=5.0)
+    # 2026-06-11 #SHADOW: 거른 setup 도 특징과 함께 기록(FSD-style 플라이휠).
+    # 행동 영향 0, 사용자별 shadow_setups.jsonl. 오프라인 학습 데이터 축적용.
+    shadow_log_enabled: bool = Field(default=True)
     # max_entry_distance_pct: setup.entry 가 현재가에서 이 비율 초과면 setup skip.
     # 너무 멀리 박힌 limit 은 미체결 + ttl 만료까지 대기 시간 길어 setup 변형 위험.
     # 0 = 비활성. default 0.005 (0.5%) — 파트너 결정 2026-06-03.
