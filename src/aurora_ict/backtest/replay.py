@@ -678,6 +678,10 @@ def run_backtest_multitf(
         return setup, score
 
     trades: list[Trade] = []
+    # 2026-06-11 버그픽스: 같은 TF의 같은 setup(ts_ms) 재진입 방지. 청산 후
+    # i=exit_idx+1 이 아직 같은 TF봉 구간이면 캐시된 동일 setup 을 반복 진입해
+    # 거래가 폭증(승률 급락)하던 문제 — TF별 마지막 진입 setup ts 를 기록.
+    entered_ts: dict[str, int] = {}
     i = cfg.window
     while i < n - 1:
         now_ts = index_1m[i]
@@ -697,6 +701,11 @@ def run_backtest_multitf(
             continue
         setup = chosen
         score = _score
+        # 같은 TF 의 같은 setup 재진입 방지 — 이미 진입한 setup 이면 skip.
+        sid = getattr(setup, "ts_ms", None)
+        if sid is not None and entered_ts.get(chosen_label) == sid:
+            i += 1
+            continue
         # 체결 시뮬 — 그 TF 의 ttl_bars(1m 봉 수)로 limit 체결 대기 (TF별 대기시간).
         fill_idx = _simulate_fill(
             highs, lows, i, setup.direction, setup.entry, chosen_ttl,
@@ -704,6 +713,8 @@ def run_backtest_multitf(
         if fill_idx is None:
             i += 1
             continue
+        if sid is not None:
+            entered_ts[chosen_label] = sid  # 진입 확정 — 이 setup 재진입 차단
         d_val = setup.direction.value
         entry = setup.entry
         sl, tp = setup.stop_loss, setup.take_profit
