@@ -295,9 +295,15 @@ class IctSettings(BaseSettings):
         Killzone 시간대 (London/NY AM/Close/PM) 만 매매.
 
         레퍼럴 (``referral``): 별도 강제 X — 사용자 settings 그대로 (기본 24h).
+
+        2026-06-11 흑자 엣지: 구독제는 진입 품질 등급 최소 3 강제 (백테스트
+        10국면 검증 — conf2 대비 손실 1/5, IN/OUT robust). 시간필터(킬존+SB)는
+        위 disable_time_filter=False 로 이미 적용. 둘이 흑자 조합의 핵심.
         """
         if self.license_type.startswith("sub_"):
             self.disable_time_filter = False
+            if self.min_confluence < 3:
+                self.min_confluence = 3
         return self
 
     @property

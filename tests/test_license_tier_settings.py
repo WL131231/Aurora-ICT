@@ -81,6 +81,34 @@ def test_referral_respects_user_disable_time_filter_setting(monkeypatch):
     assert s.disable_time_filter is False
 
 
+def test_subscription_enforces_min_confluence_3(monkeypatch):
+    """2026-06-11 흑자 엣지: 구독제는 min_confluence 최소 3 강제."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "sub_90d")
+    monkeypatch.setenv("AURORA_ICT_MIN_CONFLUENCE", "2")
+    s = IctSettings(_env_file=None)
+    assert s.min_confluence == 3  # 2 → 3 강제
+    assert s.disable_time_filter is False  # 시간필터도 (흑자 조합)
+
+
+def test_subscription_respects_higher_min_confluence(monkeypatch):
+    """구독제가 이미 3 이상이면 사용자 값 유지 (max 동작)."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "sub_90d")
+    monkeypatch.setenv("AURORA_ICT_MIN_CONFLUENCE", "4")
+    s = IctSettings(_env_file=None)
+    assert s.min_confluence == 4  # 4 > 3 유지
+
+
+def test_referral_keeps_min_confluence(monkeypatch):
+    """레퍼럴은 min_confluence 강제 X — 사용자/기본값 그대로."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "referral")
+    monkeypatch.setenv("AURORA_ICT_MIN_CONFLUENCE", "2")
+    s = IctSettings(_env_file=None)
+    assert s.min_confluence == 2  # 강제 안 함
+
+
 def test_invalid_license_type_falls_back_to_referral(monkeypatch):
     """잘못된 type 값 → referral fallback. referral default True (24h)."""
     _clean_env(monkeypatch)
