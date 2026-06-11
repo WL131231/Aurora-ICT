@@ -811,6 +811,44 @@ def test_position_lists_all_pairs(client: TestClient, mu) -> None:
     client.post("/ict/stop?symbol=ETH/USDT:USDT")
 
 
+def test_admin_all_positions_lists_and_flags_risky(
+    client: TestClient, mu, monkeypatch,
+) -> None:
+    """2026-06-12 파트너 요청: 전 사용자 포지션 한눈에 + SL>청산가 경고.
+
+    20x 청산 거리 ≈ 4.75% — SL 6% 밖이면 sl_beyond_liq=True (#LIQ-CAP 사고 탐지).
+    """
+    from aurora_ict.strategy.silver_bullet import Direction
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "admin-tok")
+    code = "AICT-APOS-APOS-APOS"
+    _register_user(client, code)
+    client.post("/ict/start?symbol=BTC/USDT:USDT")
+    client.post("/ict/start?symbol=ETH/USDT:USDT")
+    btc = mu._slots[(code, "BTC/USDT:USDT")].bot
+    eth = mu._slots[(code, "ETH/USDT:USDT")].bot
+    # BTC: 안전한 SL (1% — 청산 4.75% 안쪽). ETH: 위험한 SL (숏인데 +6% 위).
+    _inject_active(btc, Direction.LONG, 100.0, 1.0)
+    btc.active_position.stop_loss = 99.0
+    _inject_active(eth, Direction.SHORT, 100.0, 1.0)
+    eth.active_position.stop_loss = 106.0  # 청산(≈104.75) 너머 — 위험
+
+    # 미인증 → 401
+    assert client.get("/admin/positions").status_code in (401, 503)
+    r = client.get("/admin/positions", headers={"X-Admin-Token": "admin-tok"})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["count"] == 2
+    assert d["risky"] == 1
+    # 위험 포지션이 먼저 정렬
+    first = d["positions"][0]
+    assert first["symbol"] == "ETH/USDT:USDT"
+    assert first["sl_beyond_liq"] is True
+    assert d["positions"][1]["sl_beyond_liq"] is False
+
+    client.post("/ict/stop?symbol=BTC/USDT:USDT")
+    client.post("/ict/stop?symbol=ETH/USDT:USDT")
+
+
 def test_position_close_routes_by_symbol(client: TestClient, mu) -> None:
     """청산 ?symbol — ETH 청산이 BTC 포지션을 건드리지 않아야."""
     from aurora_ict.strategy.silver_bullet import Direction
