@@ -148,3 +148,52 @@ def test_profit_hit_reset_on_new_ny_day() -> None:
     bot._daily_profit_hit = True
     bot._maybe_reset_daily_pnl(equity_now=2000.0)
     assert bot._daily_profit_hit is False
+
+
+# ============================================================
+# 2026-06-11 리뷰 수정 — reset 보류(잔고 실패) + sticky 한도
+# ============================================================
+
+
+def test_reset_held_when_equity_none() -> None:
+    """잔고 조회 실패(None) 시 새 날짜여도 reset 보류 — 폴백 baseline 오염 방지."""
+    bot = _bot(limit_pct=4.0)
+    bot._today_date_str = "2025-01-01"  # 과거 날짜 = 새 날짜 조건 성립
+    bot._today_realized_pnl_usdt = -100.0
+    bot._today_start_equity = 5000.0
+    bot._daily_limit_hit = True
+    bot._maybe_reset_daily_pnl(equity_now=None)
+    # 아무것도 안 바뀜 — 다음 성공 fetch 때 reset.
+    assert bot._today_date_str == "2025-01-01"
+    assert bot._today_start_equity == 5000.0
+    assert bot._daily_limit_hit is True
+    # 성공 fetch 오면 정상 reset.
+    bot._maybe_reset_daily_pnl(equity_now=3000.0)
+    assert bot._today_start_equity == 3000.0
+    assert bot._daily_limit_hit is False
+
+
+def test_fetch_equity_or_none_returns_none_on_failure() -> None:
+    """fetch_balance 예외/형식불명 → None (1000 폴백과 구분)."""
+    import asyncio
+    client = AsyncMock()
+    client.fetch_balance.side_effect = RuntimeError("api down")
+    bot = BotIctInstance(client=client)
+    assert asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
+        bot._fetch_equity_or_none(),
+    ) is None
+
+
+def test_sticky_loss_limit_blocks_after_pnl_recovers() -> None:
+    """sticky: 한도 hit flag 가 서면, pnl 이 한도 아래로 회복돼도 그날 차단 유지.
+
+    _execute_setup 게이트가 `flag or _is_hit()` 패턴이므로 flag 만 검증.
+    """
+    bot = _bot(limit_pct=4.0)
+    bot._today_start_equity = 1000.0
+    bot._today_realized_pnl_usdt = -40.0  # 4% — hit
+    assert bot._is_daily_loss_limit_hit() is True
+    bot._daily_limit_hit = True  # 게이트가 set
+    bot._today_realized_pnl_usdt = -10.0  # 회복 — 실시간 판정은 False
+    assert bot._is_daily_loss_limit_hit() is False
+    assert bot._daily_limit_hit is True  # 그래도 flag 유지 → 게이트 차단

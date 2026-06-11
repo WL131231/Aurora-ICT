@@ -384,6 +384,9 @@ class BotIctInstance:
     # 같은 값이 매 step 반복 출력 안 되도록 "직전 값" 캐시 — 변화 시에만 1줄 INFO.
     # 봇 동작 영향 0 (로깅 가시성 전용).
     _last_logged_htf_ema_bias: str = field(default="")  # "bullish"/"bearish"/"neutral"/""
+    # align 게이트 skip 로그 변화 감지 — 블랙리스트 제거 후 매 step 재평가되므로
+    # 같은 (score, threshold, 방향) skip 은 1회만 INFO (스팸 방지, 2026-06-11).
+    _last_align_skip_log: str = field(default="")
     _last_logged_htf_fvg_summary: str = field(default="")  # "bull_w=10 bear_w=4 n=8" 형태
     _last_logged_dol_draw: str = field(default="")  # "long"/"short"/"none"/""
     _last_logged_trend_summary: str = field(default="")  # trend_cache 직렬화 핑거프린트
@@ -660,7 +663,8 @@ class BotIctInstance:
 
         # #BUG-7 fix: today 실현손익을 거래소 closed-pnl 로 동기화 (NY 자정 reset 포함).
         # daily loss limit / UI today_pnl 이 거래소와 일치하게 (내부 누적 대체).
-        equity_now = await self._fetch_equity()
+        # 잔고 조회 실패(None) 시 reset 보류 — 폴백값 baseline 오염 방지.
+        equity_now = await self._fetch_equity_or_none()
         self._maybe_reset_daily_pnl(equity_now)
         await self._sync_today_realized_pnl()
 
@@ -769,8 +773,12 @@ class BotIctInstance:
             return signal
 
         if not await self._passes_htf_ema_bias(signal.setup.direction):
-            # _passes_htf_ema_bias 내부에서 이미 INFO 로그 박힘 (line 743) — 추가 X.
-            self._remember_setup(signal.setup)
+            # _passes_htf_ema_bias 내부에서 이미 로그 박힘 — 추가 X.
+            # 2026-06-11 리뷰 수정(critical): 여기서 _remember_setup 을 하면
+            # "추세 불명확/역방향"이라는 *일시적* 시장 상태 때문에 그 setup 이
+            # 영구 블랙리스트(duplicate_ts)에 박혀, 몇 분 뒤 추세가 확정돼도
+            # 같은 setup 으론 영영 진입 불가였다. 동적 게이트는 setup 을
+            # 기억하지 않고 다음 step 재평가에 맡긴다.
             return signal
 
         # 변경 3: HTF FVG override — 진입 직전 반대 방향 HTF FVG 가중치 평가 (flip target).
@@ -945,7 +953,8 @@ class BotIctInstance:
                 continue
             setup = self._confirmed_to_setup(confirmed)
             if not await self._passes_htf_ema_bias(setup.direction):
-                self._remember_setup(htf_active.setup)
+                # 2026-06-11 리뷰 수정: 일시적 게이트 불일치로 수명 긴 HTF setup 을
+                # 영구 차단하지 않는다 (다음 step 재평가).
                 return no_action
             await self._execute_setup(setup)
             self._remember_setup(htf_active.setup)
@@ -1187,10 +1196,17 @@ class BotIctInstance:
         else:
             ok = False         # 추세 불명확 → 진입 자제
         if not ok:
-            logger.info(
-                "HTF align 게이트 skip — score=%d(T=%d) setup=%s (tf=%s)",
-                score, t, "buy" if is_long else "sell", self.htf_ema_bias_tf,
-            )
+            # 같은 (score, 방향) skip 은 1회만 INFO — 블랙리스트 제거 후 매 step
+            # 재평가되므로 변화 감지형으로 스팸 방지. 상태 바뀌면 다시 INFO.
+            key = f"{score}|{t}|{is_long}"
+            if key != self._last_align_skip_log:
+                self._last_align_skip_log = key
+                logger.info(
+                    "HTF align 게이트 skip — score=%d(T=%d) setup=%s (tf=%s)",
+                    score, t, "buy" if is_long else "sell", self.htf_ema_bias_tf,
+                )
+        else:
+            self._last_align_skip_log = ""
         return ok
 
     async def _compute_htf_bias(self) -> TrendDirection | None:
@@ -1283,10 +1299,17 @@ class BotIctInstance:
         side = "buy" if setup.direction is Direction.LONG else "sell"
 
         # #SAFETY-1: 일일 손실 한도 도달 시 새 진입 차단 (active position 은 유지).
-        # equity fetch 가 _execute_setup 본체에서도 필요해 한 번 미리 가져와 baseline.
-        equity_now = await self._fetch_equity()
+        # equity fetch 실패(None) 시 baseline reset 을 보류 — 폴백값으로 하루
+        # 기준이 오염되는 것 방지 (2026-06-11 리뷰 수정).
+        equity_now = await self._fetch_equity_or_none()
         self._maybe_reset_daily_pnl(equity_now)
+        # 2026-06-11 리뷰 수정: 한도는 sticky — 한 번 도달하면 그날 내내 차단.
+        # (기존엔 실시간 재계산만 봐서, hit 후 보유 포지션 손절로 한도 아래로
+        # 내려가면 진입이 다시 풀렸음. flag 는 NY 자정 reset 또는 사용자가
+        # 한도를 올리면 API 가 해제.)
         if self._is_daily_loss_limit_hit():
+            self._daily_limit_hit = True
+        if self._daily_limit_hit:
             logger.info(
                 "setup skip (#SAFETY-1) — daily loss limit %.2f%% hit "
                 "(today_pnl=%.2fUSDT / start=%.2f)",
@@ -1296,6 +1319,8 @@ class BotIctInstance:
             return
         # 2026-06-10 조윤 건의: 일일 수익(TP) 한도 도달 시 신규 진입 중단.
         if self._is_daily_profit_limit_hit():
+            self._daily_profit_hit = True
+        if self._daily_profit_hit:
             logger.info(
                 "setup skip — daily profit limit %.2f%% hit "
                 "(today_pnl=%.2fUSDT / start=%.2f) — 그날 목표 달성, 진입 중단",
@@ -1994,19 +2019,19 @@ class BotIctInstance:
                 setup.confluence_score,
             )
 
-    async def _fetch_equity(self) -> float:
-        """가용 자산 (USDT equity) 조회.
+    async def _fetch_equity_or_none(self) -> float | None:
+        """가용 자산 (USDT equity) 조회 — 실패/형식 불명 시 None.
 
-        Bybit V5 ccxt format = ``{"USDT": {"total": ...}, ...}``.
-        fallback 1000.0 (테스트/오류 대비).
+        2026-06-11 리뷰 수정: 일일 한도 baseline(``_maybe_reset_daily_pnl``)이
+        폴백 상수로 오염되지 않게, 실패를 None 으로 구분해 돌려준다.
         """
         try:
             bal = await self.client.fetch_balance()
         except Exception as e:  # noqa: BLE001
-            logger.warning("fetch_balance 실패: %s — fallback $1000", e)
-            return 1000.0
+            logger.warning("fetch_balance 실패: %s", e)
+            return None
         if not isinstance(bal, dict):
-            return 1000.0
+            return None
         # ccxt 표준 = {"USDT": {"total": float, "free": float, ...}, ...}
         usdt = bal.get("USDT")
         if isinstance(usdt, dict):
@@ -2017,7 +2042,16 @@ class BotIctInstance:
         total = bal.get("total")
         if isinstance(total, (int, float)) and total > 0:
             return float(total)
-        return 1000.0
+        return None
+
+    async def _fetch_equity(self) -> float:
+        """가용 자산 (USDT equity) 조회 — 실패 시 fallback 1000.0 (테스트/오류 대비).
+
+        qty 산정 등 "값이 꼭 필요한" 호출처용. 일일 한도 baseline 은
+        ``_fetch_equity_or_none`` 을 써서 실패 시 reset 을 보류한다.
+        """
+        eq = await self._fetch_equity_or_none()
+        return eq if eq is not None else 1000.0
 
     def _calc_qty_risk_based(
         self, setup: SilverBulletSetup, equity: float,
@@ -2091,7 +2125,7 @@ class BotIctInstance:
             return 0.0
         return qty
 
-    def _maybe_reset_daily_pnl(self, equity_now: float) -> None:
+    def _maybe_reset_daily_pnl(self, equity_now: float | None) -> None:
         """NY local 자정 기준 일일 누적 손익 reset (#SAFETY-1).
 
         매일 새 거래일이 시작하면 ``_today_realized_pnl_usdt`` 와 ``_today_start_equity``
@@ -2099,9 +2133,18 @@ class BotIctInstance:
 
         Args:
             equity_now: 현재 가용 자산 (USDT). 새 날짜 시작 시 baseline 으로 박힘.
+                None(잔고 조회 실패)이면 reset 을 **보류** — 다음 성공 fetch 때
+                정확한 baseline 으로 reset (2026-06-11 리뷰: 폴백 상수가 하루치
+                한도 기준을 오염시키던 문제).
         """
         ny_date = datetime.now(UTC).astimezone(_NY_TZ).strftime("%Y-%m-%d")
         if ny_date != self._today_date_str:
+            if equity_now is None:
+                logger.warning(
+                    "daily PnL reset 보류 — 잔고 조회 실패 (NY %s). 다음 step 재시도.",
+                    ny_date,
+                )
+                return
             self._today_date_str = ny_date
             self._today_realized_pnl_usdt = 0.0
             self._today_start_equity = equity_now if equity_now > 0 else 0.0

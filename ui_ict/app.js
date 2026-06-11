@@ -965,7 +965,11 @@ async function fetchAndRender() {
   try {
     const status = await api("/ict/status");
     renderStatus(status);
-    if (status.state !== "running") {
+    // 2026-06-11 리뷰 수정: status 는 기본 심볼(BTC) 기준이라 BTC 정지·ETH 가동
+    // 사용자는 멀티페어 포지션이 영영 안 보였다. 어느 페어든 가동 중이면 진행.
+    const anyRunning = status.state === "running"
+      || (Array.isArray(status.running_symbols) && status.running_symbols.length > 0);
+    if (!anyRunning) {
       renderPositions(null);
       return;
     }
@@ -973,19 +977,29 @@ async function fetchAndRender() {
     const tf = encodeURIComponent(currentTimeframe);
     const candleLimit = CANDLE_LIMIT[currentTimeframe] || 5000;
     const cacheKey = `${currentChartSymbol}|${currentTimeframe}`;
-    // 2026-05-28: P&L 누적 그래프 (전체기간) 용으로 limit=200 (백엔드 cap).
-    const [ohlcv, markers, position, pnl] = await Promise.all([
-      api(`/ict/ohlcv?timeframe=${tf}&symbol=${encodeURIComponent(currentChartSymbol)}&limit=${candleLimit}`),
-      api(`/ict/markers?timeframe=${tf}&symbol=${encodeURIComponent(currentChartSymbol)}&limit=${MARKER_LIMIT}`),
-      api("/ict/position"),
-      api("/ict/closed_pnl?limit=200"),
-    ]);
-    // fresh 데이터 캐시 갱신 — TF/페어 전환·prefetch 가 재사용해 즉시 표시.
-    _chartCache.set(cacheKey, { candles: ohlcv.candles, markers });
-    _applyChartData(ohlcv.candles, markers);
-    renderPositions(position);
-    renderPendingLimit(position);
-    renderPnL(pnl);
+    // 포지션/PnL 은 차트 심볼 봇과 무관 — 차트(ohlcv/markers)가 404 여도
+    // (보고 있는 심볼 봇만 정지 등) 포지션 표는 그려지게 분리 fetch.
+    const positionP = api("/ict/position").catch(() => null);
+    const pnlP = api("/ict/closed_pnl?limit=200").catch(() => null);
+    let ohlcv = null;
+    let markers = null;
+    try {
+      [ohlcv, markers] = await Promise.all([
+        api(`/ict/ohlcv?timeframe=${tf}&symbol=${encodeURIComponent(currentChartSymbol)}&limit=${candleLimit}`),
+        api(`/ict/markers?timeframe=${tf}&symbol=${encodeURIComponent(currentChartSymbol)}&limit=${MARKER_LIMIT}`),
+      ]);
+    } catch (e) { /* 차트 심볼 봇 미가동 등 — 포지션 렌더는 계속 */ }
+    const [position, pnl] = await Promise.all([positionP, pnlP]);
+    if (ohlcv) {
+      // fresh 데이터 캐시 갱신 — TF/페어 전환·prefetch 가 재사용해 즉시 표시.
+      _chartCache.set(cacheKey, { candles: ohlcv.candles, markers });
+      _applyChartData(ohlcv.candles, markers);
+    }
+    if (position) {
+      renderPositions(position);
+      renderPendingLimit(position);
+    }
+    if (pnl) renderPnL(pnl);
     // 첫 정상 렌더 후 백그라운드 prefetch 1회 시작 — 모든 심볼×TF 미리 캐시해
     // 전환 즉답. 초기 렌더 안정화 후 시작(1.5s 지연).
     if (!_prefetchStarted) setTimeout(_prefetchAllCharts, 1500);
@@ -1015,7 +1029,10 @@ $("btn-stop").onclick = async () => {
   // 2026-06-06: 전체 STOP — /ict/stop-all 이 모든 페어 정지하되 선호(last_active)는
   // 유지 → START 시 복원. (개별 페어 정지는 페어 칩 클릭 = /ict/stop?symbol=)
   try {
-    await api("/ict/stop-all", "POST");
+    // 2026-06-11 리뷰 수정: /ict/stop-all 은 멀티유저 전용 — .exe(단일) 모드에선
+    // 404 라 STOP 버튼이 안 먹었다. 실패 시 /ict/stop 폴백.
+    try { await api("/ict/stop-all", "POST"); }
+    catch (e2) { await api("/ict/stop", "POST"); }
     toast("봇 중지됨");
     await fetchAndRender();
     await refreshRunningPairs();

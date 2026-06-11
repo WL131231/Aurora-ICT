@@ -231,21 +231,32 @@ class TelegramAlerter:
         알림이 사라졌다. 429 는 retry_after, 그 외 예외는 exponential backoff 로
         retries 회 재시도. 최종 실패만 WARNING.
         """
-        last_err: Exception | None = None
+        last_err: Any = None
         for attempt in range(retries + 1):
             try:
                 r = await self._client.post(
                     _API.format(token=self.token, method=method), json=payload,
                 )
                 data = r.json()
-                # 429 rate limit — 텔레그램이 알려준 retry_after 만큼 대기 후 재시도.
-                if isinstance(data, dict) and data.get("error_code") == 429:
-                    wait = float(
-                        data.get("parameters", {}).get("retry_after", 1),
-                    )
-                    if attempt < retries:
-                        await asyncio.sleep(min(wait, 5.0))
-                        continue
+                if isinstance(data, dict) and not data.get("ok", True):
+                    code = data.get("error_code")
+                    last_err = f"error_code={code} {data.get('description', '')}"
+                    # 429 rate limit — retry_after 존중(상한 30s, 채팅별 flood
+                    # limit 이 10~30s 인 경우 있음). 5xx 도 일시 장애라 재시도
+                    # (2026-06-11 리뷰: JSON 5xx 가 무재시도·무로그로 증발하던 것).
+                    if code == 429:
+                        wait = float(
+                            data.get("parameters", {}).get("retry_after", 1),
+                        )
+                        if attempt < retries:
+                            await asyncio.sleep(min(wait, 30.0))
+                            continue
+                    elif isinstance(code, int) and code >= 500:
+                        if attempt < retries:
+                            await asyncio.sleep(1.5 * (attempt + 1))
+                            continue
+                    # 비재시도 오류(400 등) 또는 재시도 소진 — 아래 warning 으로.
+                    break
                 return data
             except Exception as e:  # noqa: BLE001
                 last_err = e
@@ -253,7 +264,7 @@ class TelegramAlerter:
                     await asyncio.sleep(1.5 * (attempt + 1))  # backoff
                     continue
         logger.warning(
-            "텔레그램 %s 실패(재시도 %d회 소진): %s", method, retries, last_err,
+            "텔레그램 %s 실패(재시도 소진 또는 비재시도 오류): %s", method, last_err,
         )
         return None
 
