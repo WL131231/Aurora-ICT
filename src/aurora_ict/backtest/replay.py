@@ -93,6 +93,9 @@ class BacktestConfig:
     # 유지하게 재계산(SL 비례), False 면 TP 고정(RR 변동).
     sl_dist_mult: float = 1.0
     tp_keeps_rr: bool = True
+    # 2026-06-12 #LIQ-CAP 재현: 라이브 hotfix 와 동일 — 확장 SL 거리를
+    # 청산 거리(entry/leverage)의 80% 로 캡, 캡<원본이면 확장 포기(원본 유지).
+    sl_liq_cap: bool = False
 
 
 @dataclass(slots=True)
@@ -451,6 +454,10 @@ def run_backtest(
             if risk > 0:
                 rr0 = abs(tp - entry) / risk
                 new_risk = risk * cfg.sl_dist_mult
+                if cfg.sl_liq_cap and cfg.leverage > 0:
+                    cap = entry * 0.8 / cfg.leverage
+                    if new_risk > cap:
+                        new_risk = max(risk, cap)  # 라이브 #LIQ-CAP 동일
                 if setup.direction is Direction.LONG:
                     sl = entry - new_risk
                     tp = entry + new_risk * rr0 if cfg.tp_keeps_rr else tp
@@ -711,6 +718,10 @@ def run_backtest_from_timeline(
             if risk > 0:
                 rr0 = abs(tp - entry) / risk
                 new_risk = risk * cfg.sl_dist_mult
+                if cfg.sl_liq_cap and cfg.leverage > 0:
+                    cap = entry * 0.8 / cfg.leverage
+                    if new_risk > cap:
+                        new_risk = max(risk, cap)  # 라이브 #LIQ-CAP 동일
                 if setup.direction is Direction.LONG:
                     sl = entry - new_risk
                     tp = entry + new_risk * rr0 if cfg.tp_keeps_rr else tp
@@ -1011,6 +1022,10 @@ def run_backtest_multitf(
             if risk > 0:
                 rr0 = abs(tp - entry) / risk
                 new_risk = risk * cfg.sl_dist_mult
+                if cfg.sl_liq_cap and cfg.leverage > 0:
+                    cap = entry * 0.8 / cfg.leverage
+                    if new_risk > cap:
+                        new_risk = max(risk, cap)  # 라이브 #LIQ-CAP 동일
                 if setup.direction is Direction.LONG:
                     sl = entry - new_risk
                     tp = entry + new_risk * rr0 if cfg.tp_keeps_rr else tp
