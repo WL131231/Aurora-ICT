@@ -580,6 +580,36 @@ def test_daily_profit_limit_out_of_range_400(client: TestClient) -> None:
     assert r.status_code == 400
 
 
+def test_daily_limit_set_does_not_pollute_base_settings(
+    client: TestClient, mu, base_settings,
+) -> None:
+    """2026-06-11 리뷰 수정: 슬롯 없는 사용자의 한도 설정이 base_settings(전
+    사용자 공유)를 오염시키지 않는다 — 크로스 테넌트 누출 방지."""
+    _register_user(client, "AICT-POLL-POLL-POLL")
+    before_loss = base_settings.daily_loss_limit_pct
+    before_profit = base_settings.daily_profit_limit_pct
+    assert client.post("/ict/daily_loss_limit", json={"pct": 9.0}).status_code == 200
+    assert client.post("/ict/daily_profit_limit", json={"pct": 7.0}).status_code == 200
+    assert base_settings.daily_loss_limit_pct == before_loss
+    assert base_settings.daily_profit_limit_pct == before_profit
+
+
+def test_daily_limit_set_applies_to_all_user_slots(
+    client: TestClient, mu,
+) -> None:
+    """한도 설정이 BTC 만이 아니라 사용자의 모든 가동 페어 봇에 반영."""
+    code = "AICT-ALLS-ALLS-ALLS"
+    _register_user(client, code)
+    client.post("/ict/start?symbol=BTC/USDT:USDT")
+    client.post("/ict/start?symbol=ETH/USDT:USDT")
+    assert client.post("/ict/daily_loss_limit", json={"pct": 6.5}).status_code == 200
+    for sym in ("BTC/USDT:USDT", "ETH/USDT:USDT"):
+        bot = mu._slots[(code, sym)].bot
+        assert bot.daily_loss_limit_pct == 6.5
+    client.post("/ict/stop?symbol=BTC/USDT:USDT")
+    client.post("/ict/stop?symbol=ETH/USDT:USDT")
+
+
 def test_daily_loss_limit_get_includes_profit_fields(client: TestClient) -> None:
     """GET 응답에 profit_limit_pct/profit_hit 동봉(UI TP Limit 표시용)."""
     _register_user(client)

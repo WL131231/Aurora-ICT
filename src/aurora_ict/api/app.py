@@ -732,11 +732,19 @@ def _register_multi_user_routes(
     async def get_daily_loss_limit_mu(
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
-        """#SAFETY-1 한도 + 오늘 누적 손익 상태 — 사용자 봇이 있으면 그 값, 없으면 settings."""
-        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
+        """#SAFETY-1 한도 + 오늘 누적 손익 상태 — 사용자 봇이 있으면 그 값, 없으면 settings.
+
+        2026-06-11 리뷰 수정: 기본 심볼(BTC) 슬롯 고정 조회 → ETH 만 가동 중인
+        사용자도 오늘 손익이 보이게 사용자 슬롯 아무거나(가동 중 우선) 사용.
+        """
+        user_slots = [
+            s for (u, _sym), s in mu_manager._slots.items()
+            if u == user_code and s.bot is not None
+        ]
         settings = _user_settings(user_code)
-        if slot is not None and slot.bot is not None:
-            return slot.bot.daily_loss_status()
+        if user_slots:
+            running = [s for s in user_slots if s.bot.state.value == "running"]
+            return (running[0] if running else user_slots[0]).bot.daily_loss_status()
         return {
             "limit_pct": settings.daily_loss_limit_pct,
             "today_pnl_usdt": 0.0,
@@ -762,8 +770,12 @@ def _register_multi_user_routes(
                 status_code=400,
                 detail="daily_profit_limit_pct 는 0~100 범위 (0 = 비활성).",
             )
-        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
-        if slot is not None:
+        # 2026-06-11 리뷰 수정: ① BTC 슬롯 고정 → 사용자 *전 슬롯* 순회 (ETH/HYPE
+        # 봇에도 반영). ② 슬롯 없을 때 base_settings(전 사용자 공유 객체) 기록
+        # 제거 — 다른 사용자 봇 기본값을 오염시키던 크로스 테넌트 버그.
+        for (u, _sym), slot in list(mu_manager._slots.items()):
+            if u != user_code:
+                continue
             slot.settings.daily_profit_limit_pct = req.pct
             if slot.bot is not None:
                 slot.bot.daily_profit_limit_pct = req.pct
@@ -773,11 +785,9 @@ def _register_multi_user_routes(
                 ):
                     slot.bot._daily_profit_hit = False
                     logger.info(
-                        "[multi-user] %s daily profit limit 한도 ↑ — hit flag 해제",
-                        user_code,
+                        "[multi-user] %s/%s daily profit limit 한도 ↑ — hit flag 해제",
+                        user_code, _sym,
                     )
-        elif mu_manager.base_settings is not None:
-            mu_manager.base_settings.daily_profit_limit_pct = req.pct
         logger.info(
             "[multi-user] %s daily profit limit 설정 → %.2f%%", user_code, req.pct,
         )
@@ -794,8 +804,11 @@ def _register_multi_user_routes(
                 status_code=400,
                 detail="daily_loss_limit_pct 는 0~50 범위 (0 = 비활성).",
             )
-        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
-        if slot is not None:
+        # 2026-06-11 리뷰 수정: 사용자 전 슬롯 순회 + base_settings 오염 제거
+        # (위 daily_profit_limit 와 동일 — 크로스 테넌트 누출 방지).
+        for (u, _sym), slot in list(mu_manager._slots.items()):
+            if u != user_code:
+                continue
             slot.settings.daily_loss_limit_pct = req.pct
             if slot.bot is not None:
                 slot.bot.daily_loss_limit_pct = req.pct
@@ -805,11 +818,9 @@ def _register_multi_user_routes(
                 ):
                     slot.bot._daily_limit_hit = False
                     logger.info(
-                        "[multi-user] %s daily loss limit 한도 ↑ — hit flag 해제",
-                        user_code,
+                        "[multi-user] %s/%s daily loss limit 한도 ↑ — hit flag 해제",
+                        user_code, _sym,
                     )
-        elif mu_manager.base_settings is not None:
-            mu_manager.base_settings.daily_loss_limit_pct = req.pct
         logger.info(
             "[multi-user] %s daily loss limit 설정 → %.2f%%", user_code, req.pct,
         )
@@ -950,8 +961,10 @@ def _register_multi_user_routes(
         else:
             unrealized = (ex_entry - mark_price) * ap.qty
 
-        settings = _user_settings(user_code)
-        lev = settings.leverage
+        # 2026-06-11 리뷰 수정: 기본 심볼 settings 가 아니라 *이 봇*의 leverage.
+        # 알트는 슬롯 생성 시 15배 강제라 BTC 설정(예 50배) 기준 청산가/마진이
+        # 완전히 틀리게 표시되던 문제.
+        lev = int(getattr(bot, "leverage", 0)) or _user_settings(user_code).leverage
         notional = ex_entry * ap.qty
         margin = notional / lev
         if ap.direction is Direction.LONG:
@@ -1751,6 +1764,19 @@ def create_app(
             "부분 청산 — closed=%.6f remaining=%.6f", close_qty, remaining,
         )
         return {"closed_qty": close_qty, "remaining_qty": remaining, "active": True}
+
+    @app.post("/ict/pending/cancel")
+    async def cancel_pending() -> dict[str, Any]:
+        """대기 중인 지정가 entry 주문 즉시 취소 (단일 사용자 분기).
+
+        2026-06-11 리뷰 수정: mu 분기에만 있어 .exe(legacy) 모드에서 UI CANCEL
+        버튼이 404 나던 것 보강.
+        """
+        bot = manager.bot
+        if bot is None:
+            return {"ok": False, "reason": "bot_not_running"}
+        ok = await bot.cancel_pending_entry()
+        return {"ok": ok}
 
     @app.get("/ict/position")
     async def get_position() -> dict[str, Any]:

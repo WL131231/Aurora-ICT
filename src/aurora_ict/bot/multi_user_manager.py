@@ -622,37 +622,42 @@ class MultiUserBotManager:
                 끈 경우). 전체 STOP 은 False 로 호출해 선호를 유지 → START 시 복원.
         """
         key: SlotKey = (user_code, symbol)
-        slot = self._slots.get(key)
-        # slot 유무와 무관하게 사용자가 명시 STOP 을 눌렀다면 DB 에서 해당 symbol 제거
-        # — 다른 fly machine 에서 가동했더라도 명시 정지 의도가 우선. DB 에 user row
-        # 자체가 없으면 set_bot_running 이 False 반환 (no-op).
-        try:
-            users_db.set_bot_running(
-                self.db_path, user_code, False, symbol=symbol,
-            )
-            # 2026-06-06: 페어 칩으로 끈 경우만 선호에서 제거. 전체 STOP 은 유지.
-            if forget_preference:
-                users_db.set_last_active_pair(
-                    self.db_path, user_code, symbol, False,
+        # 2026-06-11 리뷰 수정: start/ensure_bot_ready 와 같은 lock 으로 직렬화.
+        # 무lock 이던 기존엔 START 진행 중 STOP 이 끼어들어 슬롯 pop → start 의
+        # _slots[key] 접근 KeyError, 또는 DB bot_running 쓰기 순서가 꼬여
+        # 사용자가 끈 봇을 auto_resume 이 되살리는 레이스가 가능했다.
+        async with self._get_lock(user_code, symbol):
+            slot = self._slots.get(key)
+            # slot 유무와 무관하게 사용자가 명시 STOP 을 눌렀다면 DB 에서 해당 symbol
+            # 제거 — 다른 fly machine 에서 가동했더라도 명시 정지 의도가 우선. DB 에
+            # user row 자체가 없으면 set_bot_running 이 False 반환 (no-op).
+            try:
+                users_db.set_bot_running(
+                    self.db_path, user_code, False, symbol=symbol,
                 )
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "사용자 %s/%s bot_running 영속화 실패 (무시): %s",
-                user_code, symbol, e,
+                # 2026-06-06: 페어 칩으로 끈 경우만 선호에서 제거. 전체 STOP 은 유지.
+                if forget_preference:
+                    users_db.set_last_active_pair(
+                        self.db_path, user_code, symbol, False,
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "사용자 %s/%s bot_running 영속화 실패 (무시): %s",
+                    user_code, symbol, e,
+                )
+            if slot is None:
+                return
+            if slot.bot is not None:
+                await slot.bot.stop()
+            await self._close_client(slot)
+            # 2026-06-11 버그픽스: 정지한 슬롯을 _slots 에서 제거.
+            # 안 그러면 페어 카운트(start 의 existing = 사용자 슬롯 수)에 정지된
+            # 슬롯이 남아 "5개 등록 → 1개 삭제 → 추가" 가 MAX_PAIRS_PER_USER 로 막힌다.
+            self._slots.pop(key, None)
+            logger.info(
+                "MultiUserBotManager: 사용자 %s 봇 정지 (symbol=%s)",
+                user_code, symbol,
             )
-        if slot is None:
-            return
-        if slot.bot is not None:
-            await slot.bot.stop()
-        await self._close_client(slot)
-        # 2026-06-11 버그픽스: 정지한 슬롯을 _slots 에서 제거.
-        # 안 그러면 페어 카운트(start 의 existing = 사용자 슬롯 수)에 정지된
-        # 슬롯이 남아 "5개 등록 → 1개 삭제 → 추가" 가 MAX_PAIRS_PER_USER 로 막힌다.
-        self._slots.pop(key, None)
-        logger.info(
-            "MultiUserBotManager: 사용자 %s 봇 정지 (symbol=%s)",
-            user_code, symbol,
-        )
 
     async def start_preferred(
         self, user_code: str, *, force_run_mode: RunMode | None = None,
