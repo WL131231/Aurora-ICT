@@ -370,8 +370,13 @@ def backup_db(db_path: Path | str, keep: int = 3) -> Path | None:
 
 
 def _init_db_inner(path: Path) -> None:
-    """init_db 본체 — 테이블 생성 + 마이그레이션 (손상 격리 래퍼와 분리)."""
-    with _connect(path) as conn:
+    """init_db 본체 — 테이블 생성 + 마이그레이션 (손상 격리 래퍼와 분리).
+
+    실패 시에도 연결을 확실히 닫는다 — Windows 에선 열린 핸들이 있으면
+    손상 파일 rename(격리)이 PermissionError 로 막히기 때문.
+    """
+    conn = _connect(path)
+    try:
         conn.execute(_DDL_USERS)
         conn.execute(_DDL_INDEX_CODE)
         conn.execute(_DDL_SESSIONS)
@@ -391,6 +396,9 @@ def _init_db_inner(path: Path) -> None:
         _ensure_telegram_chat_id_column(conn)
         _ensure_pref_columns(conn)
         conn.commit()
+    finally:
+        # Windows: 핸들 열려 있으면 손상 파일 rename(격리)이 막힘 — 확실히 닫기.
+        conn.close()
     # 2026-05-28: 공지사항 테이블도 같은 파일에 idempotent 생성.
     from aurora_ict.auth.notices_db import init_notices_table
     init_notices_table(path)

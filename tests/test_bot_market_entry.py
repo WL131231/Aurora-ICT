@@ -58,17 +58,49 @@ def _dummy_setup() -> SilverBulletSetup:
 
 
 @pytest.mark.asyncio
-async def test_sl_dist_mult_scales_sl_and_preserves_rr() -> None:
-    """#EDGE-V2: sl_dist_mult=3 → SL 거리 3배 + TP 는 원 RR(3.0) 유지 비례 확장.
+async def test_sl_dist_mult_liq_cap_blocks_expansion() -> None:
+    """#LIQ-CAP: 원본 거리 5%가 청산 캡(0.8/20x=4%)보다 커서 확장 포기 → 원본 유지.
 
-    원본 entry=100/sl=95(거리5)/tp=115(RR3) → sl=85(거리15), tp=145(15×3).
+    entry=100/sl=95/tp=115, lev=20 — 확장하면 SL 이 청산가 너머라 원본 그대로.
     """
     client = _mock_client()
-    bot = BotIctInstance(client=client, sl_dist_mult=3.0)
+    bot = BotIctInstance(client=client, sl_dist_mult=3.0, leverage=20)
     await bot._execute_setup(_dummy_setup())
     tpsl_kw = client.set_position_tpsl.await_args_list[0].kwargs
-    assert tpsl_kw["stop_loss"] == pytest.approx(85.0)
-    assert tpsl_kw["take_profit"] == pytest.approx(145.0)
+    assert tpsl_kw["stop_loss"] == pytest.approx(95.0)
+    assert tpsl_kw["take_profit"] == pytest.approx(115.0)
+
+
+@pytest.mark.asyncio
+async def test_sl_dist_mult_scales_within_liq_cap() -> None:
+    """#EDGE-V2+#LIQ-CAP: 캡 안에서는 정상 확장 — 거리0.5×3=1.5(<4%) → sl98.5/tp104.5."""
+    client = _mock_client()
+    bot = BotIctInstance(client=client, sl_dist_mult=3.0, leverage=20)
+    fvg = FVG(type=FVGType.BULLISH, idx=5, ts_ms=12347, low=99, high=101)
+    setup = SilverBulletSetup(
+        ts_ms=12347, direction=Direction.LONG, window="any",
+        entry=100.0, stop_loss=99.5, take_profit=101.5, risk_reward=3.0, fvg=fvg,
+    )
+    await bot._execute_setup(setup)
+    tpsl_kw = client.set_position_tpsl.await_args_list[0].kwargs
+    assert tpsl_kw["stop_loss"] == pytest.approx(98.5)
+    assert tpsl_kw["take_profit"] == pytest.approx(104.5)
+
+
+@pytest.mark.asyncio
+async def test_sl_dist_mult_partial_cap() -> None:
+    """#LIQ-CAP: 거리2×3=6 > 캡4 → 4로 캡 — sl=96, tp=100+4×3=112."""
+    client = _mock_client()
+    bot = BotIctInstance(client=client, sl_dist_mult=3.0, leverage=20)
+    fvg = FVG(type=FVGType.BULLISH, idx=5, ts_ms=12348, low=98, high=101)
+    setup = SilverBulletSetup(
+        ts_ms=12348, direction=Direction.LONG, window="any",
+        entry=100.0, stop_loss=98.0, take_profit=106.0, risk_reward=3.0, fvg=fvg,
+    )
+    await bot._execute_setup(setup)
+    tpsl_kw = client.set_position_tpsl.await_args_list[0].kwargs
+    assert tpsl_kw["stop_loss"] == pytest.approx(96.0)
+    assert tpsl_kw["take_profit"] == pytest.approx(112.0)
 
 
 @pytest.mark.asyncio

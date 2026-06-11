@@ -1424,6 +1424,22 @@ class BotIctInstance:
             if risk > 0:
                 rr0 = abs(setup.take_profit - setup.entry) / risk
                 new_risk = risk * self.sl_dist_mult
+                # 2026-06-12 hotfix #LIQ-CAP: 확장 SL 거리가 레버리지 청산 거리
+                # (entry/leverage)의 80% 를 넘지 않게 캡. 넘으면 SL 도달 전에
+                # 강제청산돼 "건당 1R" 관리가 붕괴 + TP 도 비현실 값이 됨
+                # (실거래 ETH 숏 TP 920 / SL>청산가 사고로 발견 — 백테스트는
+                # 청산가를 시뮬하지 않아 못 잡았던 갭).
+                # 캡이 원본 거리보다 작으면 확장 포기(원본 SL 유지) — 원본을
+                # 줄이진 않음 (setup 의미 보존).
+                if self.leverage > 0:
+                    cap = setup.entry * 0.8 / self.leverage
+                    if new_risk > cap:
+                        capped = max(risk, cap)
+                        logger.info(
+                            "SL 확장 청산가 캡 — x%.1f(%.4f) → %.4f (lev=%d)",
+                            self.sl_dist_mult, new_risk, capped, self.leverage,
+                        )
+                        new_risk = capped
                 if setup.direction is Direction.LONG:
                     setup.stop_loss = setup.entry - new_risk
                     setup.take_profit = setup.entry + new_risk * rr0
@@ -1431,8 +1447,8 @@ class BotIctInstance:
                     setup.stop_loss = setup.entry + new_risk
                     setup.take_profit = setup.entry - new_risk * rr0
                 logger.info(
-                    "SL 거리 x%.1f 적용 — sl=%.4f tp=%.4f (RR %.2f 유지)",
-                    self.sl_dist_mult, setup.stop_loss, setup.take_profit, rr0,
+                    "SL 거리 확장 적용 — sl=%.4f tp=%.4f (RR %.2f 유지)",
+                    setup.stop_loss, setup.take_profit, rr0,
                 )
 
         # 2026-06-03: setup.entry 가 현재가에서 max_entry_distance_pct 초과로
