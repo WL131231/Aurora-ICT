@@ -23,7 +23,7 @@ from typing import Any
 
 import pandas as pd
 from ccxt.base.errors import AuthenticationError
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Cookie, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, SecretStr
@@ -990,6 +990,55 @@ def _register_multi_user_routes(
             "leverage": lev,
             "pending": pending,
         }
+
+    @app.get("/admin/positions")
+    async def admin_all_positions(
+        x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+        cookie_token: str | None = Cookie(default=None, alias="aurora_admin_token"),
+    ) -> dict[str, Any]:
+        """전 사용자 열린 포지션/대기주문 한눈에 — 운영 사고 대응용 (2026-06-12).
+
+        파트너 요청: 6/12 #LIQ-CAP 사고(SL 이 청산가 밖) 같은 위험 포지션을
+        사용자별로 일일이 안 보고 한 번에 점검. SL 이 청산가 밖이면
+        ``sl_beyond_liq=True`` 경고 플래그.
+        """
+        from aurora_ict.api.trades_router import _check_admin_cookie_or_header
+        _check_admin_cookie_or_header(cookie_token, x_admin_token)
+        rows: list[dict[str, Any]] = []
+        for (u, sym), slot in list(mu_manager._slots.items()):
+            bot = slot.bot
+            if bot is None:
+                continue
+            lev = int(getattr(bot, "leverage", 0)) or 1
+            for kind, pos in (
+                ("active", bot.active_position),
+                ("pending", bot._pending_entry),
+            ):
+                if pos is None:
+                    continue
+                entry = float(pos.entry)
+                is_long = pos.direction is Direction.LONG
+                liq = entry * (1.0 - 0.95 / lev) if is_long else entry * (1.0 + 0.95 / lev)
+                sl = float(pos.stop_loss)
+                beyond = (sl <= liq) if is_long else (sl >= liq)
+                rows.append({
+                    "user_code": u,
+                    "symbol": sym,
+                    "kind": kind,
+                    "direction": "long" if is_long else "short",
+                    "entry": entry,
+                    "qty": float(pos.qty),
+                    "stop_loss": sl,
+                    "take_profit": float(pos.take_profit),
+                    "leverage": lev,
+                    "liq_price": round(liq, 6),
+                    "sl_beyond_liq": beyond,
+                    "bot_state": bot.state.value,
+                })
+        # 위험(청산가 밖 SL) 먼저 보이게 정렬.
+        rows.sort(key=lambda r: (not r["sl_beyond_liq"], r["user_code"]))
+        return {"positions": rows, "count": len(rows),
+                "risky": sum(1 for r in rows if r["sl_beyond_liq"])}
 
     @app.get("/ict/position")
     async def get_position_mu(

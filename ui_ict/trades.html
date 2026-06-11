@@ -430,6 +430,12 @@
       <!-- 2026-06-10 파트너 요청: 관리자만 — 전체 사용자 매매를 한 CSV 로. -->
       <button id="btn-csv-all" class="accent" style="display:none"
               data-i18n="trades.csvAll">전체 CSV 다운로드</button>
+      <!-- 2026-06-12 파트너 요청: 전 사용자 열린 포지션 한눈에 (위험 SL 경고). -->
+      <button id="btn-all-pos" class="accent" style="display:none">전체 포지션</button>
+    </div>
+    <div id="all-pos-box" style="display:none;margin:8px 0;padding:8px;border:1px solid #333;border-radius:6px">
+      <div id="all-pos-summary" style="margin-bottom:6px;color:var(--text-2)"></div>
+      <div id="all-pos-rows" style="font-family:monospace;font-size:12px;line-height:1.7"></div>
     </div>
 
     <table>
@@ -551,6 +557,7 @@
       $("btn-admin-login").style.display = isAdmin ? "none" : "";
       $("btn-admin-logout").style.display = isAdmin ? "" : "none";
       $("btn-csv-all").style.display = isAdmin ? "" : "none";
+      $("btn-all-pos").style.display = isAdmin ? "" : "none";
       $("admin-section").classList.toggle("show", isAdmin);
       if (isAdmin) await loadUserDropdown();
     }
@@ -922,6 +929,24 @@
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+    };
+
+    // 2026-06-12: 전 사용자 열린 포지션 — 위험(SL이 청산가 밖) 우선 표시.
+    $("btn-all-pos").onclick = async () => {
+      try {
+        const d = await api("/admin/positions");
+        const box = $("all-pos-box");
+        box.style.display = "";
+        $("all-pos-summary").textContent =
+          `열린 포지션 ${d.count}건 · 위험(SL이 청산가 밖) ${d.risky}건`;
+        $("all-pos-rows").innerHTML = (d.positions || []).map((r) => {
+          const warn = r.sl_beyond_liq
+            ? '<span style="color:#fb7185;font-weight:700">⚠ SL>청산가</span> ' : "";
+          return `${warn}<b>${r.user_code}</b> ${r.symbol} ${r.direction.toUpperCase()}`
+            + ` ${r.kind} · entry ${r.entry} · SL ${r.stop_loss} · TP ${r.take_profit}`
+            + ` · liq≈${r.liq_price} · ${r.leverage}x · qty ${r.qty}`;
+        }).join("<br/>") || "열린 포지션 없음";
+      } catch (e) { toast(e.message, true); }
     };
 
     // 전체 사용자 CSV — 관리자 전용. 기간 필터만 반영(사용자/유형 무관).
