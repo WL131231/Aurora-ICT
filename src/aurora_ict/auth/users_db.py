@@ -41,11 +41,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # DDL — idempotent 하게 init_db 에서 사용. CREATE TABLE IF NOT EXISTS 라 재실행 안전.
 #
@@ -303,6 +306,12 @@ def _ensure_dual_key_columns(conn: sqlite3.Connection) -> None:
 def init_db(db_path: Path | str) -> None:
     """users.db 테이블 생성 — idempotent (이미 있으면 no-op).
 
+    2026-06-12 #DB-RESILIENCE: 파일이 깨져 있으면(file is not a database —
+    강제종료로 SQLite 헤더 손상) 부팅 크래시 무한루프 대신, 깨진 파일을
+    ``users.db.corrupt-<ts>`` 로 보존해 두고 새 DB 로 부팅을 계속한다.
+    (2026-06-11 장애: 머신 강제종료 → users.db 손상 → init_db 크래시 →
+    fly 재시작 루프로 2시간+ 전면 다운. 데이터는 볼륨 스냅샷으로 복구.)
+
     Args:
         db_path: 생성/오픈할 SQLite 파일 경로. 부모 디렉토리는 미리 존재해야 함.
 
@@ -311,6 +320,57 @@ def init_db(db_path: Path | str) -> None:
     """
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _init_db_inner(path)
+    except sqlite3.DatabaseError as e:
+        if "not a database" not in str(e).lower():
+            raise
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        quarantine = path.with_name(f"{path.name}.corrupt-{ts}")
+        path.rename(quarantine)
+        logger.critical(
+            "users.db 손상 감지 — %s 로 격리 후 새 DB 생성. "
+            "볼륨 스냅샷에서 복구 검토 필요! (%s)", quarantine.name, e,
+        )
+        _init_db_inner(path)
+
+
+def backup_db(db_path: Path | str, keep: int = 3) -> Path | None:
+    """users.db 일일 백업 — SQLite backup API 로 일관된 사본 생성.
+
+    2026-06-12 #DB-RESILIENCE: 손상 사고 대비 애플리케이션 레벨 백업
+    (fly 볼륨 스냅샷의 보조). 같은 날짜 백업이 이미 있으면 skip,
+    오래된 백업은 ``keep`` 개만 남기고 정리.
+
+    Args:
+        db_path: 원본 users.db 경로.
+        keep: 보관할 백업 개수 (기본 3 = 최근 3일).
+
+    Returns:
+        생성된(또는 기존) 백업 경로. 원본 없음/실패 시 None.
+    """
+    path = Path(db_path)
+    if not path.exists():
+        return None
+    day = datetime.now(UTC).strftime("%Y%m%d")
+    bak = path.with_name(f"{path.name}.bak-{day}")
+    try:
+        if not bak.exists():
+            with sqlite3.connect(str(path)) as src, sqlite3.connect(str(bak)) as dst:
+                src.backup(dst)
+            logger.info("users.db 백업 생성 — %s", bak.name)
+        # 오래된 백업 정리 — 이름 정렬 = 날짜 정렬.
+        baks = sorted(path.parent.glob(f"{path.name}.bak-*"))
+        for old in baks[:-keep]:
+            old.unlink(missing_ok=True)
+        return bak
+    except Exception as e:  # noqa: BLE001
+        logger.warning("users.db 백업 실패(무시): %s", e)
+        return None
+
+
+def _init_db_inner(path: Path) -> None:
+    """init_db 본체 — 테이블 생성 + 마이그레이션 (손상 격리 래퍼와 분리)."""
     with _connect(path) as conn:
         conn.execute(_DDL_USERS)
         conn.execute(_DDL_INDEX_CODE)
