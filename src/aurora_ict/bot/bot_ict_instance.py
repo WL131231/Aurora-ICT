@@ -290,6 +290,10 @@ class BotIctInstance:
     # 넓힐수록 스탑헌트 생존으로 단조 개선, x3.0 에서 BTC IN/OUT 흑자.
     # TP 는 원 RR 유지 비례 확장. risk sizing ON 이면 건당 손실(R) 불변.
     sl_dist_mult: float = 1.0
+    # 2026-06-11 #SHADOW: FSD-style 데이터 플라이휠 — 게이트에 걸려 *거른* setup
+    # 도 특징과 함께 JSONL 기록(행동 영향 0). 진입한 것만 기록하면 학습 데이터가
+    # 편향·희소해지므로, 거른 자리의 사후 결과까지 모아 오프라인 학습 재료로.
+    shadow_log_enabled: bool = True
     # max_entry_distance_pct: setup.entry 와 현재가 차이가 이 비율 초과면 setup skip.
     # 0 = 비활성. 너무 멀리 박힌 limit 의 미체결 대기 시간 회피.
     max_entry_distance_pct: float = 0.0
@@ -391,6 +395,9 @@ class BotIctInstance:
     # align 게이트 skip 로그 변화 감지 — 블랙리스트 제거 후 매 step 재평가되므로
     # 같은 (score, threshold, 방향) skip 은 1회만 INFO (스팸 방지, 2026-06-11).
     _last_align_skip_log: str = field(default="")
+    # #SHADOW: 최근 계산된 align 점수 캐시(특징 기록용) + 기록 중복 방지 set.
+    _last_align_score: int | None = field(default=None)
+    _shadow_seen: dict = field(default_factory=dict)
     _last_logged_htf_fvg_summary: str = field(default="")  # "bull_w=10 bear_w=4 n=8" 형태
     _last_logged_dol_draw: str = field(default="")  # "long"/"short"/"none"/""
     _last_logged_trend_summary: str = field(default="")  # trend_cache 직렬화 핑거프린트
@@ -751,6 +758,7 @@ class BotIctInstance:
                     "진입 skip — 현재 봉 킬존 밖 (sub_* 시간 필터, setup window=%s)",
                     signal.setup.window,
                 )
+                self._record_shadow(signal.setup, "killzone_skip")
                 self._remember_setup(signal.setup)
                 return signal
 
@@ -783,6 +791,7 @@ class BotIctInstance:
             # 영구 블랙리스트(duplicate_ts)에 박혀, 몇 분 뒤 추세가 확정돼도
             # 같은 setup 으론 영영 진입 불가였다. 동적 게이트는 setup 을
             # 기억하지 않고 다음 step 재평가에 맡긴다.
+            self._record_shadow(signal.setup, "ema_gate_skip")
             return signal
 
         # 변경 3: HTF FVG override — 진입 직전 반대 방향 HTF FVG 가중치 평가 (flip target).
@@ -823,6 +832,7 @@ class BotIctInstance:
                     signal.setup.confluence_score, self.min_confluence,
                     signal.setup.direction.value, signal.setup.window,
                 )
+                self._record_shadow(signal.setup, "grade_skip")
                 self._remember_setup(signal.setup)
                 return signal
         if self.htf_override_mode == "A" and htf_target is not None:
@@ -830,6 +840,7 @@ class BotIctInstance:
                 "HTF override(A) 진입 차단 — setup=%s 반대 HTF FVG=%s",
                 signal.setup.direction.value, htf_target.tf,
             )
+            self._record_shadow(signal.setup, "override_block")
             self._remember_setup(signal.setup)
             return signal
 
@@ -867,9 +878,63 @@ class BotIctInstance:
                     self._remember_setup(signal.setup)
                     return signal
 
+        self._record_shadow(signal.setup, "taken")
         await self._execute_setup(signal.setup, htf_flip_target=htf_target)
         self._remember_setup(signal.setup)
         return signal
+
+    def _record_shadow(self, setup: Any, verdict: str) -> None:
+        """#SHADOW: 게이트 판정된 setup 을 특징과 함께 JSONL 기록 (행동 영향 0).
+
+        FSD-style 데이터 플라이휠 — 진입한 것뿐 아니라 *거른* 자리(등급 미달/
+        align 역방향/킬존 밖/override 차단)도 기록해, 사후 가격과 대조하면
+        "거른 게 맞았나"를 라벨링할 수 있는 학습 데이터가 된다.
+
+        같은 (setup ts, 방향, 판정)은 1회만 기록 (step 반복 노이즈 방지).
+        실패는 조용히 무시 — 기록이 매매를 막지 않게.
+
+        Args:
+            setup: SilverBulletSetup.
+            verdict: "taken" / "grade_skip" / "ema_gate_skip" / "killzone_skip"
+                / "override_block".
+        """
+        if not self.shadow_log_enabled:
+            return
+        try:
+            key = (setup.ts_ms, setup.direction.value, verdict)
+            if key in self._shadow_seen:
+                return
+            if len(self._shadow_seen) > 2000:  # 메모리 캡 — 오래된 것 비움
+                self._shadow_seen.clear()
+            self._shadow_seen[key] = True
+            entry = float(setup.entry)
+            risk = abs(entry - float(setup.stop_loss))
+            rec = {
+                "ts_ms": int(time.time() * 1000),
+                "symbol": self.symbol,
+                "tf": self.timeframe,
+                "setup_ts_ms": int(setup.ts_ms),
+                "direction": setup.direction.value,
+                "verdict": verdict,
+                "score": int(setup.confluence_score),
+                "rr": round(float(setup.risk_reward), 3),
+                "window": setup.window,
+                "source": getattr(setup.source, "value", str(setup.source)),
+                "entry": entry,
+                "stop_loss": float(setup.stop_loss),
+                "take_profit": float(setup.take_profit),
+                "sl_dist_pct": round(risk / entry * 100, 4) if entry > 0 else None,
+                "align_score": self._last_align_score,
+                "confluences": list(getattr(setup, "confluences", []) or []),
+            }
+            store_dir = Path(self.trades_data_dir or _ict_data_dir())
+            store_dir.mkdir(parents=True, exist_ok=True)
+            with (store_dir / "shadow_setups.jsonl").open(
+                "a", encoding="utf-8",
+            ) as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception as e:  # noqa: BLE001
+            logger.debug("shadow 기록 실패(무시): %s", e)
 
     def _remember_setup(self, setup: Any) -> None:
         """동일 setup 재진입 방지 기록 — ts + 방향.
@@ -1172,6 +1237,7 @@ class BotIctInstance:
                 score += 1
             elif a < b:
                 score -= 1
+        self._last_align_score = score  # #SHADOW 특징 기록용 캐시
         # 추세 라벨 변화 시에만 1줄 INFO (단일 EMA bias 로그와 통일).
         bias = "bullish" if score >= 1 else ("bearish" if score <= -1 else "neutral")
         if bias != self._last_logged_htf_ema_bias:
