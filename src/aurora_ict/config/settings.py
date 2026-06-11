@@ -183,7 +183,9 @@ class IctSettings(BaseSettings):
     # marketable limit 미체결 TTL (초). 이 시간 지나면 pending 취소 후 새 셋업 재탐색.
     # 2026-05-22: 600(10분). 2026-06-05 파트너 결정: 300(5분, 5m 1봉) — 5분 안에
     # 체결 안 되면 타점 포기하고 새로 잡기.
-    entry_limit_ttl_sec: int = Field(default=300, ge=30, le=3600)
+    # 2026-06-11 #EDGE-V2: 상한 3600→14400 — 백테스트 검증값(120분 대기)이
+    # 들어갈 수 있게. 좋은 자리는 타점 되돌림을 길게 기다리는 게 체결률·성과 우위.
+    entry_limit_ttl_sec: int = Field(default=300, ge=30, le=14400)
     # min_sl_distance_pct: SL 거리가 entry 의 이 비율 미만이면 setup skip.
     # 지난 12거래 분석 결과 SL 너무 짧은 setup 손실 비중 커서 0.0005 → 0.0007 상향.
     # 2026-05-29: 새벽 3연속 SL 풀히트 (실측 SL=0.32%) 회고 — ranging 시장에서
@@ -202,6 +204,10 @@ class IctSettings(BaseSettings):
     # 타이트해 turtle_soup 등 rr 좋은(2.8~3.4) 셋업이 SL 0.65~0.72% 로 다 탈락
     # → 0.75% 로 완화 (고RR 예외 게이트 #215 도달 가능하게).
     max_sl_distance_pct: float = Field(default=0.0075, ge=0.0, le=0.1)
+    # 2026-06-11 #EDGE-V2: SL 거리 배수 (1.0=원본). 백테스트 10국면(5년) 검증 —
+    # 넓힐수록 스탑헌트 생존으로 단조 개선. TP 는 원 RR 유지 비례 확장,
+    # risk_based_sizing ON 이면 qty 가 줄어 건당 손실(R) 불변.
+    sl_dist_mult: float = Field(default=1.0, ge=0.25, le=5.0)
     # max_entry_distance_pct: setup.entry 가 현재가에서 이 비율 초과면 setup skip.
     # 너무 멀리 박힌 limit 은 미체결 + ttl 만료까지 대기 시간 길어 setup 변형 위험.
     # 0 = 비활성. default 0.005 (0.5%) — 파트너 결정 2026-06-03.
@@ -296,14 +302,22 @@ class IctSettings(BaseSettings):
 
         레퍼럴 (``referral``): 별도 강제 X — 사용자 settings 그대로 (기본 24h).
 
-        2026-06-11 흑자 엣지: 구독제는 진입 품질 등급 최소 3 강제 (백테스트
-        10국면 검증 — conf2 대비 손실 1/5, IN/OUT robust). 시간필터(킬존+SB)는
-        위 disable_time_filter=False 로 이미 적용. 둘이 흑자 조합의 핵심.
+        2026-06-11 #EDGE-V2 (흑자 엣지 최종, 백테스트 5년 10국면 + IN/OUT 분리
+        + BTC robust 40조합 클러스터 검증):
+            구독제 = 등급4 + RR2.5 + SL거리 x3.0 + 진입 대기 120분 + 킬존.
+            BTC IN/OUT 흑자(+0.2/+1.4%), ETH 본전권. 빈도는 페어 수로 확장.
+        강제는 전부 "최소" 방향 (사용자가 더 보수적으로 올린 값은 유지).
         """
         if self.license_type.startswith("sub_"):
             self.disable_time_filter = False
-            if self.min_confluence < 3:
-                self.min_confluence = 3
+            if self.min_confluence < 4:
+                self.min_confluence = 4
+            if self.min_rr < 2.5:
+                self.min_rr = 2.5
+            if self.sl_dist_mult < 3.0:
+                self.sl_dist_mult = 3.0
+            if self.entry_limit_ttl_sec < 7200:
+                self.entry_limit_ttl_sec = 7200
         return self
 
     @property

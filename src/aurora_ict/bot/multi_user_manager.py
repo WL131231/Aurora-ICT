@@ -357,6 +357,7 @@ class MultiUserBotManager:
             entry_limit_ttl_sec=settings.entry_limit_ttl_sec,
             min_sl_distance_pct=settings.min_sl_distance_pct,
             max_sl_distance_pct=settings.max_sl_distance_pct,
+            sl_dist_mult=settings.sl_dist_mult,
             max_entry_distance_pct=settings.max_entry_distance_pct,
             heartbeat_interval_sec=settings.heartbeat_interval_sec,
             htf_ltf_conflict_guard_ratio=settings.htf_ltf_conflict_guard_ratio,
