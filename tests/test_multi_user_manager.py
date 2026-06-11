@@ -266,6 +266,46 @@ async def test_start_then_stop_transitions(
 
 
 @pytest.mark.asyncio
+async def test_stop_removes_slot_freeing_pair_count(
+    db_path, base_settings, master_key,
+) -> None:
+    """2026-06-11 버그픽스: 페어 정지 시 슬롯이 _slots 에서 제거돼 페어 카운트가
+    줄어든다 — '5개 등록 → 1개 삭제 → 추가' 가 막히던 문제.
+    """
+    from aurora_ict.bot.multi_user_manager import MAX_PAIRS_PER_USER
+
+    code = "AICT-PAIR-PAIR-PAIR"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc)
+
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,
+        master_key=master_key,
+    )
+    pairs = [
+        "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT",
+        "HYPE/USDT:USDT", "DOGE/USDT:USDT",
+    ]
+    for sym in pairs[:MAX_PAIRS_PER_USER]:
+        await mu.start(code, sym)
+    user_slots = {s for (u, s) in mu._slots if u == code}
+    assert len(user_slots) == MAX_PAIRS_PER_USER  # 5개 가득
+
+    # 1개 정지 → 슬롯 제거 → 카운트 감소
+    await mu.stop(code, "SOL/USDT:USDT")
+    assert ("SOL/USDT:USDT") not in {s for (u, s) in mu._slots if u == code}
+    assert len({s for (u, s) in mu._slots if u == code}) == MAX_PAIRS_PER_USER - 1
+
+    # 새 페어 추가 가능 (예전엔 '현재 5개' 로 막혔음)
+    await mu.start(code, "XRP/USDT:USDT")
+    assert "XRP/USDT:USDT" in {s for (u, s) in mu._slots if u == code}
+
+
+@pytest.mark.asyncio
 async def test_status_reports_stopped_when_no_slot(
     db_path, base_settings, master_key,
 ) -> None:
