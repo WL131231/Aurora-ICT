@@ -310,6 +310,12 @@ class IctSettings(BaseSettings):
             구독제 = 등급4 + RR2.5 + SL거리 x3.0 + 진입 대기 120분 + 킬존.
             BTC IN/OUT 흑자(+0.2/+1.4%), ETH 본전권. 빈도는 페어 수로 확장.
         강제는 전부 "최소" 방향 (사용자가 더 보수적으로 올린 값은 유지).
+
+        2026-06-12 #FRESH-30: setup 신선도 30분 — 신호 후 30분 이내 자리만 진입.
+        5페어 교차검증: 신선할수록 단조 개선, ETH 가 IN/OUT 흑자 전환, 5페어
+        합산 +1.99→+2.88%. setup_stale_bars 는 *매매 TF 봉* 단위라 분→봉 환산
+        (5m→6봉). 기존 기본 120봉은 5m 에서 10시간 — 검증 범위(2h) 20배 밖
+        이었던 단위 불일치도 함께 해소.
         """
         if self.license_type.startswith("sub_"):
             self.disable_time_filter = False
@@ -321,7 +327,27 @@ class IctSettings(BaseSettings):
                 self.sl_dist_mult = 3.0
             if self.entry_limit_ttl_sec < 7200:
                 self.entry_limit_ttl_sec = 7200
+            fresh_bars = max(1, 30 // max(1, self.timeframe_minutes))
+            if self.setup_stale_bars > fresh_bars:
+                self.setup_stale_bars = fresh_bars
         return self
+
+    @property
+    def timeframe_minutes(self) -> int:
+        """매매 timeframe 의 분 단위 환산 (예 "5m"→5, "1h"→60). 불명이면 5."""
+        tf = (self.timeframe or "").strip().lower()
+        try:
+            if tf.endswith("m"):
+                return int(tf[:-1])
+            if tf.endswith("h"):
+                return int(tf[:-1]) * 60
+            if tf.endswith("d"):
+                return int(tf[:-1]) * 1440
+            if tf.endswith("w"):
+                return int(tf[:-1]) * 10080
+        except ValueError:
+            pass
+        return 5
 
     @property
     def active_api_key(self) -> str:
