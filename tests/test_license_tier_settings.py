@@ -81,32 +81,44 @@ def test_referral_respects_user_disable_time_filter_setting(monkeypatch):
     assert s.disable_time_filter is False
 
 
-def test_subscription_enforces_min_confluence_3(monkeypatch):
-    """2026-06-11 흑자 엣지: 구독제는 min_confluence 최소 3 강제."""
+def test_subscription_enforces_edge_v2(monkeypatch):
+    """2026-06-11 #EDGE-V2: 구독제 = 등급4 + RR2.5 + SLx3 + 대기120분 강제."""
     _clean_env(monkeypatch)
     monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "sub_90d")
     monkeypatch.setenv("AURORA_ICT_MIN_CONFLUENCE", "2")
     s = IctSettings(_env_file=None)
-    assert s.min_confluence == 3  # 2 → 3 강제
-    assert s.disable_time_filter is False  # 시간필터도 (흑자 조합)
+    assert s.min_confluence == 4
+    assert s.min_rr == 2.5
+    assert s.sl_dist_mult == 3.0
+    assert s.entry_limit_ttl_sec == 7200
+    assert s.disable_time_filter is False  # 킬존 유지
 
 
-def test_subscription_respects_higher_min_confluence(monkeypatch):
-    """구독제가 이미 3 이상이면 사용자 값 유지 (max 동작)."""
+def test_subscription_respects_more_conservative_values(monkeypatch):
+    """구독제 강제는 '최소' 방향 — 사용자가 더 보수적이면 유지."""
     _clean_env(monkeypatch)
     monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "sub_90d")
-    monkeypatch.setenv("AURORA_ICT_MIN_CONFLUENCE", "4")
+    monkeypatch.setenv("AURORA_ICT_MIN_CONFLUENCE", "5")
+    monkeypatch.setenv("AURORA_ICT_MIN_RR", "3.0")
+    monkeypatch.setenv("AURORA_ICT_SL_DIST_MULT", "4.0")
+    monkeypatch.setenv("AURORA_ICT_ENTRY_LIMIT_TTL_SEC", "10800")
     s = IctSettings(_env_file=None)
-    assert s.min_confluence == 4  # 4 > 3 유지
+    assert s.min_confluence == 5
+    assert s.min_rr == 3.0
+    assert s.sl_dist_mult == 4.0
+    assert s.entry_limit_ttl_sec == 10800
 
 
-def test_referral_keeps_min_confluence(monkeypatch):
-    """레퍼럴은 min_confluence 강제 X — 사용자/기본값 그대로."""
+def test_referral_keeps_user_values(monkeypatch):
+    """레퍼럴은 #EDGE-V2 강제 X — 사용자/기본값 그대로."""
     _clean_env(monkeypatch)
     monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "referral")
     monkeypatch.setenv("AURORA_ICT_MIN_CONFLUENCE", "2")
     s = IctSettings(_env_file=None)
-    assert s.min_confluence == 2  # 강제 안 함
+    assert s.min_confluence == 2
+    assert s.min_rr == 2.0
+    assert s.sl_dist_mult == 1.0
+    assert s.entry_limit_ttl_sec == 300
 
 
 def test_invalid_license_type_falls_back_to_referral(monkeypatch):

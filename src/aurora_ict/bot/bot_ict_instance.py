@@ -286,6 +286,10 @@ class BotIctInstance:
     # max_sl_distance_pct: SL 거리 / entry 가 이 비율 초과면 setup skip (비정상 큰 SL 차단).
     # 0 = 비활성.
     max_sl_distance_pct: float = 0.0
+    # 2026-06-11 #EDGE-V2: SL 거리 배수 (1.0=원본). 백테스트 10국면 검증 —
+    # 넓힐수록 스탑헌트 생존으로 단조 개선, x3.0 에서 BTC IN/OUT 흑자.
+    # TP 는 원 RR 유지 비례 확장. risk sizing ON 이면 건당 손실(R) 불변.
+    sl_dist_mult: float = 1.0
     # max_entry_distance_pct: setup.entry 와 현재가 차이가 이 비율 초과면 setup skip.
     # 0 = 비활성. 너무 멀리 박힌 limit 의 미체결 대기 시간 회피.
     max_entry_distance_pct: float = 0.0
@@ -1343,6 +1347,27 @@ class BotIctInstance:
                     setup.entry, setup.stop_loss,
                 )
                 return
+
+        # 2026-06-11 #EDGE-V2: SL 거리 배수 — 백테스트 10국면 검증(스탑헌트 생존,
+        # 배수 키울수록 BTC·ETH·IN·OUT 단조 개선). TP 는 원 RR 유지하게 비례 확장.
+        # risk_based_sizing(기본 ON)이면 qty 가 1/배수로 줄어 건당 손실(R) 불변.
+        # max_sl 게이트(위)는 원본 거리 기준 통과 후 적용, entry 보정(아래)의
+        # 평행이동은 확장된 거리를 그대로 보존한다.
+        if self.sl_dist_mult > 0 and self.sl_dist_mult != 1.0 and setup.entry > 0:
+            risk = abs(setup.entry - setup.stop_loss)
+            if risk > 0:
+                rr0 = abs(setup.take_profit - setup.entry) / risk
+                new_risk = risk * self.sl_dist_mult
+                if setup.direction is Direction.LONG:
+                    setup.stop_loss = setup.entry - new_risk
+                    setup.take_profit = setup.entry + new_risk * rr0
+                else:
+                    setup.stop_loss = setup.entry + new_risk
+                    setup.take_profit = setup.entry - new_risk * rr0
+                logger.info(
+                    "SL 거리 x%.1f 적용 — sl=%.4f tp=%.4f (RR %.2f 유지)",
+                    self.sl_dist_mult, setup.stop_loss, setup.take_profit, rr0,
+                )
 
         # 2026-06-03: setup.entry 가 현재가에서 max_entry_distance_pct 초과로
         # 멀리 박혀있으면 entry 가격을 현재가 ±max_entry_distance_pct 안으로

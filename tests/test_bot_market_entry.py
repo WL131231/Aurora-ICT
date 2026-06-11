@@ -58,6 +58,37 @@ def _dummy_setup() -> SilverBulletSetup:
 
 
 @pytest.mark.asyncio
+async def test_sl_dist_mult_scales_sl_and_preserves_rr() -> None:
+    """#EDGE-V2: sl_dist_mult=3 → SL 거리 3배 + TP 는 원 RR(3.0) 유지 비례 확장.
+
+    원본 entry=100/sl=95(거리5)/tp=115(RR3) → sl=85(거리15), tp=145(15×3).
+    """
+    client = _mock_client()
+    bot = BotIctInstance(client=client, sl_dist_mult=3.0)
+    await bot._execute_setup(_dummy_setup())
+    tpsl_kw = client.set_position_tpsl.await_args_list[0].kwargs
+    assert tpsl_kw["stop_loss"] == pytest.approx(85.0)
+    assert tpsl_kw["take_profit"] == pytest.approx(145.0)
+
+
+@pytest.mark.asyncio
+async def test_sl_dist_mult_short_direction() -> None:
+    """#EDGE-V2: 숏 방향 — SL 은 위로 2배, TP 는 아래로 RR 유지."""
+    client = _mock_client()
+    bot = BotIctInstance(client=client, sl_dist_mult=2.0)
+    fvg = FVG(type=FVGType.BEARISH, idx=5, ts_ms=12346, low=98, high=102)
+    setup = SilverBulletSetup(
+        ts_ms=12346, direction=Direction.SHORT, window="any",
+        entry=100.0, stop_loss=102.0, take_profit=94.0, risk_reward=3.0, fvg=fvg,
+    )
+    await bot._execute_setup(setup)
+    tpsl_kw = client.set_position_tpsl.await_args_list[0].kwargs
+    # 거리 2→4: sl=104, tp=100-4×3=88
+    assert tpsl_kw["stop_loss"] == pytest.approx(104.0)
+    assert tpsl_kw["take_profit"] == pytest.approx(88.0)
+
+
+@pytest.mark.asyncio
 async def test_limit_entry_default_uses_setup_entry() -> None:
     """use_market_entry=False (default) → setup.entry (계획가) limit + SL/TP 동봉 (#LIVE-3).
 
