@@ -137,6 +137,8 @@ def main() -> int:
     dd.mkdir(parents=True, exist_ok=True)
     db_path = dd / "users.db"
     users_db.init_db(db_path)
+    # 2026-06-12 #DB-RESILIENCE: 부팅 시 일일 백업 (6/11 users.db 손상 사고 재발 대비).
+    users_db.backup_db(db_path)
     logger.info("users.db 경로: %s", db_path)
 
     # 세션 토큰 영속화 — Fly.io 재배포 후에도 사용자 로그인 상태 유지 (2026-05-28).
