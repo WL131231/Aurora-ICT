@@ -645,6 +645,10 @@ class MultiUserBotManager:
         if slot.bot is not None:
             await slot.bot.stop()
         await self._close_client(slot)
+        # 2026-06-11 버그픽스: 정지한 슬롯을 _slots 에서 제거.
+        # 안 그러면 페어 카운트(start 의 existing = 사용자 슬롯 수)에 정지된
+        # 슬롯이 남아 "5개 등록 → 1개 삭제 → 추가" 가 MAX_PAIRS_PER_USER 로 막힌다.
+        self._slots.pop(key, None)
         logger.info(
             "MultiUserBotManager: 사용자 %s 봇 정지 (symbol=%s)",
             user_code, symbol,
