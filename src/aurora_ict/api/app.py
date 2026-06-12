@@ -1073,14 +1073,85 @@ def _register_multi_user_routes(
                     "unrealized_pnl": unreal,
                     "roi_pct": roi,
                 })
-        # 위험(청산가 밖 SL) 먼저 보이게 정렬.
-        rows.sort(key=lambda r: (not r["sl_beyond_liq"], r["user_code"]))
+        # 2026-06-12 파트너 보고: 봇 미추적 포지션(수동 진입·재기동 고아)이 안
+        # 보임 — 사용자별 거래소 계정 전체를 1회 스캔해 미추적분을 보충한다.
+        tracked = {
+            (r["user_code"], r["symbol"]) for r in rows if r["kind"] == "active"
+        }
+        seen_users: set[str] = set()
+        for (u, _sym), slot in list(mu_manager._slots.items()):
+            if u in seen_users or slot.bot is None:
+                continue
+            seen_users.add(u)
+            fetch_all = getattr(slot.client, "fetch_all_positions", None)
+            if not callable(fetch_all):
+                continue
+            try:
+                ex_positions = await fetch_all()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[admin/positions] %s 계정 스캔 실패: %s", u, e)
+                continue
+            for p in ex_positions:
+                psym = str(p.get("symbol") or "")
+                if not psym or (u, psym) in tracked:
+                    continue
+                entry = float(p.get("entryPrice") or 0.0)
+                qty = float(p.get("qty") or p.get("contracts") or 0.0)
+                side = str(p.get("side") or "").lower()
+                if entry <= 0 or qty <= 0 or side not in ("long", "short"):
+                    continue
+                lev = int(float(p.get("leverage") or 0) or 0) or 1
+                is_long = side == "long"
+                liq = float(p.get("liquidationPrice") or 0.0) or (
+                    entry * (1.0 - 0.95 / lev) if is_long
+                    else entry * (1.0 + 0.95 / lev)
+                )
+                info = p.get("info") or {}
+                sl = float(info.get("stopLoss") or 0.0)
+                tp = float(info.get("takeProfit") or 0.0)
+                # SL 없거나 청산가 밖이면 위험 — 미추적은 봇 보호 SL 도 없다.
+                beyond = sl <= 0 or ((sl <= liq) if is_long else (sl >= liq))
+                mark = float(p.get("markPrice") or 0.0) or None
+                unreal = p.get("unrealizedPnl")
+                if not isinstance(unreal, (int, float)) and mark is not None:
+                    unreal = (
+                        (mark - entry) * qty if is_long else (entry - mark) * qty
+                    )
+                margin = entry * qty / lev
+                roi = (
+                    float(unreal) / margin * 100.0
+                    if isinstance(unreal, (int, float)) and margin > 0 else None
+                )
+                rows.append({
+                    "user_code": u,
+                    "symbol": psym,
+                    "kind": "untracked",
+                    "direction": side,
+                    "entry": entry,
+                    "qty": qty,
+                    "stop_loss": sl,
+                    "take_profit": tp,
+                    "leverage": lev,
+                    "liq_price": round(liq, 6),
+                    "sl_beyond_liq": beyond,
+                    "bot_state": "untracked",
+                    "mark_price": mark,
+                    "unrealized_pnl": (
+                        float(unreal) if isinstance(unreal, (int, float)) else None
+                    ),
+                    "roi_pct": roi,
+                })
+        # 위험(청산가 밖/무 SL) → 미추적 → 코드 순 정렬.
+        rows.sort(key=lambda r: (
+            not r["sl_beyond_liq"], r["kind"] != "untracked", r["user_code"],
+        ))
         total_pnl = sum(
             r["unrealized_pnl"] for r in rows
             if isinstance(r.get("unrealized_pnl"), (int, float))
         )
         return {"positions": rows, "count": len(rows),
                 "risky": sum(1 for r in rows if r["sl_beyond_liq"]),
+                "untracked": sum(1 for r in rows if r["kind"] == "untracked"),
                 "total_unrealized_pnl": round(total_pnl, 4)}
 
     @app.get("/ict/position")

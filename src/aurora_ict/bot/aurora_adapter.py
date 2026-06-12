@@ -331,6 +331,34 @@ class AuroraClientAdapter:
                 return p
         return None
 
+    async def fetch_all_positions(self) -> list[dict[str, Any]]:
+        """계정 전체 열린 포지션 조회 — admin 전체 포지션 미추적 스캔용 (2026-06-12).
+
+        봇이 추적하지 않는 포지션(수동 진입·재기동 누락 고아)도 보이게 USDT
+        선물 계정 전체를 조회한다. 실패는 빈 리스트 (조회 실패가 admin 화면을
+        막지 않게).
+
+        Returns:
+            계약 수 > 0 인 ccxt 표준 포지션 dict 리스트.
+        """
+        ex = getattr(self._client, "_ex", None)
+        if ex is None:
+            return []
+        await self._ensure_time_sync()
+        try:
+            # Bybit V5 는 symbols=None 일 때 settleCoin 필수.
+            positions = await ex.fetch_positions(None, {"settleCoin": "USDT"})
+        except Exception as e:  # noqa: BLE001
+            self._wlog("fetch_all_positions 실패: %s", e)
+            return []
+        out: list[dict[str, Any]] = []
+        for p in positions or []:
+            if float(p.get("contracts") or 0) > 0:
+                if "qty" not in p:
+                    p["qty"] = float(p.get("contracts") or 0)
+                out.append(p)
+        return out
+
     async def fetch_actual_leverage(self, symbol: str) -> int | None:
         """거래소 측 현재 leverage 조회 (포지션 무관).
 
