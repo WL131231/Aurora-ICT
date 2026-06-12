@@ -1787,8 +1787,13 @@ function _renderPickerRows(filter) {
     : _tradablePairs.map((s) => ({ symbol: s, last: null, pct24h: null, volume: null }));
   rows = rows.filter((r) => !_pickerExclude.has(r.symbol));
   if (q) rows = rows.filter((r) => _symLabel(r.symbol).toUpperCase().includes(q));
-  // 2026-06-12: 추천 페어 상단 고정 (검증 양면 흑자, _recommendedPairs 순서=순위).
+  // 2026-06-12 파트너: 고정 7 최상단 → 추천 → 나머지 거래량순.
+  // (LINK 가 상위 30 밖이라 검색 불가했던 보고 — 시세 행 보강은 백엔드가 보장)
+  const fixedOrder = [..._fixedPairs];
   rows.sort((a, b) => {
+    const fa = fixedOrder.indexOf(a.symbol);
+    const fb = fixedOrder.indexOf(b.symbol);
+    if (fa >= 0 || fb >= 0) return (fa < 0 ? 99 : fa) - (fb < 0 ? 99 : fb);
     const ra = _recommendedPairs.indexOf(a.symbol);
     const rb = _recommendedPairs.indexOf(b.symbol);
     return (ra < 0 ? 99 : ra) - (rb < 0 ? 99 : rb);

@@ -477,6 +477,24 @@ class MultiUserBotManager:
             logger.warning("시세 행 조회 실패: %s", e)
             return self._market_rows_cache
         if rows:
+            # 2026-06-12 파트너/조윤 보고: 고정 7이 거래대금 상위 N 밖이면
+            # (예: LINK 30위 밖) 피커에서 검색조차 안 됨 — 누락 고정 페어의
+            # 시세를 개별 조회해 행을 보장한다 (조회 실패 시 가격 미상 행).
+            have = {str(r.get("symbol")) for r in rows}
+            for fixed in FIXED_PAIRS:
+                if fixed in have:
+                    continue
+                last = None
+                try:
+                    fetch_ticker = getattr(src, "fetch_ticker", None)
+                    if callable(fetch_ticker):
+                        last = await fetch_ticker(fixed)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("고정 페어 시세 보강 실패 %s: %s", fixed, e)
+                rows.append({
+                    "symbol": fixed, "last": last,
+                    "pct24h": None, "volume": None,
+                })
             self._market_rows_cache = rows
             self._market_rows_at = t
         return self._market_rows_cache
