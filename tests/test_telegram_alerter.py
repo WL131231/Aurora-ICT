@@ -298,3 +298,24 @@ async def test_plain_link_does_not_unbind_other_codes(tmp_path) -> None:
     assert users_db.get_telegram_chat_id(db, a) == "88"  # 유지
     assert users_db.get_telegram_chat_id(db, b) == "88"
     await al.aclose()
+
+
+@pytest.mark.asyncio
+async def test_restart_command_resets_client(tmp_path) -> None:
+    """/restart — HTTP 클라이언트 재생성 + offset 리셋 + 완료 응답."""
+    db = tmp_path / "users.db"
+    users_db.init_db(db)
+    al = TelegramAlerter("dummytoken", db)
+    al._offset = 777
+    old_client = al._client
+    sent: list[str] = []
+
+    async def _spy(chat_id: str, text: str, *, keyboard: bool = False) -> None:
+        sent.append(text)
+
+    al.send = _spy  # type: ignore[method-assign]
+    await al._handle_message("9", "/restart")
+    assert al._client is not old_client  # 새 클라이언트
+    assert al._offset == 0
+    assert any("재시작" in t for t in sent)
+    await al.aclose()
