@@ -548,6 +548,40 @@ class AuroraClientAdapter:
             )
             return {}
 
+    async def ensure_oneway_mode(self, symbol: str) -> dict[str, Any]:
+        """Bybit V5 switch-mode 로 해당 심볼을 원웨이(단방향) 모드로 강제.
+
+        2026-06-12 #ONEWAY: 봇은 positionIdx=0(원웨이) 고정인데 계정이 헤지
+        모드면 모든 주문이 retCode 10001 로 거부 — "봇 출범 후 매매 0건"
+        사용자의 유력 원인. 봇 시작 시 best-effort 로 호출해 원천 차단.
+        해당 심볼만 전환(mode=0) — 다른 심볼의 헤지 사용엔 영향 없음.
+
+        Returns:
+            Bybit 응답 dict. 이미 원웨이(110025)면 ``alreadySet=True``,
+            실패는 빈 dict (봇 진행 안 막음).
+        """
+        ex = getattr(self._client, "_ex", None)
+        if ex is None:
+            self._wlog("ensure_oneway_mode: _ex 없음 — skip")
+            return {}
+        await self._ensure_time_sync()
+        raw_symbol = symbol.replace("/", "").split(":")[0]
+        params = {"category": "linear", "symbol": raw_symbol, "mode": 0}
+        try:
+            result = await ex.private_post_v5_position_switch_mode(params)
+            logger.info("원웨이 모드 전환 완료 (%s)", raw_symbol)
+            return dict(result) if isinstance(result, dict) else {"raw": str(result)}
+        except Exception as e:  # noqa: BLE001
+            msg = str(e)
+            # 110025: position mode not modified — 이미 원웨이.
+            if "110025" in msg or "not modified" in msg.lower():
+                return {"retCode": 110025, "alreadySet": True}
+            if "10005" in msg and "query-api" in msg:
+                # set_leverage 와 동일한 ccxt UTA 체크 false positive.
+                return {"retCode": 0, "alreadySet": False}
+            self._wlog("ensure_oneway_mode 실패 (%s): %s", raw_symbol, e)
+            return {}
+
     async def modify_stop_loss(
         self, symbol: str, new_stop_loss: float,
     ) -> dict[str, Any]:

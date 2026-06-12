@@ -531,6 +531,18 @@ class MultiUserBotManager:
                     )
                 return
             slot = self._slots[(user_code, symbol)]
+            # 2026-06-12 #ONEWAY: 헤지 모드 계정이면 모든 주문이 10001 거부 —
+            # 봇 시작 시 해당 심볼을 원웨이로 best-effort 전환 (실패해도 진행).
+            # getattr 가드 — 어댑터 외 클라이언트(테스트 Fake 등)는 skip.
+            oneway_fn = getattr(slot.client, "ensure_oneway_mode", None)
+            if oneway_fn is not None:
+                try:
+                    await oneway_fn(slot.settings.symbol)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "사용자 %s/%s 원웨이 전환 실패(무시): %s",
+                        user_code, symbol, e,
+                    )
             # 거래소 측 leverage 셋업 — 실패해도 봇 자체는 진행. 다만 실패 시
             # 실제 leverage 조회해서 bot.leverage 보정 (#LEV-1) — size 계산이
             # 거래소 값과 일치하게.

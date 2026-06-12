@@ -266,6 +266,39 @@ async def test_start_then_stop_transitions(
 
 
 @pytest.mark.asyncio
+async def test_start_calls_ensure_oneway_when_available(
+    db_path, base_settings, master_key,
+) -> None:
+    """2026-06-12 #ONEWAY: 클라이언트에 ensure_oneway_mode 있으면 시작 시 호출."""
+    code = "AICT-ONEW-ONEW-ONEW"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc)
+
+    calls: list[str] = []
+
+    class _OnewayFake(FakeExchangeClient):
+        async def ensure_oneway_mode(self, symbol: str) -> dict:
+            calls.append(symbol)
+            return {"retCode": 0}
+
+    clients: list[FakeExchangeClient] = []
+
+    async def factory(_s) -> FakeExchangeClient:  # noqa: ANN001
+        c = _OnewayFake()
+        clients.append(c)
+        return c
+
+    mu = MultiUserBotManager(
+        client_factory=factory, db_path=db_path,
+        base_settings=base_settings, master_key=master_key,
+    )
+    await mu.start(code)
+    assert calls == [base_settings.symbol]
+    await mu.stop(code)
+
+
+@pytest.mark.asyncio
 async def test_stop_removes_slot_freeing_pair_count(
     db_path, base_settings, master_key,
 ) -> None:
