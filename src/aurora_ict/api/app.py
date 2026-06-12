@@ -1281,19 +1281,53 @@ def _register_multi_user_routes(
         _check_admin_cookie_or_header(cookie_token, x_admin_token)
         slot = mu_manager._slots.get((code, symbol))
         bot = slot.bot if slot is not None else None
-        if bot is None or bot.active_position is None:
+        if bot is not None and bot.active_position is not None:
+            logger.warning(
+                "[admin] 강제 청산 요청 — %s %s (%s)",
+                code, symbol, bot.active_position.direction.value,
+            )
+            await bot._emergency_close(reason="admin 강제 청산")
+            closed = bot.active_position is None
+            return {"ok": closed, "code": code, "symbol": symbol,
+                    "detail": "청산 완료" if closed
+                    else "청산 주문 실패 — 봇이 다음 step 에서 재동기화"}
+        # 2026-06-12 미추적(봇 모르는) 포지션 — 사용자의 아무 슬롯 client 로
+        # 거래소 실제 방향·수량을 읽어 reduce_only 시장가 청산 (LINK 고아 사고).
+        client = None
+        for (u, _s), s2 in list(mu_manager._slots.items()):
+            if u == code and s2.client is not None:
+                client = s2.client
+                break
+        if client is None:
+            raise HTTPException(status_code=404, detail="사용자 client 없음")
+        try:
+            pos = await client.fetch_position(symbol)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502, detail=f"포지션 조회 실패: {e}",
+            ) from e
+        contracts = float((pos or {}).get("contracts", 0) or 0)
+        side_raw = str((pos or {}).get("side", "") or "").lower()
+        if contracts <= 0 or side_raw not in ("long", "short", "buy", "sell"):
             raise HTTPException(
                 status_code=404, detail="해당 사용자×페어의 활성 포지션 없음",
             )
+        close_side = "sell" if side_raw in ("long", "buy") else "buy"
         logger.warning(
-            "[admin] 강제 청산 요청 — %s %s (%s)",
-            code, symbol, bot.active_position.direction.value,
+            "[admin] 미추적 강제 청산 — %s %s (%s qty=%.6f)",
+            code, symbol, side_raw, contracts,
         )
-        await bot._emergency_close(reason="admin 강제 청산")
-        closed = bot.active_position is None
-        return {"ok": closed, "code": code, "symbol": symbol,
-                "detail": "청산 완료" if closed
-                else "청산 주문 실패 — 봇이 다음 step 에서 재동기화"}
+        try:
+            await client.place_order(
+                symbol, side=close_side, qty=contracts,
+                price=None, reduce_only=True,
+            )
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502, detail=f"청산 주문 실패: {e}",
+            ) from e
+        return {"ok": True, "code": code, "symbol": symbol,
+                "detail": "미추적 포지션 청산 완료"}
 
     @app.get("/ict/position")
     async def get_position_mu(
