@@ -552,10 +552,105 @@ class BotIctInstance:
             qty=contracts,
             reason="bot startup — exchange position fetch",
         )
+        # 2026-06-12 파트너: 복구 포지션 TP=0 처리 — 자기 매매 기록(미청산
+        # ENTRY 의 context)에서 원 TP 를 찾아 거래소에 재설치. setup_ts 도
+        # 함께 복원해 이후 청산 분류(SL/TP)·기록 대조가 정상 동작하게.
+        ent = self._find_unclosed_entry_event(direction)
+        if ent is not None and abs(ent.price - entry_price) <= entry_price * 0.01:
+            self.active_position.setup_ts_ms = ent.setup_ts_ms or 0
+            if tp <= 0:
+                try:
+                    _ctx = json.loads(ent.context_json or "{}")
+                except (ValueError, TypeError):
+                    _ctx = {}
+                rec_tp = float(_ctx.get("tp") or 0.0)
+                if rec_tp > 0:
+                    ok = False
+                    try:
+                        ok = await self.client.set_position_tpsl(
+                            self.symbol,
+                            stop_loss=(sl if sl > 0 else None),
+                            take_profit=rec_tp,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("recover: TP 복원 호출 실패: %s", e)
+                    if ok:
+                        self.active_position.take_profit = rec_tp
+                        tp = rec_tp
+                        logger.info(
+                            "recover: TP 복원 — %s tp=%.4f (원 ENTRY setup_ts=%s)",
+                            self.symbol, rec_tp, ent.setup_ts_ms,
+                        )
+                    else:
+                        # 가격이 이미 TP 를 지나쳤거나 거래소 거부 — 0 유지
+                        # (admin 전체 포지션 표에 드러나 수동 판단 가능).
+                        logger.warning(
+                            "recover: TP 복원 실패 — tp=0 유지 (%s, 원 TP %.4f)",
+                            self.symbol, rec_tp,
+                        )
+                else:
+                    logger.info(
+                        "recover: 원 ENTRY 에 TP 기록 없음 — tp=0 유지 (%s)",
+                        self.symbol,
+                    )
+        elif tp <= 0:
+            logger.info(
+                "recover: 매칭되는 미청산 ENTRY 기록 없음 — tp=0 유지 (%s)",
+                self.symbol,
+            )
         # P1-2: 거래소 측 SL 이 없는(=0) 채 복구되면 무SL 포지션 → 보호 SL 적용 (안 되면 청산).
         if sl <= 0:
             logger.warning("recover: SL 없는 포지션 — 보호 SL 적용 시도 %s", self.symbol)
             await self._ensure_protective_sl(tp if tp > 0 else None, 0.0)
+
+    def _find_unclosed_entry_event(self, direction: Direction):
+        """복구 보조 — 이 심볼·방향의 청산 기록이 없는 최신 ENTRY 이벤트.
+
+        reconcile(#RECONCILE)과 동일한 대조 규칙: 같은 symbol 의 청산류
+        이벤트(setup_ts 기준)에 안 잡힌 ENTRY 중 가장 최근 것. TP/setup_ts
+        복원용 — 실패·미발견은 None (복구 자체는 계속).
+
+        Args:
+            direction: 복구된 포지션 방향 (ENTRY 방향과 일치해야 매칭).
+
+        Returns:
+            TradeEvent 또는 None.
+        """
+        # 사용자별 기록 디렉토리가 주입된 경우(멀티유저 SaaS)만 동작 — 전역
+        # 경로 store 는 단독 .exe/테스트의 무관한 과거 기록이 섞여 있어 엉뚱한
+        # TP 를 복원할 수 있다. (store 가 이미 init 됐어도 이 가드가 우선 —
+        # _record_trade(RECOVERED) 가 전역 경로로 먼저 init 하는 경우 방어.)
+        if self.trades_data_dir is None:
+            return None
+        if self._trades_store is None:
+            try:
+                self._trades_store = TradesStore(self.trades_data_dir)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("recover: TradesStore init 실패 — TP 복원 skip: %s", e)
+                return None
+        try:
+            events = self._trades_store.all_events()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("recover: all_events 실패 — TP 복원 skip: %s", e)
+            return None
+        close_types = {
+            TradeEventType.SL_HIT, TradeEventType.TP_HIT,
+            TradeEventType.SYNC_CLOSE, TradeEventType.MANUAL_CLOSE,
+            TradeEventType.FLIP_CLOSE,
+        }
+        closed_ts = {
+            ev.setup_ts_ms for ev in events
+            if ev.symbol == self.symbol
+            and ev.event_type in close_types and ev.setup_ts_ms
+        }
+        cands = [
+            ev for ev in events
+            if ev.symbol == self.symbol
+            and ev.event_type is TradeEventType.ENTRY
+            and ev.direction == direction.value
+            and ev.setup_ts_ms and ev.setup_ts_ms not in closed_ts
+        ]
+        return max(cands, key=lambda e: e.ts_ms) if cands else None
 
     async def stop(self) -> None:
         """봇 정지 (background task cancel).

@@ -1028,3 +1028,52 @@ def test_classify_exchange_close_variants() -> None:
     # SL/TP 모두 미상 → 미구분.
     et, _ = f(Direction.LONG, 100.0, 0.0, 0.0, 101.0)
     assert et is TradeEventType.SYNC_CLOSE
+
+
+@pytest.mark.asyncio
+async def test_recover_restores_tp_from_records(tmp_path) -> None:
+    """TP=0 복구 — 자기 기록의 미청산 ENTRY 에서 원 TP 재설치 (2026-06-12)."""
+    import json as _json
+
+    from aurora_ict.interfaces.trades_store import TradeEventType
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.fetch_position = AsyncMock(return_value={
+        "contracts": 0.05, "side": "short", "entryPrice": 80000.0,
+        "stopLossPrice": 80500.0, "takeProfitPrice": 0.0,
+    })
+    client.set_position_tpsl = AsyncMock(return_value=True)
+    bot = BotIctInstance(
+        client=client, step_interval_sec=3600, trades_data_dir=tmp_path,
+    )
+    bot._record_trade(
+        TradeEventType.ENTRY, direction=Direction.SHORT, price=80000.0,
+        qty=0.05, setup_ts_ms=1234, reason="t",
+        context_json=_json.dumps(
+            {"entry": 80000.0, "tp": 78000.0, "sl": 80500.0},
+        ),
+    )
+    await bot.start()
+    assert bot.active_position is not None
+    assert bot.active_position.take_profit == 78000.0  # 기록에서 복원
+    assert bot.active_position.setup_ts_ms == 1234     # 원 setup 매칭 복원
+    client.set_position_tpsl.assert_awaited()
+    await bot.stop()
+
+
+@pytest.mark.asyncio
+async def test_recover_tp_stays_zero_without_matching_record(tmp_path) -> None:
+    """TP=0 복구 — 매칭 기록 없으면 TP 0 유지 (지어내지 않음)."""
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.fetch_position = AsyncMock(return_value={
+        "contracts": 0.05, "side": "short", "entryPrice": 80000.0,
+        "stopLossPrice": 80500.0, "takeProfitPrice": 0.0,
+    })
+    client.set_position_tpsl = AsyncMock(return_value=True)
+    bot = BotIctInstance(
+        client=client, step_interval_sec=3600, trades_data_dir=tmp_path,
+    )
+    await bot.start()
+    assert bot.active_position is not None
+    assert bot.active_position.take_profit == 0.0
+    await bot.stop()
