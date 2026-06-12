@@ -62,7 +62,8 @@ primary_region = "sin"
 
 # 2026-06-06: 베타 테스터 11명 추가 → 멀티유저 봇(사용자별 페어 × OHLCV 캐시 +
 # step detect)의 메모리·CPU 부하 대비 증설. shared-cpu-4x(CPU 4) + 4GB.
-# 부하 모니터링(fly metrics Memory/Load) 후 조정.
+# 2026-06-12: 고정7 구도로 사용자당 봇 인스턴스 7~10개 (기존 1~5) — 간헐 다운
+# 보고에 따라 한 단계 증설 (4x/4GB → 8x/8GB). 부하 모니터링 후 조정.
 [[vm]]
-  size = "shared-cpu-4x"
-  memory = "4gb"
+  size = "shared-cpu-8x"
+  memory = "8gb"
