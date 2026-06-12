@@ -2086,7 +2086,8 @@ refreshEquityAndSession();
 //   NY AM:  07:00 ~ 10:00
 //   NY PM:  13:30 ~ 16:00
 //
-// London Close (10:00~12:00) 는 UI 4-배지 정책 (파트너 결정) 으로 표시 X.
+// London Close (10:00~12:00) — 2026-06-13 표시 추가 (파트너 보고: 미표시가
+// '킬존 밖 매매' 오해 유발. 엔진 시간 필터는 원래 포함).
 // ============================================================
 function _getActiveKillzoneNY() {
   const now = new Date();
@@ -2102,6 +2103,8 @@ function _getActiveKillzoneNY() {
   if (mins >= 19 * 60) return "asian";          // 19:00 ~ 24:00
   if (mins >= 2 * 60 && mins < 5 * 60) return "london";   // 02:00 ~ 05:00
   if (mins >= 7 * 60 && mins < 10 * 60) return "ny_am";   // 07:00 ~ 10:00
+  // 2026-06-13: London Close 표시 추가 (파트너 보고 — 엔진은 원래 매매 시간).
+  if (mins >= 10 * 60 && mins < 12 * 60) return "london_close"; // 10:00 ~ 12:00
   if (mins >= 13 * 60 + 30 && mins < 16 * 60) return "pm"; // 13:30 ~ 16:00
   return null;
 }
