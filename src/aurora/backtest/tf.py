@@ -23,6 +23,7 @@ _AURORA_TO_CCXT: dict[str, str] = {
     "3m":  "3m",
     "5m":  "5m",
     "15m": "15m",
+    "30m": "30m",  # 2026-06-13: UI 매매 TF 에 있는데 누락 — step 무한 실패 사고
     "1H":  "1h",   # 시간/일/주는 대소문자 변환
     "2H":  "2h",
     "4H":  "4h",
@@ -37,7 +38,7 @@ _CCXT_TO_AURORA: dict[str, str] = {v: k for k, v in _AURORA_TO_CCXT.items()}
 # ============================================================
 
 TF_VALID_AURORA: frozenset[str] = frozenset(_AURORA_TO_CCXT.keys())
-"""Aurora 포맷 유효 timeframe 9 개 — 외부 모듈 검증용 public 노출."""
+"""Aurora 포맷 유효 timeframe 10 개 — 외부 모듈 검증용 public 노출."""
 
 TF_VALID_CCXT: frozenset[str] = frozenset(_CCXT_TO_AURORA.keys())
 """ccxt 포맷 유효 timeframe 9 개 — 외부 모듈 검증용 public 노출."""

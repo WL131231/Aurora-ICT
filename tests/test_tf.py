@@ -107,14 +107,14 @@ def test_normalize_to_aurora_rejects_aurora_format():
 
 def test_normalize_to_ccxt_unknown_tf_raises():
     """지원 안 하는 TF — ValueError."""
-    for unknown in ["30m", "1Y", "2D", "10m"]:
+    for unknown in ["1Y", "2D", "10m"]:
         with pytest.raises(ValueError, match="지원하지 않는 timeframe"):
             normalize_to_ccxt(unknown)
 
 
 def test_normalize_to_aurora_unknown_tf_raises():
     """지원 안 하는 TF — ValueError."""
-    for unknown in ["30m", "1Y", "2D", "10m"]:
+    for unknown in ["1Y", "2D", "10m"]:
         with pytest.raises(ValueError, match="지원하지 않는 timeframe"):
             normalize_to_aurora(unknown)
 
@@ -173,8 +173,15 @@ def test_is_valid_timeframe_format_modes():
     assert is_valid_timeframe("1m", format="ccxt") is True
 
     # 잘못된 입력 — raise X, False 반환
-    assert is_valid_timeframe("30m") is False
+    assert is_valid_timeframe("30m") is True  # 2026-06-13 지원 추가
     assert is_valid_timeframe("") is False
     assert is_valid_timeframe(" 1H ") is False
     assert is_valid_timeframe(None) is False  # type: ignore[arg-type]
     assert is_valid_timeframe(60) is False    # type: ignore[arg-type]
+
+
+def test_30m_roundtrip() -> None:
+    """2026-06-13: UI 매매 TF 30m 누락 사고 — 양방향 변환 보장."""
+    from aurora.backtest.tf import normalize_to_aurora, normalize_to_ccxt
+    assert normalize_to_ccxt("30m") == "30m"
+    assert normalize_to_aurora("30m") == "30m"
