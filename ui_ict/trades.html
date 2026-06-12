@@ -966,7 +966,8 @@
       $("all-pos-box").style.display = "";
       const tot = d.total_unrealized_pnl;
       $("all-pos-summary").innerHTML =
-        `열린 포지션 ${d.count}건 · 위험(SL이 청산가 밖) ${d.risky}건`
+        `열린 포지션 ${d.count}건 · 위험(무SL/청산가 밖) ${d.risky}건`
+        + (d.untracked ? ` · <span style="color:#fbbf24">봇 미추적 ${d.untracked}건</span>` : "")
         + ` · 합산 PnL ${_pnlCell(tot, " USDT")}`
         + ' <span style="color:var(--text-3)">(10초마다 갱신)</span>';
       const sym = (s) => (s || "").split("/")[0];
@@ -974,7 +975,9 @@
         const risky = r.sl_beyond_liq;
         const dirC = r.direction === "long" ? "#34d399" : "#fb7185";
         const pend = r.kind === "pending"
-          ? ' <span style="color:var(--text-3)">(대기)</span>' : "";
+          ? ' <span style="color:var(--text-3)">(대기)</span>'
+          : r.kind === "untracked"
+            ? ' <span style="color:#fbbf24">(미추적)</span>' : "";
         const rowStyle = risky
           ? "background:rgba(251,113,133,0.08)" : "";
         const warn = risky
@@ -987,7 +990,8 @@
           + `<td style="padding:4px 8px">${_fmtNum(r.mark_price)}</td>`
           + `<td style="padding:4px 8px">${_pnlCell(r.unrealized_pnl)}</td>`
           + `<td style="padding:4px 8px">${_pnlCell(r.roi_pct, "%")}</td>`
-          + `<td style="padding:4px 8px">${_fmtNum(r.stop_loss)}</td>`
+          + `<td style="padding:4px 8px">${r.stop_loss > 0 ? _fmtNum(r.stop_loss)
+            : '<span style="color:#fb7185;font-weight:700">없음</span>'}</td>`
           + `<td style="padding:4px 8px">${_fmtNum(r.take_profit)}</td>`
           + `<td style="padding:4px 8px;color:var(--text-3)">${_fmtNum(r.liq_price)}</td>`
           + `<td style="padding:4px 8px">${r.leverage}x</td>`
