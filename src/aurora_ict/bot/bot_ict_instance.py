@@ -2044,6 +2044,39 @@ class BotIctInstance:
             or (want_tp > 0 and (ex_tp <= 0 or abs(ex_tp - want_tp) > want_tp * 0.001))
         )
         if need:
+            # 2026-06-13 추가: SL 이 이미 현재가에 관통된 상태면(거래소에서
+            # 벗겨진 사이 가격이 지나감) 재장착은 거래소가 거부한다 — 논리적
+            # 으로 손절이 났어야 할 포지션이므로 즉시 비상청산 (무방비 출혈
+            # 차단, 오늘 LINK -19% 사례).
+            mark_now = 0.0
+            try:
+                mark_now = float(
+                    ex_pos.get("markPrice") or ex_pos.get("mark_price") or 0,
+                ) or 0.0
+            except (TypeError, ValueError):
+                mark_now = 0.0
+            if mark_now <= 0:
+                try:
+                    mark_now = float(await self.client.fetch_ticker(self.symbol) or 0)
+                except Exception:  # noqa: BLE001
+                    mark_now = 0.0
+            sl_breached = (
+                want_sl > 0 and ex_sl <= 0 and mark_now > 0
+                and (
+                    mark_now <= want_sl if last_known.direction is Direction.LONG
+                    else mark_now >= want_sl
+                )
+            )
+            if sl_breached:
+                logger.error(
+                    "#TPSL-VERIFY SL 관통 감지 — %s mark=%.4f sl=%.4f (거래소 무SL). "
+                    "손절 자리 지남 → 즉시 비상청산.",
+                    self.symbol, mark_now, want_sl,
+                )
+                await self._emergency_close(
+                    reason="TPSL-VERIFY: SL 관통(거래소 무SL) 비상청산",
+                )
+                return
             logger.warning(
                 "#TPSL-VERIFY 재장착 — %s 거래소(sl=%.4f tp=%.4f) vs 봇(sl=%.4f tp=%.4f)",
                 self.symbol, ex_sl, ex_tp, want_sl, want_tp,
