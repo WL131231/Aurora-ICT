@@ -1888,8 +1888,13 @@ class BotIctInstance:
             )
             last_known.qty = contracts
 
-    async def _emergency_close(self) -> None:
+    async def _emergency_close(
+        self, reason: str = "SL 적용 실패 비상청산 (무SL 방지)",
+    ) -> None:
         """위험(무SL 등) 상황에서 포지션을 시장가 reduce_only 로 청산.
+
+        2026-06-12: ``reason`` 파라미터화 — admin 강제 청산(/admin/position/
+        close)도 이 검증된 경로를 재사용하며 매매 기록 사유만 구분.
 
         2026-05-29 #SILENT-4: 비상청산 자체가 실패하면 active_position 을 None
         으로 만들면 안 된다 — 거래소에 포지션이 남아있는데 봇이 "닫혔다고 인식"
@@ -1935,7 +1940,7 @@ class BotIctInstance:
                 direction=close_dir,
                 price=pos.entry,
                 qty=close_qty,
-                reason="SL 적용 실패 비상청산 (무SL 방지)",
+                reason=reason,
             )
             logger.info(
                 "비상청산 완료 — %s %s qty=%.4f",

@@ -451,6 +451,7 @@
               <th style="padding:4px 8px">청산가</th>
               <th style="padding:4px 8px">레버</th>
               <th style="padding:4px 8px">수량</th>
+              <th style="padding:4px 8px"></th>
             </tr>
           </thead>
           <tbody id="all-pos-rows"></tbody>
@@ -996,9 +997,27 @@
           + `<td style="padding:4px 8px;color:var(--text-3)">${_fmtNum(r.liq_price)}</td>`
           + `<td style="padding:4px 8px">${r.leverage}x</td>`
           + `<td style="padding:4px 8px">${_fmtNum(r.qty)}</td>`
+          + `<td style="padding:4px 8px">${r.kind === "active"
+            ? `<button class="pos-close-btn" data-code="${r.user_code}" data-symbol="${r.symbol}"
+                 style="background:rgba(251,113,133,0.15);border:1px solid #fb7185;color:#fb7185;border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer">청산</button>`
+            : ""}</td>`
           + "</tr>";
-      }).join("") || '<tr><td colspan="12" style="padding:8px">열린 포지션 없음</td></tr>';
+      }).join("") || '<tr><td colspan="13" style="padding:8px">열린 포지션 없음</td></tr>';
     }
+    // 2026-06-12: admin 강제 청산 — 행의 '청산' 버튼 (confirm 후 시장가).
+    $("all-pos-rows").addEventListener("click", async (e) => {
+      const btn = e.target.closest(".pos-close-btn");
+      if (!btn) return;
+      const code = btn.dataset.code, symbol = btn.dataset.symbol;
+      if (!confirm(`${code}\n${symbol} 포지션을 시장가로 강제 청산할까요?`)) return;
+      btn.disabled = true;
+      try {
+        const r = await api(`/admin/position/close?code=${encodeURIComponent(code)}&symbol=${encodeURIComponent(symbol)}`, { method: "POST" });
+        toast(r.detail || "청산 완료");
+      } catch (err) { toast(err.message, true); }
+      await refreshAllPositions().catch(() => {});
+    });
+
     $("btn-all-pos").onclick = async () => {
       try {
         await refreshAllPositions();
