@@ -43,11 +43,13 @@ FIXED_PAIRS = (
 # 빼고, 직접 가동 요청도 차단한다.
 #   BNB: 11페어 검증 (2026-06-12)
 #   UNI(-0.78/-0.57)·APT(-0.60/-0.20)·TON(-0.23/-0.46): 신규 8페어 검증 (2026-06-12)
+#   SUI(-0.36/-1.62, n139): 2차 9국면 검증에서 양면 마이너스 확정 (2026-06-12)
 EXCLUDED_PAIRS = frozenset({
     "BNB/USDT:USDT",
     "UNI/USDT:USDT",
     "APT/USDT:USDT",
     "TON/USDT:USDT",
+    "SUI/USDT:USDT",
 })
 
 
