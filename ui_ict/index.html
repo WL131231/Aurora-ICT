@@ -903,6 +903,20 @@
     max-height: 50vh;
     overflow-y: auto;
   }
+  /* 2026-06-13 파트너 보고: 모바일에서 판단 패널이 차트 밖(포지션 표 등)을
+     반투명하게 덮어 글자가 겹쳐 보임 — 좁은 화면에선 고정 폭 오버레이 대신
+     불투명 + 화면 폭 맞춤 + 차트 영역 안으로 제한. */
+  @media (max-width: 768px) {
+    .judgment-panel {
+      left: 8px; right: 8px; bottom: 8px;
+      width: auto;
+      max-height: 42vh;
+      background: #16161b;          /* 불투명 — 아래 글자 비침 차단 */
+      z-index: 60;                  /* 차트 위, 사이드바/모달 아래 */
+      box-shadow: 0 4px 18px rgba(0,0,0,0.55);
+    }
+    .killzone-bar { flex-wrap: wrap; max-width: calc(100vw - 32px); }
+  }
   /* 2026-05-27: 파트너 피드백 — Reason/Entry Condition 등 헤더 + 해석/디테일 색을
      text-3(#888892) 에서 text-2(#B0B0B6) 로 한 단계 밝게. 폰트도 살짝 키움. */
   .jp-header {

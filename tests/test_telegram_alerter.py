@@ -321,3 +321,27 @@ async def test_restart_command_resets_client(tmp_path) -> None:
     assert al._offset == 777
     assert any("재시작" in t for t in sent)
     await al.aclose()
+
+
+@pytest.mark.asyncio
+async def test_send_user_text_to_linked_chat(tmp_path) -> None:
+    """send_user_text — 연동 chat 으로 일반 안내 발송, 미연동은 skip."""
+    db = tmp_path / "users.db"
+    users_db.init_db(db)
+    code = "AICT-TERM-TERM-TERM"
+    users_db.create_user(db, code)
+    al = TelegramAlerter("dummytoken", db)
+    sent: list[tuple[str, str]] = []
+
+    async def _spy(chat_id: str, text: str, *, keyboard: bool = False) -> None:
+        sent.append((chat_id, text))
+
+    al.send = _spy  # type: ignore[method-assign]
+    # 미연동 — skip
+    await al.send_user_text(code, "약관 동의 필요")
+    assert sent == []
+    # 연동 후 발송
+    users_db.set_telegram_chat_id(db, code, "55")
+    await al.send_user_text(code, "약관 동의 필요")
+    assert sent and sent[0][0] == "55" and "약관" in sent[0][1]
+    await al.aclose()
