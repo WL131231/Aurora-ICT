@@ -23,7 +23,25 @@ from typing import Protocol
 logger = logging.getLogger(__name__)
 
 # 메이저 — 거래소 조회 실패해도 항상 거래 가능 목록에 포함.
+# (레버리지 정책 분기에도 사용 — 알트는 _ALT_LEVERAGE 고정)
 MAJOR_PAIRS = ("BTC/USDT:USDT", "ETH/USDT:USDT")
+
+# 고정 페어 7 — 2026-06-11~12 흑자엣지 v2 백테스트로 확정 (IN +2.40 / OUT +0.96,
+# ~2.1회/일). 서비스가 항상 가동하는 기본 포트폴리오. 사용자는 이 외에
+# MAX_CHOICE_PAIRS(3)개까지 추가 선택 가능 (총 10).
+FIXED_PAIRS = (
+    "BTC/USDT:USDT",
+    "ETH/USDT:USDT",
+    "SOL/USDT:USDT",
+    "XRP/USDT:USDT",
+    "DOGE/USDT:USDT",
+    "LINK/USDT:USDT",
+    "HYPE/USDT:USDT",
+)
+
+# 제외 페어 — 백테스트에서 IN/OUT 양면 마이너스로 검증 탈락. 화이트리스트에서
+# 빼고, 직접 가동 요청도 차단한다.
+EXCLUDED_PAIRS = frozenset({"BNB/USDT:USDT"})
 
 
 class PairSource(Protocol):
@@ -41,7 +59,8 @@ class PairRegistry:
     def __init__(self, *, limit: int = 30, ttl_sec: float = 3600.0) -> None:
         self.limit = limit
         self.ttl_sec = float(ttl_sec)
-        self._cache: list[str] = list(MAJOR_PAIRS)
+        # 첫 조회 전 폴백 — 고정 7 은 거래소 응답 없이도 항상 가동 가능해야 함.
+        self._cache: list[str] = list(FIXED_PAIRS)
         self._fetched_at: float | None = None
 
     async def get_allowed(
@@ -49,8 +68,9 @@ class PairRegistry:
     ) -> list[str]:
         """거래 가능 페어 목록 반환 — 캐시 만료 시 source 에서 갱신.
 
-        조회 결과가 비어있으면(실패) 기존 캐시를 유지한다. 어떤 경우에도 메이저
-        (BTC/ETH)는 목록에 포함된다.
+        조회 결과가 비어있으면(실패) 기존 캐시를 유지한다. 어떤 경우에도 고정
+        페어(FIXED_PAIRS)는 목록에 포함되고, 제외 페어(EXCLUDED_PAIRS — 검증
+        탈락)는 거래대금 상위권이어도 목록에서 빠진다.
         """
         t = time.monotonic() if now is None else now
         fresh = (
@@ -60,10 +80,10 @@ class PairRegistry:
         if not fresh:
             pairs = await source.list_top_usdt_perps(self.limit)
             if pairs:
-                merged = list(pairs)
-                for major in MAJOR_PAIRS:
-                    if major not in merged:
-                        merged.append(major)
+                merged = [p for p in pairs if p not in EXCLUDED_PAIRS]
+                for fixed in FIXED_PAIRS:
+                    if fixed not in merged:
+                        merged.append(fixed)
                 self._cache = merged
                 self._fetched_at = t
             else:
@@ -78,4 +98,10 @@ class PairRegistry:
         return symbol in await self.get_allowed(source, now=now)
 
 
-__all__ = ["PairRegistry", "MAJOR_PAIRS", "PairSource"]
+__all__ = [
+    "EXCLUDED_PAIRS",
+    "FIXED_PAIRS",
+    "MAJOR_PAIRS",
+    "PairRegistry",
+    "PairSource",
+]

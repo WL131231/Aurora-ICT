@@ -303,9 +303,10 @@ async def test_stop_removes_slot_freeing_pair_count(
     db_path, base_settings, master_key,
 ) -> None:
     """2026-06-11 버그픽스: 페어 정지 시 슬롯이 _slots 에서 제거돼 페어 카운트가
-    줄어든다 — '5개 등록 → 1개 삭제 → 추가' 가 막히던 문제.
+    줄어든다 — '가득 등록 → 1개 삭제 → 추가' 가 막히던 문제 (고정7 구도에선
+    선택 페어 상한 기준으로 검증).
     """
-    from aurora_ict.bot.multi_user_manager import MAX_PAIRS_PER_USER
+    from aurora_ict.bot.multi_user_manager import MAX_CHOICE_PAIRS
 
     code = "AICT-PAIR-PAIR-PAIR"
     users_db.create_user(db_path, code)
@@ -319,23 +320,23 @@ async def test_stop_removes_slot_freeing_pair_count(
         base_settings=base_settings,
         master_key=master_key,
     )
-    pairs = [
-        "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT",
-        "HYPE/USDT:USDT", "DOGE/USDT:USDT",
-    ]
-    for sym in pairs[:MAX_PAIRS_PER_USER]:
+    choice = ["ADA/USDT:USDT", "AVAX/USDT:USDT", "LTC/USDT:USDT"]
+    for sym in choice[:MAX_CHOICE_PAIRS]:
         await mu.start(code, sym)
     user_slots = {s for (u, s) in mu._slots if u == code}
-    assert len(user_slots) == MAX_PAIRS_PER_USER  # 5개 가득
+    assert len(user_slots) == MAX_CHOICE_PAIRS  # 선택 3개 가득
+    # 선택 4개째 → 거부 (가득 확인).
+    with pytest.raises(ValueError, match="선택 페어"):
+        await mu.start(code, "UNI/USDT:USDT")
 
     # 1개 정지 → 슬롯 제거 → 카운트 감소
-    await mu.stop(code, "SOL/USDT:USDT")
-    assert ("SOL/USDT:USDT") not in {s for (u, s) in mu._slots if u == code}
-    assert len({s for (u, s) in mu._slots if u == code}) == MAX_PAIRS_PER_USER - 1
+    await mu.stop(code, "ADA/USDT:USDT")
+    assert ("ADA/USDT:USDT") not in {s for (u, s) in mu._slots if u == code}
+    assert len({s for (u, s) in mu._slots if u == code}) == MAX_CHOICE_PAIRS - 1
 
-    # 새 페어 추가 가능 (예전엔 '현재 5개' 로 막혔음)
-    await mu.start(code, "XRP/USDT:USDT")
-    assert "XRP/USDT:USDT" in {s for (u, s) in mu._slots if u == code}
+    # 새 페어 추가 가능 (예전엔 '가득' 으로 막혔음)
+    await mu.start(code, "UNI/USDT:USDT")
+    assert "UNI/USDT:USDT" in {s for (u, s) in mu._slots if u == code}
 
 
 @pytest.mark.asyncio
@@ -941,7 +942,9 @@ async def test_alt_pair_forces_15x_leverage(
 async def test_max_pairs_per_user_enforced(
     db_path, base_settings, master_key,
 ) -> None:
-    """페어 확장 — 사용자당 동시 가동 페어는 MAX_PAIRS_PER_USER(5) 개로 제한."""
+    """고정7 구도 — 고정 7 + 선택 3 = 총 10. 선택 4개째·BNB·총 상한 초과 거부."""
+    from aurora_ict.bot.pair_registry import FIXED_PAIRS
+
     clients: list[FakeExchangeClient] = []
     mu = MultiUserBotManager(
         client_factory=_factory_factory(clients),
@@ -951,19 +954,73 @@ async def test_max_pairs_per_user_enforced(
     users_db.create_user(db_path, code)
     enc = keystore.encrypt_secret("plain", key=master_key)
     users_db.set_api_keys(db_path, code, "pub", enc)
-    five = [
-        "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT",
-        "XRP/USDT:USDT", "ADA/USDT:USDT",
-    ]
-    for s in five:
+    # 고정 7 전부 + 선택 3 (ADA/AVAX/LTC) = 10 가득.
+    for s in FIXED_PAIRS:
         await mu.get_or_create_bot(code, s)
-    assert len([1 for (u, _s) in mu._slots if u == code]) == 5
-    # 6번째 신규 페어 → 상한 초과 거부.
+    for s in ["ADA/USDT:USDT", "AVAX/USDT:USDT", "LTC/USDT:USDT"]:
+        await mu.get_or_create_bot(code, s)
+    assert len([1 for (u, _s) in mu._slots if u == code]) == 10
+    # 총 상한(10) 초과 → 거부.
     with pytest.raises(ValueError, match="최대"):
-        await mu.get_or_create_bot(code, "DOGE/USDT:USDT")
+        await mu.get_or_create_bot(code, "UNI/USDT:USDT")
     # 이미 슬롯 있는 페어 재호출은 통과(카운트 안 늘림).
     again = await mu.get_or_create_bot(code, "BTC/USDT:USDT")
     assert again is not None
+
+
+@pytest.mark.asyncio
+async def test_choice_pairs_capped_and_bnb_rejected(
+    db_path, base_settings, master_key,
+) -> None:
+    """고정7 구도 — 선택 페어는 3개까지, 검증 탈락(BNB)은 즉시 거부."""
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path, base_settings=base_settings, master_key=master_key,
+    )
+    code = "AICT-CHOI-CHOI-CHOI"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc)
+    # 선택 3개(고정 외) — 통과.
+    for s in ["ADA/USDT:USDT", "AVAX/USDT:USDT", "LTC/USDT:USDT"]:
+        await mu.get_or_create_bot(code, s)
+    # 선택 4개째 → 총 상한(10) 한참 전이어도 거부.
+    with pytest.raises(ValueError, match="선택 페어"):
+        await mu.get_or_create_bot(code, "UNI/USDT:USDT")
+    # 고정 페어는 선택 3개 가득 차도 추가 가능.
+    bot = await mu.get_or_create_bot(code, "HYPE/USDT:USDT")
+    assert bot is not None
+    # BNB — 백테스트 양면 마이너스 탈락 페어는 거부.
+    with pytest.raises(ValueError, match="제외"):
+        await mu.get_or_create_bot(code, "BNB/USDT:USDT")
+
+
+@pytest.mark.asyncio
+async def test_start_preferred_includes_fixed_pairs(
+    db_path, base_settings, master_key,
+) -> None:
+    """전체 START — 고정 7 전부 + 저장된 선택 페어 복원, BNB 는 복원 제외."""
+    from aurora_ict.bot.pair_registry import FIXED_PAIRS
+
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path, base_settings=base_settings, master_key=master_key,
+    )
+    code = "AICT-PREF-PREF-PREF"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("plain", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc)
+    # 선호: 고정 1개(BTC, 중복 합류 확인용) + 선택 1개 + 탈락 1개(BNB).
+    for s in ["BTC/USDT:USDT", "ADA/USDT:USDT", "BNB/USDT:USDT"]:
+        users_db.set_last_active_pair(db_path, code, s, True)
+    started = await mu.start_preferred(code)
+    assert set(FIXED_PAIRS).issubset(set(started))
+    assert "ADA/USDT:USDT" in started
+    assert "BNB/USDT:USDT" not in started
+    assert len(started) == len(FIXED_PAIRS) + 1
+    await mu.stop_user(code)
 
 
 @pytest.mark.asyncio

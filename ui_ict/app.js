@@ -1627,8 +1627,23 @@ if (_vizToggleSide) _vizToggleSide.addEventListener("click", _handleVizClick);
 // 차트 페어: 현재 심볼 버튼 → 모달 선택 → 차트 전환(매매와 별개).
 let _tradablePairs = ["BTC/USDT:USDT", "ETH/USDT:USDT"];  // markets 실패 시 폴백
 let _marketTickers = [];   // [{symbol,last,pct24h,volume}] — 거래대금 정렬
-let _maxPairs = 5;
+let _maxPairs = 10;
+// 2026-06-12 고정7 구도 — 백테스트 검증 7페어는 서비스 고정(START 시 자동 가동),
+// 사용자는 그 외 _maxChoicePairs 개까지 자유 선택. 목록은 /ict/markets 가 진실값
+// (아래는 응답 실패 시 폴백).
+let _fixedPairs = new Set([
+  "BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT",
+  "DOGE/USDT:USDT", "LINK/USDT:USDT", "HYPE/USDT:USDT",
+]);
+let _maxChoicePairs = 3;
 let _runningSymbols = new Set();
+
+/** 가동 중인 페어 중 고정7 밖(사용자 선택) 페어 수. */
+function _choiceCount() {
+  let n = 0;
+  for (const s of _runningSymbols) if (!_fixedPairs.has(s)) n++;
+  return n;
+}
 
 /** ccxt symbol → 표시명. 예: "BTC/USDT:USDT" → "BTC". */
 function _symLabel(sym) {
@@ -1660,6 +1675,10 @@ async function loadTradablePairs() {
     if (Array.isArray(r.pairs) && r.pairs.length) _tradablePairs = r.pairs;
     if (Array.isArray(r.tickers)) _marketTickers = r.tickers;
     if (r.max_pairs) _maxPairs = r.max_pairs;
+    if (Array.isArray(r.fixed_pairs) && r.fixed_pairs.length) {
+      _fixedPairs = new Set(r.fixed_pairs);
+    }
+    if (r.max_choice_pairs) _maxChoicePairs = r.max_choice_pairs;
   } catch (e) { /* 폴백(BTC/ETH) 유지 */ }
   _updateChartPairBtnLabel();
 }
@@ -1673,19 +1692,33 @@ function _renderRunningChips() {
   const box = $("running-pair-chips");
   if (!box) return;
   box.innerHTML = "";
-  for (const sym of _runningSymbols) {
+  // 고정 페어 먼저(🔒 표시), 선택 페어 뒤 — 클릭 시 정지는 동일.
+  const syms = [..._runningSymbols].sort((a, b) => {
+    const fa = _fixedPairs.has(a) ? 0 : 1;
+    const fb = _fixedPairs.has(b) ? 0 : 1;
+    return fa - fb || a.localeCompare(b);
+  });
+  for (const sym of syms) {
+    const fixed = _fixedPairs.has(sym);
     const chip = document.createElement("span");
-    chip.className = "pair-chip";
+    chip.className = fixed ? "pair-chip fixed" : "pair-chip";
     chip.dataset.symbol = sym;
-    chip.title = `${_symLabel(sym)} 정지`;
-    chip.innerHTML = `${_symLabel(sym)} <span class="x">×</span>`;
+    chip.title = fixed ? `${_symLabel(sym)} (고정 페어) 정지` : `${_symLabel(sym)} 정지`;
+    chip.innerHTML = `${fixed ? "🔒 " : ""}${_symLabel(sym)} <span class="x">×</span>`;
     box.appendChild(chip);
   }
   const addBtn = $("pair-add-btn");
   if (addBtn) {
-    const atLimit = _runningSymbols.size >= _maxPairs;
+    // 추가 상한은 "선택 페어 3개" 기준 — 고정 페어는 카운트하지 않음.
+    // 단 꺼져 있는 고정 페어가 있으면 그건 언제든 다시 켤 수 있어야 하므로
+    // 버튼은 살려 둔다 (백엔드가 선택 4개째는 어차피 거부).
+    const stoppedFixed = [..._fixedPairs].some((s) => !_runningSymbols.has(s));
+    const atLimit = (_choiceCount() >= _maxChoicePairs && !stoppedFixed)
+      || _runningSymbols.size >= _maxPairs;
     addBtn.disabled = atLimit;
-    addBtn.textContent = atLimit ? `최대 ${_maxPairs}개 가동 중` : "+ 페어 추가";
+    addBtn.textContent = atLimit
+      ? `선택 페어 ${_maxChoicePairs}개 가동 중`
+      : "+ 페어 추가";
   }
 }
 
@@ -1752,8 +1785,10 @@ function _renderPickerRows(filter) {
     row.type = "button";
     row.className = "pair-picker-row";
     row.dataset.symbol = r.symbol;
+    const fixedTag = _fixedPairs.has(r.symbol)
+      ? ' <span class="ppr-fixed">고정</span>' : "";
     row.innerHTML =
-      `<span class="ppr-sym">${_symLabel(r.symbol)}</span>` +
+      `<span class="ppr-sym">${_symLabel(r.symbol)}${fixedTag}</span>` +
       `<span class="ppr-price">${_fmtPrice(r.last)}</span>` +
       `<span class="ppr-pct ${pct.cls}">${pct.text}</span>` +
       `<span class="ppr-vol">${_fmtVol(r.volume)}</span>`;
@@ -1811,7 +1846,14 @@ if (_pairAddBtn) {
       toast(`최대 ${_maxPairs}개까지 가동 가능`, true);
       return;
     }
-    openPairPicker(_startPair, _runningSymbols);
+    openPairPicker(async (sym) => {
+      // 고정 페어 재가동은 선택 카운트와 무관 — 선택분만 3개 제한.
+      if (!_fixedPairs.has(sym) && _choiceCount() >= _maxChoicePairs) {
+        toast(`선택 페어는 고정 7개 외 최대 ${_maxChoicePairs}개까지`, true);
+        return;
+      }
+      await _startPair(sym);
+    }, _runningSymbols);
   });
 }
 

@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from aurora_ict.bot.pair_registry import MAJOR_PAIRS, PairRegistry
+from aurora_ict.bot.pair_registry import (
+    EXCLUDED_PAIRS,
+    FIXED_PAIRS,
+    MAJOR_PAIRS,
+    PairRegistry,
+)
 
 
 class _FakeSource:
@@ -83,5 +88,29 @@ async def test_limit_passed_to_source() -> None:
     src = _FakeSource([f"C{i}/USDT:USDT" for i in range(50)])
     reg = PairRegistry(limit=10)
     r = await reg.get_allowed(src, now=0.0)
-    # 상위 10 + 메이저 2 = 최대 12 (메이저가 상위 10에 없으면 추가).
+    # 상위 10 + 고정 7 (고정이 상위 10에 없으면 추가).
     assert len([s for s in r if s.startswith("C")]) == 10
+
+
+@pytest.mark.asyncio
+async def test_fixed_pairs_always_included() -> None:
+    """고정7 구도 — 거래소 응답에 없어도 고정 7(HYPE 등 포함)은 항상 허용."""
+    src = _FakeSource(["SOL/USDT:USDT"])  # 고정 대부분 미포함 응답
+    reg = PairRegistry()
+    r = await reg.get_allowed(src, now=0.0)
+    assert set(FIXED_PAIRS).issubset(set(r))
+    # 첫 조회 전(폴백 캐시)에도 고정 7 전부 허용.
+    reg2 = PairRegistry()
+    assert await reg2.is_allowed(_FakeSource([], fail=True),
+                                 "HYPE/USDT:USDT", now=0.0)
+
+
+@pytest.mark.asyncio
+async def test_excluded_pairs_filtered() -> None:
+    """검증 탈락(BNB) — 거래대금 상위권이어도 화이트리스트에서 제외."""
+    src = _FakeSource(["BNB/USDT:USDT", "SOL/USDT:USDT"])
+    reg = PairRegistry()
+    r = await reg.get_allowed(src, now=0.0)
+    for ex in EXCLUDED_PAIRS:
+        assert ex not in r
+    assert "SOL/USDT:USDT" in r
