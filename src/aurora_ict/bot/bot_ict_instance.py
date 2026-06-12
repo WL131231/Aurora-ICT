@@ -2035,6 +2035,9 @@ class BotIctInstance:
                 direction=close_dir,
                 price=pos.entry,
                 qty=close_qty,
+                # 2026-06-12 리뷰 #3: setup_ts 누락 시 원 ENTRY 가 영구 미청산
+                # 으로 남아 reconcile 이중 기록 + TP 복원 오염 — 반드시 전달.
+                setup_ts_ms=pos.setup_ts_ms or None,
                 reason=reason,
             )
             logger.info(

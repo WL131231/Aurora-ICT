@@ -379,12 +379,13 @@ class TelegramAlerter:
         """
         old = self._client
         self._client = httpx.AsyncClient(timeout=30.0)
-        self._offset = 0
+        # 2026-06-12 리뷰 #1: offset 은 절대 리셋하지 않는다 — 0 으로 돌리면
+        # 텔레그램이 /restart 메시지를 재배달해 재시작 무한루프(스팸)가 된다.
         try:
             await old.aclose()
         except Exception as e:  # noqa: BLE001
             logger.debug("restart: 구 클라이언트 정리 실패(무시): %s", e)
-        logger.info("텔레그램 알림 봇 재시작 — 클라이언트 재생성 + offset 리셋.")
+        logger.info("텔레그램 알림 봇 재시작 — 클라이언트 재생성 (offset 유지).")
 
     async def _handle_message(self, chat_id: str, text: str) -> None:
         """수신 메시지 처리 — 코드면 연동, 재등록 버튼이면 교체 모드, 아니면 안내."""
