@@ -73,7 +73,7 @@ def test_init_rejects_unknown_timeframe():
     """TF_MINUTES 미정의 TF → ValueError 즉시 raise."""
     client = MagicMock()
     with pytest.raises(ValueError, match="unknown timeframe"):
-        MultiTfCache(client, "BTC/USDT:USDT", ["1H", "30m"])  # 30m 미정의
+        MultiTfCache(client, "BTC/USDT:USDT", ["1H", "10m"])  # 10m 미정의 (30m 은 2026-06-13 지원)
 
 
 # ============================================================
