@@ -2630,14 +2630,26 @@ class BotIctInstance:
             direction = (
                 Direction.LONG if orphan.direction == "long" else Direction.SHORT
             )
+            exit_px = float(getattr(match, "exit_price", 0.0) or 0.0)
+            # 2026-06-12: ENTRY context 의 sl/tp 로 SL/TP 분류 — 보충 청산도
+            # 매매 기록 유형 필터(TP/SL)에 잡히게.
+            try:
+                _ctx = json.loads(orphan.context_json or "{}")
+            except (ValueError, TypeError):
+                _ctx = {}
+            evt_type, cls_reason = self._classify_exchange_close(
+                direction, float(orphan.price or 0.0),
+                float(_ctx.get("sl") or 0.0), float(_ctx.get("tp") or 0.0),
+                exit_px,
+            )
             self._record_trade(
-                TradeEventType.SYNC_CLOSE,
+                evt_type,
                 direction=direction,
-                price=float(getattr(match, "exit_price", 0.0) or 0.0),
+                price=exit_px,
                 qty=orphan.qty,
                 entry_for_pnl=orphan.price,
                 setup_ts_ms=orphan.setup_ts_ms,
-                reason="reconcile: 재기동 중 청산 보충 (closed-pnl)",
+                reason=f"reconcile: 재기동 중 청산 보충 ({cls_reason})",
                 pnl_override=float(getattr(match, "pnl_usd", 0.0) or 0.0),
             )
             filled += 1
@@ -2733,6 +2745,53 @@ class BotIctInstance:
         )
         return None
 
+    @staticmethod
+    def _classify_exchange_close(
+        direction: Direction, entry: float, sl: float, tp: float, close_px: float,
+    ) -> tuple[TradeEventType, str]:
+        """거래소 측 청산 가격으로 SL/TP/미구분 분류 (2026-06-12 파트너 보고).
+
+        기존엔 ``sl > 0 and tp > 0`` 일 때만 분류해서, 복구 포지션처럼 TP=0
+        (거래소에서 TP 주문 미발견)인 경우 전부 '미구분'이 됐다 → 매매 기록의
+        TP 필터에 익절이 안 잡힘. SL/TP 를 독립 검사하고, 근접 오차 대신
+        방향 기준(SL 슬리피지로 더 나쁘게 / TP 가 더 유리하게 체결돼도 인정)
+        으로 판정한다.
+
+        Args:
+            direction: 포지션 방향.
+            entry: 진입가 (오차 기준).
+            sl: 손절가 (0 = 미상).
+            tp: 목표가 (0 = 미상).
+            close_px: 거래소 closed-pnl 의 실제 청산가.
+
+        Returns:
+            (TradeEventType, 사유 문자열).
+        """
+        unknown = (
+            TradeEventType.SYNC_CLOSE, "exchange-side close (SL/TP 미구분)",
+        )
+        if close_px <= 0 or entry <= 0:
+            return unknown
+        tol = entry * 0.002  # 트리거가-체결가 괴리 + 수수료 반영 오차
+        is_long = direction is Direction.LONG
+        hit_tp = tp > 0 and (
+            close_px >= tp - tol if is_long else close_px <= tp + tol
+        )
+        hit_sl = sl > 0 and (
+            close_px <= sl + tol if is_long else close_px >= sl - tol
+        )
+        if hit_tp and hit_sl:
+            # SL/TP 가 비정상으로 좁아 겹치면 가까운 쪽으로.
+            if abs(close_px - tp) <= abs(close_px - sl):
+                hit_sl = False
+            else:
+                hit_tp = False
+        if hit_tp:
+            return TradeEventType.TP_HIT, "TP_HIT"
+        if hit_sl:
+            return TradeEventType.SL_HIT, "SL_HIT"
+        return unknown
+
     async def _sync_position_state(self) -> None:
         """거래소 fetch_position 으로 상태 동기화 + 실제 close 정보 회수 (#PR-C/#3+#4).
 
@@ -2779,21 +2838,15 @@ class BotIctInstance:
         else:
             close_px = last_known.entry  # placeholder (조회 실패)
             pnl_usd = 0.0
-        # SL/TP 구분 — close 가격이 SL/TP 중 허용 오차 내로 가까우면 해당 이벤트로 분류.
-        sl, tp = last_known.stop_loss, last_known.take_profit
+        # SL/TP 구분 — 2026-06-12: 독립 검사 + 방향 기준 (TP=0 복구 포지션도
+        # SL 쪽은 분류되게). 분류 실패만 SYNC_CLOSE 로 남는다.
         evt_type = TradeEventType.SYNC_CLOSE
         close_reason = "exchange-side close (SL/TP 미구분)"
-        if cp is not None and sl > 0 and tp > 0 and close_px > 0:
-            # 허용 오차 = max(entry 0.2%, SL 거리 절반) — 슬리피지 + bybit conditional 발동 가격 차이.
-            tol = max(last_known.entry * 0.002, abs(sl - last_known.entry) * 0.5)
-            d_sl = abs(close_px - sl)
-            d_tp = abs(close_px - tp)
-            if d_sl <= tol and d_sl <= d_tp:
-                evt_type = TradeEventType.SL_HIT
-                close_reason = "SL_HIT"
-            elif d_tp <= tol and d_tp <= d_sl:
-                evt_type = TradeEventType.TP_HIT
-                close_reason = "TP_HIT"
+        if cp is not None:
+            evt_type, close_reason = self._classify_exchange_close(
+                last_known.direction, last_known.entry,
+                last_known.stop_loss, last_known.take_profit, close_px,
+            )
         logger.info(
             "position 종료 — entry=%.4f close=%.4f pnl=%.4f USDT (%s)",
             last_known.entry, close_px, pnl_usd, close_reason,
