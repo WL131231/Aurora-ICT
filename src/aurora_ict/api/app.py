@@ -36,7 +36,11 @@ from aurora_ict.bot.multi_user_manager import (
     MAX_PAIRS_PER_USER,
     MultiUserBotManager,
 )
-from aurora_ict.bot.pair_registry import EXCLUDED_PAIRS, FIXED_PAIRS
+from aurora_ict.bot.pair_registry import (
+    EXCLUDED_PAIRS,
+    FIXED_PAIRS,
+    RECOMMENDED_PAIRS,
+)
 from aurora_ict.config.settings import TRADE_TIMEFRAMES, IctSettings, RunMode
 from aurora_ict.strategy.silver_bullet import Direction
 
@@ -479,6 +483,8 @@ def _register_multi_user_routes(
             "max_pairs": MAX_PAIRS_PER_USER,
             "fixed_pairs": list(FIXED_PAIRS),
             "max_choice_pairs": MAX_CHOICE_PAIRS,
+            # 2026-06-12: 선택 추천 (2차 검증 양면 흑자, 순서=순위) — 피커 상단 고정.
+            "recommended_pairs": list(RECOMMENDED_PAIRS),
         }
 
     # ------------------------------------------------------------------

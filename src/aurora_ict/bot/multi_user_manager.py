@@ -394,6 +394,7 @@ class MultiUserBotManager:
             htf_fvg_tfs=settings.htf_fvg_tfs,
             daily_loss_limit_pct=settings.daily_loss_limit_pct,
             daily_profit_limit_pct=settings.daily_profit_limit_pct,
+            daily_pair_loss_limit_r=settings.daily_pair_loss_limit_r,
             # WS flip watcher — 테스트/리소스 절약 위해 multi-user 에선 기본 끔.
             # 운영 환경에서 사용자별 WS 연결 N개는 부담 — 추후 공유 stream 으로 개선.
             flip_watch_enabled=False,

@@ -304,6 +304,10 @@ class BotIctInstance:
     # 2026-06-10 조윤 건의: 자본 대비 % 일일 수익(TP) 한도. 도달 시 그날 신규
     # 진입 중단(active position 은 유지). 0 = 비활성. NY local 자정 reset.
     daily_profit_limit_pct: float = 0.0
+    # 2026-06-12 파트너: 페어별 일일 손실 한도 — R(리스크%) 배수 단위. 이 페어의
+    # 오늘 누적 손실이 R×배수에 닿으면 *이 페어만* 당일 진입 중단 (다른 페어
+    # 계속). 단일 페어 폭주(6/6: 한 페어 19연속 -33%) 차단용. 0 = 비활성.
+    daily_pair_loss_limit_r: float = 2.0
 
     # HTF EMA bias 필터 — multi_tf 와 별개. 진입 직전 htf_ema_bias_tf EMA20 vs 가격
     # 비교 → setup.direction 이 bias 와 반대면 진입 skip.
@@ -385,6 +389,9 @@ class BotIctInstance:
     _daily_limit_hit: bool = field(default=False)
     # 2026-06-10 조윤 건의: 일일 수익(TP) 한도 도달 flag — NY 자정 reset.
     _daily_profit_hit: bool = field(default=False)
+    # 2026-06-12 페어별 일일 손실 한도 — 이 심볼의 오늘 실현손익 + sticky flag.
+    _today_pair_realized_pnl_usdt: float = field(default=0.0)
+    _daily_pair_limit_hit: bool = field(default=False)
     # 키 무효(10003) step 연속 실패 카운터 — 임계치 도달 시 봇 자동 정지.
     _auth_fail_streak: int = field(default=0)
 
@@ -1482,6 +1489,16 @@ class BotIctInstance:
                 self._today_realized_pnl_usdt, self._today_start_equity,
             )
             return
+        # 2026-06-12 파트너: 페어별 일일 손실 한도 — 이 페어만 당일 중단 (sticky).
+        if self._is_daily_pair_loss_limit_hit():
+            self._daily_pair_limit_hit = True
+        if self._daily_pair_limit_hit:
+            logger.info(
+                "setup skip — 페어 일일 손실 한도 %.1fR hit (%s pair_today=%.2fUSDT)",
+                self.daily_pair_loss_limit_r, self.symbol,
+                self._today_pair_realized_pnl_usdt,
+            )
+            return
         # 2026-06-10 조윤 건의: 일일 수익(TP) 한도 도달 시 신규 진입 중단.
         if self._is_daily_profit_limit_hit():
             self._daily_profit_hit = True
@@ -2359,11 +2376,29 @@ class BotIctInstance:
             self._today_realized_pnl_usdt = 0.0
             self._today_start_equity = equity_now if equity_now > 0 else 0.0
             self._daily_limit_hit = False
+            # 2026-06-12 페어별 한도도 새 거래일에 함께 reset.
+            self._today_pair_realized_pnl_usdt = 0.0
+            self._daily_pair_limit_hit = False
             self._daily_profit_hit = False
             logger.info(
                 "daily PnL reset (NY %s) — start_equity=%.2f",
                 ny_date, self._today_start_equity,
             )
+
+    def _is_daily_pair_loss_limit_hit(self) -> bool:
+        """페어별 일일 손실 한도 도달 여부 (R 배수 기준). 2026-06-12 파트너.
+
+        R(1회 리스크 금액) = 시작 equity × risk_per_trade_base%. 이 페어의
+        오늘 누적 손실이 limit_r × R 이상이면 True — 이 페어만 당일 중단.
+        limit_r=0 또는 시작 equity 미확보면 비활성.
+        """
+        if self.daily_pair_loss_limit_r <= 0 or self._today_start_equity <= 0:
+            return False
+        r_usdt = self._today_start_equity * (self.risk_per_trade_base / 100.0)
+        if r_usdt <= 0:
+            return False
+        loss = -self._today_pair_realized_pnl_usdt
+        return loss >= self.daily_pair_loss_limit_r * r_usdt
 
     def _is_daily_loss_limit_hit(self) -> bool:
         """일일 손실 한도 초과 여부 (#SAFETY-1).
@@ -2439,11 +2474,25 @@ class BotIctInstance:
             logger.warning("today realized pnl 거래소 동기화 실패: %s — 기존값 유지", e)
             return
         total = 0.0
+        pair_total = 0.0
         for cp in closed:
             ts = int(getattr(cp, "closed_at_ts", 0) or 0)
             if ts >= since_ms:
-                total += float(getattr(cp, "pnl_usd", 0.0) or 0.0)
+                pnl = float(getattr(cp, "pnl_usd", 0.0) or 0.0)
+                total += pnl
+                # 2026-06-12 페어별 한도 — 이 봇 심볼 분만 따로 누적.
+                if str(getattr(cp, "symbol", "") or "") == self.symbol:
+                    pair_total += pnl
         self._today_realized_pnl_usdt = total
+        self._today_pair_realized_pnl_usdt = pair_total
+        if self._is_daily_pair_loss_limit_hit() and not self._daily_pair_limit_hit:
+            self._daily_pair_limit_hit = True
+            logger.warning(
+                "페어 일일 손실 한도 HIT — %s limit=%.1fR pair_today=%.2fUSDT "
+                "(이 페어만 당일 진입 중단)",
+                self.symbol, self.daily_pair_loss_limit_r,
+                self._today_pair_realized_pnl_usdt,
+            )
         if self._is_daily_loss_limit_hit() and not self._daily_limit_hit:
             self._daily_limit_hit = True
             logger.warning(

@@ -1077,3 +1077,36 @@ async def test_recover_tp_stays_zero_without_matching_record(tmp_path) -> None:
     assert bot.active_position is not None
     assert bot.active_position.take_profit == 0.0
     await bot.stop()
+
+
+def test_daily_pair_loss_limit_logic() -> None:
+    """페어별 일일 손실 한도 (2026-06-12) — R 배수 판정 + 비활성 조건."""
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    bot = BotIctInstance(client=client, risk_per_trade_base=1.0,
+                         daily_pair_loss_limit_r=2.0)
+    bot._today_start_equity = 1000.0  # R = 10 USDT
+    # 손실 -19 → 1.9R: 미달.
+    bot._today_pair_realized_pnl_usdt = -19.0
+    assert not bot._is_daily_pair_loss_limit_hit()
+    # 손실 -20 → 2.0R: HIT.
+    bot._today_pair_realized_pnl_usdt = -20.0
+    assert bot._is_daily_pair_loss_limit_hit()
+    # 수익이면 무관.
+    bot._today_pair_realized_pnl_usdt = +50.0
+    assert not bot._is_daily_pair_loss_limit_hit()
+    # 0 = 비활성.
+    bot.daily_pair_loss_limit_r = 0.0
+    bot._today_pair_realized_pnl_usdt = -999.0
+    assert not bot._is_daily_pair_loss_limit_hit()
+
+
+def test_daily_pair_limit_resets_on_new_day() -> None:
+    """페어별 한도 sticky flag — NY 자정 reset 에 함께 풀려야."""
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    bot = BotIctInstance(client=client, daily_pair_loss_limit_r=2.0)
+    bot._today_date_str = "2026-06-11"
+    bot._daily_pair_limit_hit = True
+    bot._today_pair_realized_pnl_usdt = -50.0
+    bot._maybe_reset_daily_pnl(1000.0)  # 오늘 날짜와 다름 → reset
+    assert bot._daily_pair_limit_hit is False
+    assert bot._today_pair_realized_pnl_usdt == 0.0
