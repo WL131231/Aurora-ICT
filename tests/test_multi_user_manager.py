@@ -327,7 +327,7 @@ async def test_stop_removes_slot_freeing_pair_count(
     assert len(user_slots) == MAX_CHOICE_PAIRS  # 선택 3개 가득
     # 선택 4개째 → 거부 (가득 확인).
     with pytest.raises(ValueError, match="선택 페어"):
-        await mu.start(code, "UNI/USDT:USDT")
+        await mu.start(code, "FIL/USDT:USDT")
 
     # 1개 정지 → 슬롯 제거 → 카운트 감소
     await mu.stop(code, "ADA/USDT:USDT")
@@ -335,8 +335,8 @@ async def test_stop_removes_slot_freeing_pair_count(
     assert len({s for (u, s) in mu._slots if u == code}) == MAX_CHOICE_PAIRS - 1
 
     # 새 페어 추가 가능 (예전엔 '가득' 으로 막혔음)
-    await mu.start(code, "UNI/USDT:USDT")
-    assert "UNI/USDT:USDT" in {s for (u, s) in mu._slots if u == code}
+    await mu.start(code, "FIL/USDT:USDT")
+    assert "FIL/USDT:USDT" in {s for (u, s) in mu._slots if u == code}
 
 
 @pytest.mark.asyncio
@@ -962,7 +962,7 @@ async def test_max_pairs_per_user_enforced(
     assert len([1 for (u, _s) in mu._slots if u == code]) == 10
     # 총 상한(10) 초과 → 거부.
     with pytest.raises(ValueError, match="최대"):
-        await mu.get_or_create_bot(code, "UNI/USDT:USDT")
+        await mu.get_or_create_bot(code, "FIL/USDT:USDT")
     # 이미 슬롯 있는 페어 재호출은 통과(카운트 안 늘림).
     again = await mu.get_or_create_bot(code, "BTC/USDT:USDT")
     assert again is not None
@@ -987,7 +987,7 @@ async def test_choice_pairs_capped_and_bnb_rejected(
         await mu.get_or_create_bot(code, s)
     # 선택 4개째 → 총 상한(10) 한참 전이어도 거부.
     with pytest.raises(ValueError, match="선택 페어"):
-        await mu.get_or_create_bot(code, "UNI/USDT:USDT")
+        await mu.get_or_create_bot(code, "FIL/USDT:USDT")
     # 고정 페어는 선택 3개 가득 차도 추가 가능.
     bot = await mu.get_or_create_bot(code, "HYPE/USDT:USDT")
     assert bot is not None
