@@ -56,7 +56,8 @@ def test_format_trade_entry_detail_from_context() -> None:
 
 
 def test_format_trade_close_detail_from_context() -> None:
-    """청산 — 손실 라벨 + 청산가 + 변동% + 사유."""
+    """청산 — 손실 라벨 + 청산가 + 사유 (2026-06-12 파트너 포맷: ' : ' 라벨,
+    빈 줄 그룹 구분, 변동% 제외, 코드는 마지막 줄)."""
     import json
     ctx = json.dumps({
         "close_price": 62211.9, "move_pct": 0.59,
@@ -69,11 +70,13 @@ def test_format_trade_close_detail_from_context() -> None:
     )
     text = format_trade("AICT-X-X-X", ev)
     assert "손절" in text
-    assert "손실" in text  # pnl < 0 → loss 라벨
+    assert "손실 : " in text  # pnl < 0 → loss 라벨 + ' : ' 구분
     assert "-7.32" in text
-    assert "청산가" in text and "62,211" in text
-    assert "변동" in text and "+0.59%" in text
-    assert "SL_HIT" in text
+    assert "청산가 : " in text and "62,211" in text
+    assert "변동" not in text  # 파트너 템플릿에서 제외
+    assert "사유 : " in text and "SL_HIT" in text
+    assert text.rstrip().endswith("<code>AICT-X-X-X</code>")  # 코드가 마지막 줄
+    assert "\n\n" in text  # 그룹 사이 빈 줄
 
 
 def test_format_trade_language_en() -> None:
@@ -137,7 +140,7 @@ async def test_send_trade_alert_fallback_on_format_error(tmp_path, monkeypatch) 
     al = TelegramAlerter("dummytoken", db)
     sent: list[str] = []
 
-    async def _spy(chat_id: str, text: str) -> None:
+    async def _spy(chat_id: str, text: str, *, keyboard: bool = False) -> None:
         sent.append(text)
 
     al.send = _spy  # type: ignore[method-assign]
@@ -170,7 +173,7 @@ async def test_send_trade_alert_uses_user_prefs(tmp_path) -> None:
     al = TelegramAlerter("dummytoken", db)
     sent: list[tuple[str, str]] = []
 
-    async def _spy(chat_id: str, text: str) -> None:
+    async def _spy(chat_id: str, text: str, *, keyboard: bool = False) -> None:
         sent.append((chat_id, text))
 
     al.send = _spy  # type: ignore[method-assign]
@@ -194,7 +197,7 @@ async def test_handle_message_registers_chat_id(tmp_path) -> None:
     al = TelegramAlerter("dummytoken", db)
     sent: list[tuple[str, str]] = []
 
-    async def _spy(chat_id: str, text: str) -> None:
+    async def _spy(chat_id: str, text: str, *, keyboard: bool = False) -> None:
         sent.append((chat_id, text))
 
     al.send = _spy  # type: ignore[method-assign]  # self-spy
@@ -213,7 +216,7 @@ async def test_handle_message_unknown_code(tmp_path) -> None:
     al = TelegramAlerter("dummytoken", db)
     sent: list[tuple[str, str]] = []
 
-    async def _spy(chat_id: str, text: str) -> None:
+    async def _spy(chat_id: str, text: str, *, keyboard: bool = False) -> None:
         sent.append((chat_id, text))
 
     al.send = _spy  # type: ignore[method-assign]
@@ -233,7 +236,7 @@ async def test_send_trade_alert_skips_when_not_linked(tmp_path) -> None:
     al = TelegramAlerter("dummytoken", db)
     sent: list[tuple[str, str]] = []
 
-    async def _spy(chat_id: str, text: str) -> None:
+    async def _spy(chat_id: str, text: str, *, keyboard: bool = False) -> None:
         sent.append((chat_id, text))
 
     al.send = _spy  # type: ignore[method-assign]
@@ -243,4 +246,55 @@ async def test_send_trade_alert_skips_when_not_linked(tmp_path) -> None:
     )
     await al.send_trade_alert(code, ev)
     assert sent == []  # 미연동 → skip
+    await al.aclose()
+
+
+@pytest.mark.asyncio
+async def test_relink_button_replaces_binding(tmp_path) -> None:
+    """'코드 재등록' 버튼 → 새 코드 수신 시 기존 연동 해제 + 새 코드로 교체."""
+    db = tmp_path / "users.db"
+    users_db.init_db(db)
+    old, new = "AICT-OLDC-OLDC-OLDC", "AICT-NEWC-NEWC-NEWC"
+    users_db.create_user(db, old)
+    users_db.create_user(db, new)
+
+    al = TelegramAlerter("dummytoken", db)
+    sent: list[str] = []
+
+    async def _spy(chat_id: str, text: str, *, keyboard: bool = False) -> None:
+        sent.append(text)
+
+    al.send = _spy  # type: ignore[method-assign]
+
+    # 기존 연동 → 재등록 버튼 → 새 코드.
+    await al._handle_message("77", old)
+    assert users_db.get_telegram_chat_id(db, old) == "77"
+    await al._handle_message("77", "🔄 코드 재등록")
+    assert any("재등록" in t for t in sent)
+    await al._handle_message("77", new)
+    assert users_db.get_telegram_chat_id(db, old) is None  # 기존 해제
+    assert users_db.get_telegram_chat_id(db, new) == "77"  # 새 코드로 교체
+    assert any("재등록 완료" in t for t in sent)
+    await al.aclose()
+
+
+@pytest.mark.asyncio
+async def test_plain_link_does_not_unbind_other_codes(tmp_path) -> None:
+    """재등록 버튼 없이 코드만 보내면(일반 연동) 기존 연동은 안 건드린다."""
+    db = tmp_path / "users.db"
+    users_db.init_db(db)
+    a, b = "AICT-AAAA-AAAA-AAAA", "AICT-BBBB-BBBB-BBBB"
+    users_db.create_user(db, a)
+    users_db.create_user(db, b)
+
+    al = TelegramAlerter("dummytoken", db)
+
+    async def _spy(chat_id: str, text: str, *, keyboard: bool = False) -> None:
+        pass
+
+    al.send = _spy  # type: ignore[method-assign]
+    await al._handle_message("88", a)
+    await al._handle_message("88", b)
+    assert users_db.get_telegram_chat_id(db, a) == "88"  # 유지
+    assert users_db.get_telegram_chat_id(db, b) == "88"
     await al.aclose()
