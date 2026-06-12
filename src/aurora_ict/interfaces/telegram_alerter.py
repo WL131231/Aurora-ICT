@@ -99,6 +99,14 @@ _LABELS: dict[str, dict[str, Any]] = {
 
 _ENTRY_EVENTS = {"entry", "flip_open"}
 
+# 2026-06-12 파트너 요청: 하단 고정 버튼 — 다른 코드로 알림을 옮길 때 사용.
+_BTN_RELINK = "🔄 코드 재등록"
+_MAIN_KEYBOARD = {
+    "keyboard": [[{"text": _BTN_RELINK}]],
+    "resize_keyboard": True,
+    "is_persistent": True,
+}
+
 
 def _enum_val(v: Any) -> str:
     """enum 이면 .value, 아니면 그대로 — 문자열로."""
@@ -183,19 +191,29 @@ def format_trade(
             # context_json 이 없으면(구식 이벤트 등) reason 원문 fallback.
             lines.append(f"{label_set['reason']} {event.reason}")
     else:
+        # 2026-06-12 파트너 멘트 포맷: 수익 / 청산가+날짜 / 사유 / 코드 를
+        # 빈 줄로 구분, 라벨 뒤 " : ". 변동% 줄은 템플릿에서 제외됨.
         pnl = getattr(event, "pnl_usdt", None)
         if isinstance(pnl, (int, float)):
             tag = label_set["profit"] if pnl >= 0 else label_set["loss"]
             sign = "+" if pnl >= 0 else ""
-            lines.append(f"{tag} <b>{sign}{pnl:,.2f} USDT</b>")
+            lines.append(f"{tag} : <b>{sign}{pnl:,.2f} USDT</b>")
+        lines.append("")
         cprice = ctx.get("close_price", price)
         if cprice is not None:
-            lines.append(f"{label_set['exit_price']} <code>{_fmt_price(cprice)}</code>")
-        if isinstance(ctx.get("move_pct"), (int, float)):
-            lines.append(f"{label_set['change']} {ctx['move_pct']:+.2f}%")
+            lines.append(
+                f"{label_set['exit_price']} : <code>{_fmt_price(cprice)}</code>",
+            )
+        t = _fmt_time(getattr(event, "ts_ms", 0), tz)
+        if t:
+            lines.append(f"<i>{t}</i>")
         reason = ctx.get("close_reason") or getattr(event, "reason", "")
         if reason:
-            lines.append(f"{label_set['reason']} <i>{reason}</i>")
+            lines.append("")
+            lines.append(f"{label_set['reason']} : <i>{reason}</i>")
+        lines.append("")
+        lines.append(f"<code>{user_code}</code>")
+        return "\n".join(lines)
 
     t = _fmt_time(getattr(event, "ts_ms", 0), tz)
     lines.append(
@@ -217,6 +235,9 @@ class TelegramAlerter:
         self.db_path = db_path
         self._offset = 0
         self._client = httpx.AsyncClient(timeout=30.0)
+        # '코드 재등록' 버튼을 누른 채팅 — 다음 코드 수신 시 기존 연동을 풀고
+        # 새 코드로 교체한다. (메모리만 — 재시작 시 초기화돼도 무해)
+        self._relink_pending: set[str] = set()
 
     @property
     def enabled(self) -> bool:
@@ -268,14 +289,23 @@ class TelegramAlerter:
         )
         return None
 
-    async def send(self, chat_id: str, text: str) -> None:
-        """단일 메시지 발송 — 실패는 무시."""
+    async def send(
+        self, chat_id: str, text: str, *, keyboard: bool = False,
+    ) -> None:
+        """단일 메시지 발송 — 실패는 무시.
+
+        Args:
+            keyboard: True 면 하단 고정 키보드('코드 재등록') 첨부 — 봇과의
+                대화성 응답에만 붙인다 (매매 알림에는 미첨부, 소음 방지).
+        """
         if not self.enabled:
             return
-        await self._call(
-            "sendMessage",
-            {"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
-        )
+        payload: dict[str, Any] = {
+            "chat_id": chat_id, "text": text, "parse_mode": "HTML",
+        }
+        if keyboard:
+            payload["reply_markup"] = _MAIN_KEYBOARD
+        await self._call("sendMessage", payload)
 
     async def send_trade_alert(self, user_code: str, event: Any) -> None:
         """매매 이벤트 → 연동된 chat_id 로 알림. 미연동·실패 시 조용히 skip.
@@ -341,7 +371,19 @@ class TelegramAlerter:
             await self._handle_message(chat_id, text)
 
     async def _handle_message(self, chat_id: str, text: str) -> None:
-        """수신 메시지 처리 — 코드면 연동, 아니면 안내."""
+        """수신 메시지 처리 — 코드면 연동, 재등록 버튼이면 교체 모드, 아니면 안내."""
+        # 2026-06-12: 하단 '코드 재등록' 버튼 — 다음 코드 수신 시 이 채팅의
+        # 기존 연동을 모두 풀고 새 코드로 교체.
+        if _BTN_RELINK in text or text == "/relink":
+            self._relink_pending.add(chat_id)
+            await self.send(
+                chat_id,
+                "🔄 <b>코드 재등록</b>\n"
+                "새 <b>라이선스 코드</b>(AICT-XXXX-XXXX-XXXX)를 보내주세요.\n"
+                "기존 연동은 해제되고 새 코드로 알림이 옵니다.",
+                keyboard=True,
+            )
+            return
         match = _CODE_RE.search(text)
         if match:
             code = match.group(0).upper()
@@ -352,13 +394,24 @@ class TelegramAlerter:
             if user is None:
                 await self.send(
                     chat_id, f"❌ 등록되지 않은 코드입니다: <code>{code}</code>",
+                    keyboard=True,
                 )
                 return
+            relinked = chat_id in self._relink_pending
+            if relinked:
+                # 교체 모드 — 이 채팅에 묶인 기존 코드 연동을 먼저 해제.
+                self._relink_pending.discard(chat_id)
+                try:
+                    users_db.clear_telegram_chat_id_by_chat(self.db_path, chat_id)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("재등록 기존 연동 해제 실패(계속 진행): %s", e)
             users_db.set_telegram_chat_id(self.db_path, code, chat_id)
+            head = "🔄 재등록 완료!" if relinked else "연동 완료!"
             await self.send(
                 chat_id,
-                f"✅ <b>{code}</b> 연동 완료!\n"
+                f"✅ <b>{code}</b> {head}\n"
                 "이제 이 코드의 매매가 발생하면 여기로 알림이 와요.",
+                keyboard=True,
             )
             return
         await self.send(
@@ -366,6 +419,7 @@ class TelegramAlerter:
             "안녕하세요 👋 Aurora-ICT 매매 알림 봇이에요.\n"
             "알림을 받으시려면 본인 <b>라이선스 코드</b>"
             "(AICT-XXXX-XXXX-XXXX)를 그대로 보내주세요.",
+            keyboard=True,
         )
 
     async def aclose(self) -> None:

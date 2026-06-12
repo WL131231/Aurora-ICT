@@ -1090,6 +1090,33 @@ def set_telegram_chat_id(db_path: Path | str, code: str, chat_id: str) -> bool:
         return cur.rowcount > 0
 
 
+def clear_telegram_chat_id_by_chat(db_path: Path | str, chat_id: str) -> int:
+    """이 chat_id 에 연동된 모든 코드의 연동 해제 — '코드 재등록' 용. 2026-06-12.
+
+    재등록 버튼을 누른 채팅이 새 코드를 보내면, 기존에 이 채팅에 묶여 있던
+    코드들을 먼저 풀어 알림이 두 코드로 중복 발송되는 것을 막는다.
+
+    Args:
+        db_path: users.db 경로.
+        chat_id: 텔레그램 chat_id (문자열).
+
+    Returns:
+        해제된 행 수.
+    """
+    now = _utcnow_iso()
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE users
+            SET telegram_chat_id = NULL, updated_at = ?
+            WHERE telegram_chat_id = ?
+            """,
+            (now, str(chat_id)),
+        )
+        conn.commit()
+        return cur.rowcount
+
+
 def get_telegram_chat_id(db_path: Path | str, code: str) -> str | None:
     """사용자 텔레그램 chat_id 조회 — 매매 알림 발송용. 2026-06-08.
 
