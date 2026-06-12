@@ -1140,10 +1140,10 @@ async def test_tpsl_verify_reasserts_when_exchange_missing() -> None:
         direction=Direction.SHORT, entry=1.1386, stop_loss=1.1537,
         take_profit=1.0954, qty=1682.5, setup_ts_ms=1,
     )
-    # 거래소: 같은 방향·수량인데 SL/TP 없음 (벗겨진 상태).
+    # 거래소: 같은 방향·수량인데 SL/TP 없음 (벗겨진 상태). mark 는 SL 미관통.
     await bot._reconcile_open_position({
         "contracts": 1682.5, "side": "short", "entryPrice": 1.1386,
-        "stopLossPrice": 0, "takeProfitPrice": 0,
+        "stopLossPrice": 0, "takeProfitPrice": 0, "markPrice": 1.1400,
     })
     client.set_position_tpsl.assert_awaited()
     kw = client.set_position_tpsl.await_args.kwargs
@@ -1167,3 +1167,31 @@ async def test_tpsl_verify_noop_when_exchange_matches() -> None:
         "stopLossPrice": 1.1537, "takeProfitPrice": 1.0954,
     })
     client.set_position_tpsl.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tpsl_verify_emergency_close_when_sl_breached() -> None:
+    """#TPSL-VERIFY: 거래소 무SL + 가격이 SL 관통 → 재장착 대신 즉시 비상청산."""
+    from aurora_ict.bot.bot_ict_instance import _ActivePosition
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.set_position_tpsl = AsyncMock(return_value=True)
+    client.place_order = AsyncMock(return_value={"orderId": "X"})
+    bot = BotIctInstance(client=client)
+    bot.active_position = _ActivePosition(
+        direction=Direction.SHORT, entry=7.855, stop_loss=7.932,
+        take_profit=0.0, qty=46.6, setup_ts_ms=1,
+    )
+    # 거래소: SL 없음 + mark 가 SL 위 (숏 관통).
+    client.fetch_position = AsyncMock(return_value={
+        "contracts": 46.6, "side": "short", "entryPrice": 7.855,
+        "stopLossPrice": 0, "takeProfitPrice": 0, "markPrice": 7.956,
+    })
+    await bot._reconcile_open_position({
+        "contracts": 46.6, "side": "short", "entryPrice": 7.855,
+        "stopLossPrice": 0, "takeProfitPrice": 0, "markPrice": 7.956,
+    })
+    # 재장착이 아니라 청산(reduce_only place_order)이 나가야 함.
+    client.set_position_tpsl.assert_not_awaited()
+    client.place_order.assert_awaited()
+    assert bot.active_position is None

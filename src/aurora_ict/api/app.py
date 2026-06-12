@@ -1020,8 +1020,27 @@ def _register_multi_user_routes(
         from aurora_ict.api.trades_router import _check_admin_cookie_or_header
         _check_admin_cookie_or_header(cookie_token, x_admin_token)
         rows: list[dict[str, Any]] = []
-        # 2026-06-12 파트너 요청 v2: 실시간 PnL — 심볼당 현재가 1회 조회(캐시)로
-        # 슬롯 수와 무관하게 거래소 호출을 심볼 수로 제한.
+        # 2026-06-13 파트너 요청: SL/TP 는 봇 기억이 아니라 거래소 진실 표시 —
+        # 사용자별 계정 전체 포지션을 먼저 스캔해 (user, symbol) 맵으로 만들고,
+        # 추적 행도 이 맵의 거래소 값(SL/TP/청산가/mark/uPnL)을 우선 사용한다.
+        # (오늘 TPSL 벗겨짐 사고에서 봇 기억과 거래소가 어긋날 수 있음이 확인됨)
+        ex_map: dict[tuple[str, str], dict[str, Any]] = {}
+        _scanned: set[str] = set()
+        for (u, _sym), slot in list(mu_manager._slots.items()):
+            if u in _scanned or slot.bot is None:
+                continue
+            _scanned.add(u)
+            fetch_all = getattr(slot.client, "fetch_all_positions", None)
+            if not callable(fetch_all):
+                continue
+            try:
+                for p_ in await fetch_all():
+                    psym = str(p_.get("symbol") or "")
+                    if psym:
+                        ex_map[(u, psym)] = p_
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[admin/positions] %s 계정 스캔 실패: %s", u, e)
+        # 실시간 PnL 폴백 — 심볼당 현재가 1회 조회(캐시).
         mark_cache: dict[str, float | None] = {}
 
         async def _mark(bot: Any, sym: str) -> float | None:
@@ -1053,15 +1072,35 @@ def _register_multi_user_routes(
                 is_long = pos.direction is Direction.LONG
                 liq = entry * (1.0 - 0.95 / lev) if is_long else entry * (1.0 + 0.95 / lev)
                 sl = float(pos.stop_loss)
+                tp = float(pos.take_profit)
+                sltp_src = "bot"
+                # 2026-06-13: active 는 거래소 값 우선 (SL/TP/청산가/진입가/수량).
+                ex = ex_map.get((u, sym)) if kind == "active" else None
+                if ex is not None:
+                    info = ex.get("info") or {}
+                    sl = float(info.get("stopLoss") or 0.0)
+                    tp = float(info.get("takeProfit") or 0.0)
+                    sltp_src = "exchange"
+                    entry = float(ex.get("entryPrice") or entry)
+                    qty = float(ex.get("qty") or ex.get("contracts") or qty)
+                    liq = float(ex.get("liquidationPrice") or 0.0) or liq
                 # 2026-06-12 리뷰 #2: SL=0(미상)도 위험 — 숏은 0>=liq 가 False 라
                 # 빠지던 비대칭 수정 (미추적 행과 동일 기준).
                 beyond = sl <= 0 or ((sl <= liq) if is_long else (sl >= liq))
                 # 실시간 PnL — active 만 (pending 은 미체결이라 손익 없음).
                 mark = unreal = roi = None
                 if kind == "active":
-                    mark = await _mark(bot, sym)
-                    if mark is not None:
+                    if ex is not None:
+                        m_ = float(ex.get("markPrice") or 0.0)
+                        mark = m_ if m_ > 0 else None
+                        up = ex.get("unrealizedPnl")
+                        if isinstance(up, (int, float)):
+                            unreal = float(up)
+                    if mark is None:
+                        mark = await _mark(bot, sym)
+                    if unreal is None and mark is not None:
                         unreal = (mark - entry) * qty if is_long else (entry - mark) * qty
+                    if unreal is not None:
                         margin = entry * qty / lev
                         roi = (unreal / margin * 100.0) if margin > 0 else 0.0
                 rows.append({
@@ -1072,7 +1111,8 @@ def _register_multi_user_routes(
                     "entry": entry,
                     "qty": qty,
                     "stop_loss": sl,
-                    "take_profit": float(pos.take_profit),
+                    "take_profit": tp,
+                    "sltp_src": sltp_src,
                     "leverage": lev,
                     "liq_price": round(liq, 6),
                     "sl_beyond_liq": beyond,
@@ -1086,22 +1126,9 @@ def _register_multi_user_routes(
         tracked = {
             (r["user_code"], r["symbol"]) for r in rows if r["kind"] == "active"
         }
-        seen_users: set[str] = set()
-        for (u, _sym), slot in list(mu_manager._slots.items()):
-            if u in seen_users or slot.bot is None:
-                continue
-            seen_users.add(u)
-            fetch_all = getattr(slot.client, "fetch_all_positions", None)
-            if not callable(fetch_all):
-                continue
-            try:
-                ex_positions = await fetch_all()
-            except Exception as e:  # noqa: BLE001
-                logger.debug("[admin/positions] %s 계정 스캔 실패: %s", u, e)
-                continue
-            for p in ex_positions:
-                psym = str(p.get("symbol") or "")
-                if not psym or (u, psym) in tracked:
+        for (u, psym), p in ex_map.items():
+            if True:
+                if (u, psym) in tracked:
                     continue
                 entry = float(p.get("entryPrice") or 0.0)
                 qty = float(p.get("qty") or p.get("contracts") or 0.0)
