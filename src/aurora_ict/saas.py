@@ -240,6 +240,18 @@ def main() -> int:
                 await auto_resume_running_bots(mu, db_path)
             except Exception as e:  # noqa: BLE001
                 logger.exception("백그라운드 봇 복원 실패 (서버는 정상 가동): %s", e)
+            # 2026-06-13 IP16 사고: 배포 순간 거래소 장애(10016 burst)와 겹치면
+            # 1회성 복원이 실패한 사용자가 수동 START 까지 영원히 죽어 있었다.
+            # → 10분 주기 재시도 루프. auto_resume 는 멱등(이미 가동 중 re-start
+            # 무시 + STOP 사용자는 bot_running 플래그가 꺼져 대상 아님)이라 안전.
+            while True:
+                await asyncio.sleep(600)
+                try:
+                    stats = await auto_resume_running_bots(mu, db_path)
+                    if stats.get("failed"):
+                        logger.warning("주기 재가동 재시도 — 실패 %d건 잔존", stats["failed"])
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("주기 재가동 재시도 오류 (다음 주기 계속): %s", e)
         # task 참조 보관 — asyncio 는 task 를 weak ref 로만 들고 있어 GC 로 중도
         # 취소될 수 있으므로 app.state 에 보관한다.
         app.state.resume_task = asyncio.create_task(_resume_bg())
