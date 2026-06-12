@@ -1006,8 +1006,8 @@ def test_remember_setup_records_ts_and_direction() -> None:
 def test_classify_exchange_close_variants() -> None:
     """거래소 청산 분류 — TP=0 복구 포지션 SL 분류 + 방향 기준 (2026-06-12)."""
     from aurora_ict.bot.bot_ict_instance import BotIctInstance
-    from aurora_ict.strategy.silver_bullet import Direction
     from aurora_ict.interfaces.trades_store import TradeEventType
+    from aurora_ict.strategy.silver_bullet import Direction
 
     f = BotIctInstance._classify_exchange_close
     # 숏: close 가 TP 이하(더 유리) → TP_HIT.
