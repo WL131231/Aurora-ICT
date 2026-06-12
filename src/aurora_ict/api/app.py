@@ -32,10 +32,11 @@ from aurora_ict.api.markers import to_chart_markers
 from aurora_ict.bot.manager import BotManager
 from aurora_ict.bot.multi_user_manager import (
     _DEFAULT_SYMBOL,
+    MAX_CHOICE_PAIRS,
     MAX_PAIRS_PER_USER,
     MultiUserBotManager,
 )
-from aurora_ict.bot.pair_registry import MAJOR_PAIRS
+from aurora_ict.bot.pair_registry import EXCLUDED_PAIRS, FIXED_PAIRS
 from aurora_ict.config.settings import TRADE_TIMEFRAMES, IctSettings, RunMode
 from aurora_ict.strategy.silver_bullet import Direction
 
@@ -444,32 +445,40 @@ def _register_multi_user_routes(
     ) -> dict[str, Any]:
         """거래 가능 페어 목록 — UI 페어 선택 드롭다운용 (페어 확장).
 
-        거래대금 상위 N + 메이저(BTC/ETH). 슬롯 client 미확보(첫 가동 전) 시엔
-        메이저만 반환되고, 봇 가동 후부터 전체 목록을 받는다.
+        거래대금 상위 N + 고정 7. 슬롯 client 미확보(첫 가동 전) 시엔 고정 7만
+        반환되고, 봇 가동 후부터 전체 목록을 받는다. 검증 탈락 페어(BNB)는
+        시세·목록 모두에서 제외.
 
         Returns:
-            ``{"pairs": [심볼...], "tickers": [{symbol,last,pct24h,volume}...],
-            "max_pairs": 5}``. tickers 는 페어 선택기 시세 표시용(거래대금 정렬).
-            시세 조회 전/실패 시 tickers 는 빈 배열, pairs 는 화이트리스트 폴백.
+            ``{"pairs": [...], "tickers": [...], "max_pairs": 10,
+            "fixed_pairs": [고정7], "max_choice_pairs": 3}``.
+            tickers 는 페어 선택기 시세 표시용(거래대금 정렬). 시세 조회
+            전/실패 시 tickers 는 빈 배열, pairs 는 화이트리스트 폴백.
         """
         try:
             tickers = await mu_manager.list_market_tickers(user_code)
         except Exception as e:  # noqa: BLE001
             logger.warning("markets tickers 조회 실패 — %s: %s", user_code, e)
             tickers = []
+        tickers = [t for t in tickers if t.get("symbol") not in EXCLUDED_PAIRS]
         if tickers:
             pairs = [t["symbol"] for t in tickers]
-            for major in MAJOR_PAIRS:
-                if major not in pairs:
-                    pairs.append(major)
+            for fixed in FIXED_PAIRS:
+                if fixed not in pairs:
+                    pairs.append(fixed)
         else:
             try:
                 pairs = await mu_manager.list_tradable_pairs(user_code)
             except Exception as e:  # noqa: BLE001
                 logger.warning("markets pairs 폴백 실패 — %s: %s", user_code, e)
-                pairs = list(MAJOR_PAIRS)
+                pairs = list(FIXED_PAIRS)
+        pairs = [p for p in pairs if p not in EXCLUDED_PAIRS]
         return {
-            "pairs": pairs, "tickers": tickers, "max_pairs": MAX_PAIRS_PER_USER,
+            "pairs": pairs,
+            "tickers": tickers,
+            "max_pairs": MAX_PAIRS_PER_USER,
+            "fixed_pairs": list(FIXED_PAIRS),
+            "max_choice_pairs": MAX_CHOICE_PAIRS,
         }
 
     # ------------------------------------------------------------------

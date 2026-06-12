@@ -39,13 +39,20 @@ from aurora_ict.bot.bot_ict_instance import (
     BotState,
     ExchangeClientProtocol,
 )
-from aurora_ict.bot.pair_registry import MAJOR_PAIRS, PairRegistry
+from aurora_ict.bot.pair_registry import (
+    EXCLUDED_PAIRS,
+    FIXED_PAIRS,
+    MAJOR_PAIRS,
+    PairRegistry,
+)
 from aurora_ict.config.settings import TRADE_TIMEFRAMES, IctSettings, RunMode
 
-# 페어 확장 (파트너 결정 2026-06-05):
-#   - 사용자당 동시 가동 페어 상한 (서버 부하 = 사용자수 × 페어수 곱셈 방지).
+# 페어 확장 (파트너 결정 2026-06-05 → 고정7 구도 2026-06-12):
+#   - 고정 7(FIXED_PAIRS, 백테스트 검증) + 사용자 선택 3 = 총 10.
+#   - 상한은 서버 부하(사용자수 × 페어수 곱셈) 방지 겸 검증 안 된 조합 억제.
 #   - 알트(BTC/ETH 외)는 변동성 커서 레버리지 15배 고정.
-MAX_PAIRS_PER_USER = 5
+MAX_PAIRS_PER_USER = 10
+MAX_CHOICE_PAIRS = 3  # 고정 7 외 사용자 자유 선택 상한
 _ALT_LEVERAGE = 15
 
 logger = logging.getLogger(__name__)
@@ -298,12 +305,27 @@ class MultiUserBotManager:
         if slot is not None and slot.bot is not None:
             return slot.bot
         # 페어 확장 — 동시 가동 페어 수 상한 (신규 슬롯일 때만 카운트).
+        # 고정7 구도(2026-06-12): 고정 페어는 상한 10 안에서 항상 허용,
+        # 자유 선택 페어는 고정 외 MAX_CHOICE_PAIRS(3)개까지.
         existing = {s for (u, s) in self._slots if u == user_code}
-        if symbol not in existing and len(existing) >= MAX_PAIRS_PER_USER:
-            raise ValueError(
-                f"동시 가동 페어는 최대 {MAX_PAIRS_PER_USER}개입니다 "
-                f"(현재 {len(existing)}개 — 일부 정지 후 추가하세요).",
-            )
+        if symbol not in existing:
+            if symbol in EXCLUDED_PAIRS:
+                raise ValueError(
+                    f"'{symbol}' 는 수익성 검증에서 탈락해 제외된 페어입니다.",
+                )
+            if len(existing) >= MAX_PAIRS_PER_USER:
+                raise ValueError(
+                    f"동시 가동 페어는 최대 {MAX_PAIRS_PER_USER}개입니다 "
+                    f"(현재 {len(existing)}개 — 일부 정지 후 추가하세요).",
+                )
+            if symbol not in FIXED_PAIRS:
+                choice = {s for s in existing if s not in FIXED_PAIRS}
+                if len(choice) >= MAX_CHOICE_PAIRS:
+                    raise ValueError(
+                        f"선택 페어는 고정 {len(FIXED_PAIRS)}개 외 최대 "
+                        f"{MAX_CHOICE_PAIRS}개입니다 (현재 선택 {len(choice)}개"
+                        " — 일부 정지 후 추가하세요).",
+                    )
         # 새 슬롯 — settings + client + bot 생성. settings.symbol 은
         # _build_user_settings 안에서 인자 symbol 로 강제 박힘.
         settings = self._build_user_settings(
@@ -676,17 +698,23 @@ class MultiUserBotManager:
     async def start_preferred(
         self, user_code: str, *, force_run_mode: RunMode | None = None,
     ) -> list[str]:
-        """선호 페어(last_active_pairs)를 모두 가동 — 전체 START 복원용.
+        """고정 7 + 선호 페어(last_active_pairs)를 모두 가동 — 전체 START 용.
 
         2026-06-06: 봇 STOP→START 시 BTC 만 켜지던 문제 해소. 사용자가 마지막에
-        가동했던 페어들을 그대로 복원한다. 선호가 비어있으면 기본 BTC 1개.
+        가동했던 페어들을 그대로 복원한다.
+        2026-06-12 고정7 구도: 전체 START 는 고정 페어(FIXED_PAIRS) 전부 +
+        사용자가 마지막에 켰던 선택 페어(고정 외, 최대 MAX_CHOICE_PAIRS)로
+        구성된다. 검증 탈락 페어(EXCLUDED_PAIRS)는 복원하지 않는다.
 
         Returns:
             가동된 symbol 목록.
         """
-        pairs = users_db.get_last_active_pairs(self.db_path, user_code)
-        if not pairs:
-            pairs = [_DEFAULT_SYMBOL]
+        last = users_db.get_last_active_pairs(self.db_path, user_code)
+        choice = [
+            s for s in last
+            if s not in FIXED_PAIRS and s not in EXCLUDED_PAIRS
+        ][:MAX_CHOICE_PAIRS]
+        pairs = list(FIXED_PAIRS) + choice
         started: list[str] = []
         for sym in pairs:
             try:
