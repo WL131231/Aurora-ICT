@@ -101,6 +101,26 @@ async def auto_resume_running_bots(
                 code, sym,
                 force_mode.value if force_mode else "base_default",
             )
+        except ValueError as e:
+            stats["failed"] += 1
+            # 2026-06-12 리뷰 #4: 검증 탈락(EXCLUDED) 페어를 돌리던 사용자는
+            # 매 배포마다 같은 ValueError 가 반복된다 — 영속 플래그를 정리해
+            # 재시도 루프를 끊는다 (정책 거부는 재시도해도 영원히 실패).
+            if "제외된 페어" in str(e):
+                try:
+                    users_db.set_bot_running(db_path, code, False, symbol=sym)
+                    logger.warning(
+                        "bot 자동 재가동 — %s/%s 제외 페어: 가동 플래그 정리 (%s)",
+                        code, sym, e,
+                    )
+                except Exception as e2:  # noqa: BLE001
+                    logger.warning(
+                        "제외 페어 플래그 정리 실패 — %s/%s: %s", code, sym, e2,
+                    )
+            else:
+                logger.warning(
+                    "bot 자동 재가동 실패 — %s/%s: %s", code, sym, e,
+                )
         except Exception as e:  # noqa: BLE001
             stats["failed"] += 1
             # API 키 미등록 / 만료 / 거래소 응답 실패 등 — 다음 슬롯에 영향 X.

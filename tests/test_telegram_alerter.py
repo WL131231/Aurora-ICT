@@ -316,6 +316,8 @@ async def test_restart_command_resets_client(tmp_path) -> None:
     al.send = _spy  # type: ignore[method-assign]
     await al._handle_message("9", "/restart")
     assert al._client is not old_client  # 새 클라이언트
-    assert al._offset == 0
+    # 2026-06-12 리뷰 #1: offset 리셋 금지 — 0 이면 텔레그램이 /restart 를
+    # 재배달해 재시작 무한루프. 유지돼야 한다.
+    assert al._offset == 777
     assert any("재시작" in t for t in sent)
     await al.aclose()

@@ -635,6 +635,13 @@
       try {
         await fetch("/admin/logout", { method: "POST", credentials: "include" });
         toast("Admin 로그아웃");
+        // 2026-06-12 리뷰: 전체 포지션 10초 폴링/패널 정리 — 로그아웃 후
+        // 401 폴링이 계속 나가던 누수 차단.
+        if (typeof _allPosTimer !== "undefined" && _allPosTimer) {
+          clearInterval(_allPosTimer);
+          _allPosTimer = null;
+        }
+        $("all-pos-box").style.display = "none";
         targetCode = null;
         $("current-target").textContent = "본인 거래";
         $("current-target").className = "current-target mine";
@@ -983,10 +990,14 @@
           ? "background:rgba(251,113,133,0.08)" : "";
         const warn = risky
           ? ' <span style="color:#fb7185;font-weight:700">⚠</span>' : "";
+        // 2026-06-12 리뷰: 미추적 행 symbol 은 거래소 응답 원문 — 이스케이프.
+        const ucode = escapeHtml(r.user_code);
+        const symEsc = escapeHtml(sym(r.symbol));
+        const dirUp = escapeHtml(String(r.direction || "?").toUpperCase());
         return `<tr style="${rowStyle};border-top:1px solid #222;text-align:right">`
-          + `<td style="text-align:left;padding:4px 8px"><b>${r.user_code}</b>${warn}</td>`
-          + `<td style="text-align:left;padding:4px 8px">${sym(r.symbol)}</td>`
-          + `<td style="text-align:left;padding:4px 8px;color:${dirC};font-weight:700">${r.direction.toUpperCase()}${pend}</td>`
+          + `<td style="text-align:left;padding:4px 8px"><b>${ucode}</b>${warn}</td>`
+          + `<td style="text-align:left;padding:4px 8px">${symEsc}</td>`
+          + `<td style="text-align:left;padding:4px 8px;color:${dirC};font-weight:700">${dirUp}${pend}</td>`
           + `<td style="padding:4px 8px">${_fmtNum(r.entry)}</td>`
           + `<td style="padding:4px 8px">${_fmtNum(r.mark_price)}</td>`
           + `<td style="padding:4px 8px">${_pnlCell(r.unrealized_pnl)}</td>`
@@ -998,7 +1009,7 @@
           + `<td style="padding:4px 8px">${r.leverage}x</td>`
           + `<td style="padding:4px 8px">${_fmtNum(r.qty)}</td>`
           + `<td style="padding:4px 8px">${r.kind === "active"
-            ? `<button class="pos-close-btn" data-code="${r.user_code}" data-symbol="${r.symbol}"
+            ? `<button class="pos-close-btn" data-code="${escapeHtml(r.user_code)}" data-symbol="${escapeHtml(r.symbol)}"
                  style="background:rgba(251,113,133,0.15);border:1px solid #fb7185;color:#fb7185;border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer">청산</button>`
             : ""}</td>`
           + "</tr>";

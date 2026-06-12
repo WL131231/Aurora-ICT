@@ -1047,7 +1047,9 @@ def _register_multi_user_routes(
                 is_long = pos.direction is Direction.LONG
                 liq = entry * (1.0 - 0.95 / lev) if is_long else entry * (1.0 + 0.95 / lev)
                 sl = float(pos.stop_loss)
-                beyond = (sl <= liq) if is_long else (sl >= liq)
+                # 2026-06-12 리뷰 #2: SL=0(미상)도 위험 — 숏은 0>=liq 가 False 라
+                # 빠지던 비대칭 수정 (미추적 행과 동일 기준).
+                beyond = sl <= 0 or ((sl <= liq) if is_long else (sl >= liq))
                 # 실시간 PnL — active 만 (pending 은 미체결이라 손익 없음).
                 mark = unreal = roi = None
                 if kind == "active":

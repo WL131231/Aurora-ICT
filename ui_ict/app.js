@@ -2589,6 +2589,9 @@ async function bootstrap() {
   renderLicenseCard(s);
   fetchVersion();
   fetchAndRender();
+  // 2026-06-12 리뷰: 부팅 시 미인증으로 /ict/markets 가 401 폴백(BTC/ETH)에
+  // 고착되던 문제 — 로그인 완료 후 페어 목록/시세/고정7 메타 재로딩.
+  loadTradablePairs().then(() => refreshRunningPairs());
 }
 
 // PIN 설정 버튼 / 로그인 / 키 저장 / 로그아웃 핸들러 등록.
