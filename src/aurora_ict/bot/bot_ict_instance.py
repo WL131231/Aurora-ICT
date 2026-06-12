@@ -456,6 +456,16 @@ class BotIctInstance:
                 logger.warning("symbol meta 로드 실패 (%s): %s", self.symbol, e)
                 self._symbol_meta = {}
         await self._recover_position_from_exchange()
+        # 2026-06-12 고아 주문 청소 (LINK 사고): 재시작(강제 종료 배포)으로 stop()
+        # 의 pending 취소가 못 돈 경우, 전생의 미체결 지정가가 거래소에 남아
+        # 봇 모르게 체결된다(무SL 고아 포지션). 시작 시점엔 이 봇의 pending 의도가
+        # 없으므로 trading order 전부 취소 — position attached SL/TP conditional
+        # 은 영향 없음 (stop() 과 동일 전제).
+        try:
+            await self.client.cancel_all_orders(self.symbol)
+            logger.info("startup 고아 주문 청소 — cancel_all_orders(%s)", self.symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("startup 고아 주문 청소 실패 (무시): %s", e)
         # #RECONCILE 2026-06-06: 재기동(crash) 중 청산돼 trades DB 에 청산 이벤트가
         # 누락된 ENTRY(orphan)를 거래소 closed-pnl 로 대조해 보충. 봇 진행 막지 않게
         # 실패는 무시.
@@ -1980,6 +1990,16 @@ class BotIctInstance:
         """
         last_known = self.active_position
         if last_known is None:
+            # 2026-06-12 고아 체결 입양 (LINK 사고): 재시작으로 주인 잃은 지정가가
+            # 나중에 체결되면 봇 모르는 무SL 포지션이 된다. pending 의도가 없는데
+            # 거래소에 포지션이 있으면 복구 절차로 입양 — RECOVERED 기록 +
+            # TP 복원 시도 + 무SL 이면 보호 SL (P1-2).
+            if self._pending_entry is None:
+                logger.warning(
+                    "미추적 포지션 발견 — 입양 시도 (%s, 고아 체결/수동 진입)",
+                    self.symbol,
+                )
+                await self._recover_position_from_exchange()
             return
         ex_dir = self._exchange_position_direction(ex_pos)
         if ex_dir is None:

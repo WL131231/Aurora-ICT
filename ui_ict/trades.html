@@ -1011,7 +1011,7 @@
           + `<td style="padding:4px 8px;color:var(--text-3)">${_fmtNum(r.liq_price)}</td>`
           + `<td style="padding:4px 8px">${r.leverage}x</td>`
           + `<td style="padding:4px 8px">${_fmtNum(r.qty)}</td>`
-          + `<td style="padding:4px 8px">${r.kind === "active"
+          + `<td style="padding:4px 8px">${(r.kind === "active" || r.kind === "untracked")
             ? `<button class="pos-close-btn" data-code="${escapeHtml(r.user_code)}" data-symbol="${escapeHtml(r.symbol)}"
                  style="background:rgba(251,113,133,0.15);border:1px solid #fb7185;color:#fb7185;border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer">청산</button>`
             : ""}</td>`
