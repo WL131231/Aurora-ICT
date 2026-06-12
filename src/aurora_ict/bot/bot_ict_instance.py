@@ -2543,7 +2543,9 @@ class BotIctInstance:
         # 2026-06-12: RECOVERED(재시작 시 기존 포지션 재인식)는 텔레그램 생략 —
         # 배포/재시작마다 같은 포지션 알림이 반복돼 소음(파트너 보고). 기록(DB)은
         # 유지, 포지션 확인은 UI/전체 포지션(admin)으로.
-        if event_type is TradeEventType.RECOVERED:
+        # 2026-06-12 추가(파트너): SYNC_CLOSE(거래소 측 청산 사후 동기화)도 생략 —
+        # SL/TP 미구분이라 정보 가치 낮고 재시작 직후 몰려서 소음. 기록은 유지.
+        if event_type in (TradeEventType.RECOVERED, TradeEventType.SYNC_CLOSE):
             return
         if self.alert_cb is not None and self.user_code:
             try:
