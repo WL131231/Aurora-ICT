@@ -411,6 +411,10 @@ class MultiUserBotManager:
             alert_cb=(
                 self.alerter.send_trade_alert if self.alerter is not None else None
             ),
+            # 2026-06-13: 약관 미동의 등 1회성 사용자 안내 (일반 텍스트).
+            notify_cb=(
+                self.alerter.send_user_text if self.alerter is not None else None
+            ),
         )
         self._slots[key] = _UserBotSlot(
             symbol=symbol, settings=settings, bot=bot, client=client,

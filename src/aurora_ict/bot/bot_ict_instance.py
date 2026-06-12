@@ -355,6 +355,8 @@ class BotIctInstance:
     # 미주입(None)이거나 user_code 빈 값이면 알림 안 보냄(.exe / 테스트 호환).
     user_code: str = ""
     alert_cb: Any = None
+    # 2026-06-13: 일반 안내 콜백 (약관 미동의 등 1회성 사용자 액션 안내).
+    notify_cb: Any = None
 
     state: BotState = field(default=BotState.STOPPED)
     active_position: _ActivePosition | None = field(default=None)
@@ -389,6 +391,8 @@ class BotIctInstance:
     _daily_limit_hit: bool = field(default=False)
     # 2026-06-10 조윤 건의: 일일 수익(TP) 한도 도달 flag — NY 자정 reset.
     _daily_profit_hit: bool = field(default=False)
+    # 2026-06-13 약관 미동의(110123) 안내 1회 발송 플래그 (봇 인스턴스 단위).
+    _terms_alerted: bool = field(default=False)
     # 2026-06-12 페어별 일일 손실 한도 — 이 심볼의 오늘 실현손익 + sticky flag.
     _today_pair_realized_pnl_usdt: float = field(default=0.0)
     _daily_pair_limit_hit: bool = field(default=False)
@@ -1662,6 +1666,24 @@ class BotIctInstance:
                 entry_price,
                 setup.ts_ms if hasattr(setup, "ts_ms") else 0, e,
             )
+            # 2026-06-13 파트너: 약관 미동의(110123)는 사용자만 풀 수 있음 —
+            # 연동 텔레그램으로 1회 안내 (봇 인스턴스당 1번, 스팸 방지).
+            err_s = str(e)
+            if ("110123" in err_s or "Trading Terms" in err_s) and not self._terms_alerted:
+                self._terms_alerted = True
+                if self.notify_cb is not None and self.user_code:
+                    msg = (
+                        f"⚠ <b>{self.symbol}</b> 주문이 거래소에서 거절되고 있어요.\n"
+                        "Bybit 정책상 이 컨트랙트는 <b>웹/앱에서 약관 동의 1회</b>가 "
+                        "필요합니다.\n"
+                        "Bybit 에서 해당 페어 주문 화면을 열어 약관에 동의해 주세요 — "
+                        "동의 후 봇이 자동으로 다시 매매합니다."
+                    )
+                    try:
+                        task = asyncio.create_task(self.notify_cb(self.user_code, msg))
+                        task.add_done_callback(_log_alert_task_exc)
+                    except RuntimeError:
+                        pass  # 이벤트 루프 없음(동기 테스트)
             return
 
         # 체결 여부 — filled_qty / avg_fill_price 로 즉시 체결 판정.

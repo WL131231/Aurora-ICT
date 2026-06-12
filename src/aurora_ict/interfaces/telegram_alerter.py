@@ -339,6 +339,22 @@ class TelegramAlerter:
             text = f"매매 {etv} {sym}\n<code>{user_code}</code>"
         await self.send(chat_id, text)
 
+    async def send_user_text(self, user_code: str, text: str) -> None:
+        """코드 연동 채팅으로 일반 안내 텍스트 발송 — 미연동/실패 조용히 skip.
+
+        2026-06-13: 약관 미동의(110123) 등 사용자 액션이 필요한 1회성 안내용.
+        """
+        if not self.enabled:
+            return
+        try:
+            chat_id = users_db.get_telegram_chat_id(self.db_path, user_code)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("%s chat_id 조회 실패(안내 skip): %s", user_code, e)
+            return
+        if not chat_id:
+            return
+        await self.send(chat_id, text)
+
     async def poll_loop(self) -> None:
         """getUpdates 롱폴링 — 라이선스 코드 입력 시 chat_id 연결. 무한 루프."""
         if not self.enabled:
