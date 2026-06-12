@@ -1001,3 +1001,30 @@ def test_remember_setup_records_ts_and_direction() -> None:
         12345 == bot._last_setup_ts_ms
         and Direction.SHORT == bot._last_setup_direction
     )
+
+
+def test_classify_exchange_close_variants() -> None:
+    """거래소 청산 분류 — TP=0 복구 포지션 SL 분류 + 방향 기준 (2026-06-12)."""
+    from aurora_ict.bot.bot_ict_instance import BotIctInstance
+    from aurora_ict.strategy.silver_bullet import Direction
+    from aurora_ict.interfaces.trades_store import TradeEventType
+
+    f = BotIctInstance._classify_exchange_close
+    # 숏: close 가 TP 이하(더 유리) → TP_HIT.
+    et, _ = f(Direction.SHORT, 100.0, 103.0, 95.0, 94.8)
+    assert et is TradeEventType.TP_HIT
+    # 숏: SL 슬리피지로 SL 위에서 체결 → SL_HIT.
+    et, _ = f(Direction.SHORT, 100.0, 103.0, 95.0, 103.4)
+    assert et is TradeEventType.SL_HIT
+    # TP=0(복구 포지션) — SL 쪽만이라도 분류.
+    et, _ = f(Direction.SHORT, 100.0, 103.0, 0.0, 103.1)
+    assert et is TradeEventType.SL_HIT
+    # 롱: close 가 TP 이상 → TP_HIT.
+    et, _ = f(Direction.LONG, 100.0, 97.0, 105.0, 105.2)
+    assert et is TradeEventType.TP_HIT
+    # 중간 가격(수동 청산 등) → 미구분 유지.
+    et, r = f(Direction.LONG, 100.0, 97.0, 105.0, 101.0)
+    assert et is TradeEventType.SYNC_CLOSE and "미구분" in r
+    # SL/TP 모두 미상 → 미구분.
+    et, _ = f(Direction.LONG, 100.0, 0.0, 0.0, 101.0)
+    assert et is TradeEventType.SYNC_CLOSE
