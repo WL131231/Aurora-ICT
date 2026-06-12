@@ -285,6 +285,20 @@
     border-color: #60a5fa;
     color: #60a5fa;
   }
+  /* 꺼진 고정 페어 — 흐림 + 점선, 클릭하면 가동 (hover 초록) */
+  .pair-chip.fixed.off {
+    background: transparent;
+    border-style: dashed;
+    border-color: var(--line-strong);
+    color: var(--text-3);
+    opacity: 0.75;
+  }
+  .pair-chip.fixed.off:hover {
+    background: rgba(52, 211, 153, 0.12);
+    border-color: #34d399;
+    color: #34d399;
+    opacity: 1;
+  }
   .ppr-fixed {
     margin-left: 4px;
     padding: 1px 5px;
@@ -2088,12 +2102,12 @@
          pair 지원은 다음 PR). 한 번에 1개 또는 양쪽 동시 = 동시 진입 옵션. -->
     <h2 data-i18n="sidebar.tradingPair">Trading Pair</h2>
     <!-- 2026-06-06 페어 선택기: '+ 페어 추가' 버튼 → 모달(가격/24H%/거래량+검색).
-         켠 페어는 칩으로 표시(칩 클릭 = 정지). -->
+         2026-06-12 고정7: 고정 페어 칩은 항상 표시 — 켜짐(파랑)/꺼짐(흐림, 클릭=가동). -->
     <div class="pair-controls" id="pair-toggle">
       <button type="button" id="pair-add-btn" class="pair-add-btn">+ 페어 추가</button>
       <div id="running-pair-chips" class="pair-chips"></div>
     </div>
-    <p class="pair-hint" id="pair-limit-hint">선택한 페어만 매매 — 칩 클릭 시 정지</p>
+    <p class="pair-hint" id="pair-limit-hint" data-i18n="hint.pairSelect">🔒 고정 7페어는 START 시 자동 가동 — 추가로 3개까지 직접 선택 가능</p>
 
     <h2 data-i18n="sidebar.tradeTimeframe">Trade Timeframe</h2>
     <div class="trade-tf-toggle" id="trade-tf-toggle">

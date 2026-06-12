@@ -1692,19 +1692,29 @@ function _renderRunningChips() {
   const box = $("running-pair-chips");
   if (!box) return;
   box.innerHTML = "";
-  // 고정 페어 먼저(🔒 표시), 선택 페어 뒤 — 클릭 시 정지는 동일.
-  const syms = [..._runningSymbols].sort((a, b) => {
-    const fa = _fixedPairs.has(a) ? 0 : 1;
-    const fb = _fixedPairs.has(b) ? 0 : 1;
-    return fa - fb || a.localeCompare(b);
-  });
-  for (const sym of syms) {
-    const fixed = _fixedPairs.has(sym);
+  // 2026-06-12 파트너 피드백: 고정 페어는 꺼져 있어도 항상 표시 —
+  // 켜짐(파랑, 클릭=정지) / 꺼짐(흐림, 클릭=가동). 선택 페어는 켜진 것만.
+  for (const sym of _fixedPairs) {
+    const on = _runningSymbols.has(sym);
     const chip = document.createElement("span");
-    chip.className = fixed ? "pair-chip fixed" : "pair-chip";
+    chip.className = on ? "pair-chip fixed" : "pair-chip fixed off";
     chip.dataset.symbol = sym;
-    chip.title = fixed ? `${_symLabel(sym)} (고정 페어) 정지` : `${_symLabel(sym)} 정지`;
-    chip.innerHTML = `${fixed ? "🔒 " : ""}${_symLabel(sym)} <span class="x">×</span>`;
+    chip.dataset.off = on ? "" : "1";
+    chip.title = on
+      ? `${_symLabel(sym)} (고정 페어) 정지`
+      : `${_symLabel(sym)} (고정 페어) 가동`;
+    chip.innerHTML =
+      `🔒 ${_symLabel(sym)} <span class="x">${on ? "×" : "▶"}</span>`;
+    box.appendChild(chip);
+  }
+  const choiceRunning = [..._runningSymbols]
+    .filter((s) => !_fixedPairs.has(s)).sort();
+  for (const sym of choiceRunning) {
+    const chip = document.createElement("span");
+    chip.className = "pair-chip";
+    chip.dataset.symbol = sym;
+    chip.title = `${_symLabel(sym)} 정지`;
+    chip.innerHTML = `${_symLabel(sym)} <span class="x">×</span>`;
     box.appendChild(chip);
   }
   const addBtn = $("pair-add-btn");
@@ -1857,13 +1867,17 @@ if (_pairAddBtn) {
   });
 }
 
-// 켠 페어 칩 — 클릭 시 정지.
+// 페어 칩 — 켜진 칩 클릭=정지, 꺼진 고정 칩 클릭=가동.
 const _runningChipsBox = $("running-pair-chips");
 if (_runningChipsBox) {
   _runningChipsBox.addEventListener("click", async (e) => {
     const chip = e.target.closest(".pair-chip");
     if (!chip || !chip.dataset.symbol) return;
-    await _stopPair(chip.dataset.symbol);
+    if (chip.dataset.off === "1") {
+      await _startPair(chip.dataset.symbol);
+    } else {
+      await _stopPair(chip.dataset.symbol);
+    }
   });
 }
 
