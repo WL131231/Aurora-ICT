@@ -77,6 +77,7 @@ class FakeExchangeClient:
     ) -> dict[str, Any]:
         self.placed_orders.append({
             "symbol": symbol, "side": side, "qty": qty, "price": price,
+            "reduce_only": reduce_only,
         })
         return {
             "orderId": "FAKE", "filled_qty": qty, "avg_fill_price": price or 0.0,
@@ -938,4 +939,53 @@ def test_admin_trades_backfill_fills_missing_closes(
     assert len(evs) == 1
     assert evs[0].pnl_usdt == -30.43
     assert "backfill" in evs[0].reason
+    client.post("/ict/stop?symbol=BTC/USDT:USDT")
+
+
+def test_close_position_uses_reduce_only_and_exchange_qty(
+    client: TestClient, mu, created_clients,
+) -> None:
+    """2026-06-13 보안 H1: 수동 청산이 거래소 실잔량 기준 + reduce_only 로 나간다."""
+    from aurora_ict.strategy.silver_bullet import Direction
+    code = "AICT-RDCO-RDCO-RDCO"
+    _register_user(client, code)
+    client.post("/ict/start?symbol=BTC/USDT:USDT")
+    bot = mu._slots[(code, "BTC/USDT:USDT")].bot
+    _inject_active(bot, Direction.SHORT, 100.0, 2.0)
+    fc = bot.client
+    # 거래소 실잔량 = 1.5 (봇 인식 2.0과 다름) → 거래소 기준이어야.
+    async def _fp(symbol):
+        return {"contracts": 1.5, "side": "short", "entryPrice": 100.0}
+    fc.fetch_position = _fp  # type: ignore[method-assign]
+
+    r = client.post("/ict/position/close", json={"fraction": 1.0, "symbol": "BTC/USDT:USDT"})
+    assert r.status_code == 200
+    last = fc.placed_orders[-1]
+    assert last["reduce_only"] is True       # 신규 반대 포지션 방지
+    assert last["side"] == "buy"             # short 청산 = buy
+    assert abs(last["qty"] - 1.5) < 1e-9     # 거래소 실잔량 기준
+    client.post("/ict/stop?symbol=BTC/USDT:USDT")
+
+
+def test_close_position_noop_when_exchange_flat(
+    client: TestClient, mu,
+) -> None:
+    """거래소에 포지션이 이미 없으면(SL/TP 선체결) 주문 없이 상태만 정리."""
+    from aurora_ict.strategy.silver_bullet import Direction
+    code = "AICT-FLAT-FLAT-FLAT"
+    _register_user(client, code)
+    client.post("/ict/start?symbol=BTC/USDT:USDT")
+    bot = mu._slots[(code, "BTC/USDT:USDT")].bot
+    _inject_active(bot, Direction.SHORT, 100.0, 2.0)
+    fc = bot.client
+    n_before = len(fc.placed_orders)
+    async def _fp(symbol):
+        return {"contracts": 0, "side": "short"}  # 거래소 잔량 0
+    fc.fetch_position = _fp  # type: ignore[method-assign]
+
+    r = client.post("/ict/position/close", json={"fraction": 1.0, "symbol": "BTC/USDT:USDT"})
+    assert r.status_code == 200
+    assert r.json()["active"] is False
+    assert len(fc.placed_orders) == n_before  # 신규 주문 0건
+    assert bot.active_position is None
     client.post("/ict/stop?symbol=BTC/USDT:USDT")

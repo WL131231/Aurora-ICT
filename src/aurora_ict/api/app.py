@@ -876,16 +876,43 @@ def _register_multi_user_routes(
         if bot is None or bot.active_position is None:
             raise HTTPException(status_code=404, detail="active position 없음")
         ap = bot.active_position
-        close_qty = ap.qty * req.fraction
-        close_side = "sell" if ap.direction is Direction.LONG else "buy"
+        # 2026-06-13 보안 H1: 봇 인식 수량/방향이 아니라 *거래소 실잔량*을 진실로
+        # 삼고 reduce_only 로만 청산. (SL/TP 가 먼저 체결돼 포지션이 0/감소한
+        # 직후 청산을 누르면, reduce_only 없는 반대 시장가가 신규 반대 무SL
+        # 포지션을 열 수 있던 자금 위험 차단 — 비상청산과 동일 안전 모델.)
+        ex_dir = ap.direction
+        ex_qty = ap.qty
+        try:
+            ex_pos = await bot.client.fetch_position(bot.symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[multi-user] %s 청산 전 fetch_position 실패: %s — 봇 인식으로 진행",
+                user_code, e,
+            )
+            ex_pos = None
+        if ex_pos is not None:
+            contracts = float(ex_pos.get("contracts", 0) or 0)
+            if contracts <= 0:
+                # 거래소엔 이미 포지션 없음 — 봇 상태만 정리(중복 주문 금지).
+                bot.active_position = None
+                logger.info(
+                    "[multi-user] %s 청산 불필요 — 거래소 포지션 없음, 상태 정리",
+                    user_code,
+                )
+                return {"closed_qty": 0.0, "remaining_qty": 0.0, "active": False}
+            d = bot._exchange_position_direction(ex_pos)
+            if d is not None:
+                ex_dir = d
+            ex_qty = contracts
+        close_qty = ex_qty * req.fraction
+        close_side = "sell" if ex_dir is Direction.LONG else "buy"
         try:
             await bot.client.place_order(
                 symbol=bot.symbol,
                 side=close_side,
                 qty=close_qty,
                 price=None,
-                stop_loss=None,
-                take_profit=None,
+                reduce_only=True,
             )
         except Exception as e:  # noqa: BLE001
             logger.exception(
@@ -895,7 +922,7 @@ def _register_multi_user_routes(
             raise HTTPException(
                 status_code=502, detail=f"청산 주문 실패: {e}",
             ) from e
-        remaining = ap.qty - close_qty
+        remaining = ex_qty - close_qty
         if req.fraction >= 1.0 or remaining <= 1e-9:
             bot.active_position = None
             logger.info(
@@ -2101,24 +2128,40 @@ def create_app(
             raise HTTPException(status_code=404, detail="active position 없음")
 
         ap = bot.active_position
-        close_qty = ap.qty * req.fraction
-        # 반대 방향 시장가 청산 (long → sell, short → buy)
-        close_side = "sell" if ap.direction is Direction.LONG else "buy"
+        # 2026-06-13 보안 H1: 거래소 실잔량 기준 + reduce_only (위 멀티유저와 동일).
+        ex_dir = ap.direction
+        ex_qty = ap.qty
+        try:
+            ex_pos = await bot.client.fetch_position(bot.symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("청산 전 fetch_position 실패: %s — 봇 인식으로 진행", e)
+            ex_pos = None
+        if ex_pos is not None:
+            contracts = float(ex_pos.get("contracts", 0) or 0)
+            if contracts <= 0:
+                bot.active_position = None
+                logger.info("청산 불필요 — 거래소 포지션 없음, 상태 정리")
+                return {"closed_qty": 0.0, "remaining_qty": 0.0, "active": False}
+            d = bot._exchange_position_direction(ex_pos)
+            if d is not None:
+                ex_dir = d
+            ex_qty = contracts
+        close_qty = ex_qty * req.fraction
+        # 반대 방향 시장가 reduce_only 청산 (long → sell, short → buy)
+        close_side = "sell" if ex_dir is Direction.LONG else "buy"
         try:
             await bot.client.place_order(
                 symbol=bot.symbol,
                 side=close_side,
                 qty=close_qty,
-                # market 청산 — price/SL/TP 없음
                 price=None,
-                stop_loss=None,
-                take_profit=None,
+                reduce_only=True,
             )
         except Exception as e:  # noqa: BLE001 — 사용자에게 그대로 전달
             logger.exception("close_position place_order 실패: %s", e)
             raise HTTPException(status_code=502, detail=f"청산 주문 실패: {e}") from e
 
-        remaining = ap.qty - close_qty
+        remaining = ex_qty - close_qty
         if req.fraction >= 1.0 or remaining <= 1e-9:
             bot.active_position = None
             logger.info("전체 청산 완료 — qty=%.6f", close_qty)
