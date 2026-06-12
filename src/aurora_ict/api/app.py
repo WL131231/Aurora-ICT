@@ -1156,6 +1156,108 @@ def _register_multi_user_routes(
                 "untracked": sum(1 for r in rows if r["kind"] == "untracked"),
                 "total_unrealized_pnl": round(total_pnl, 4)}
 
+    @app.post("/admin/trades/backfill")
+    async def admin_trades_backfill(
+        days: int = Query(default=7, ge=1, le=30),
+        code: str | None = Query(default=None),
+        x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+        cookie_token: str | None = Cookie(default=None, alias="aurora_admin_token"),
+    ) -> dict[str, Any]:
+        """유실 청산 기록 백필 — 거래소 closed-pnl 로 보충 (2026-06-12 파트너).
+
+        6/12 새벽 스냅샷 복원으로 유실 창(~11h)의 매매 기록이 사라져 통계가
+        거래소와 어긋남. 사용자별(미지정 시 슬롯 보유 전체) 최근 ``days``일
+        closed-pnl 을 읽어, 기록에 없는 청산을 SYNC_CLOSE 로 채운다.
+
+        중복 방지: 같은 symbol·방향·청산시각 ±10분·수량 ±2% 의 기존 청산
+        이벤트가 있으면 skip — 정상 기록 구간을 다시 돌려도 안전(멱등).
+        """
+        import time as _time
+
+        from aurora_ict.api.trades_router import _check_admin_cookie_or_header
+        from aurora_ict.interfaces.trades_store import (
+            TradeEvent,
+            TradeEventType,
+            TradesStore,
+        )
+        _check_admin_cookie_or_header(cookie_token, x_admin_token)
+        since_ms = int(_time.time() * 1000) - days * 86_400_000
+        close_types = {
+            TradeEventType.SL_HIT, TradeEventType.TP_HIT,
+            TradeEventType.SYNC_CLOSE, TradeEventType.MANUAL_CLOSE,
+            TradeEventType.FLIP_CLOSE,
+        }
+        # 사용자당 첫 슬롯 client 로 계정 단위 closed-pnl 조회.
+        targets: dict[str, Any] = {}
+        for (u, _s), slot in list(mu_manager._slots.items()):
+            if slot.bot is None or (code and u != code):
+                continue
+            targets.setdefault(u, slot)
+        results: dict[str, str] = {}
+        for u, slot in targets.items():
+            try:
+                cps = await slot.client.fetch_closed_positions(
+                    since_ms=since_ms, limit=200,
+                )
+            except Exception as e:  # noqa: BLE001
+                results[u] = f"closed-pnl 조회 실패: {e}"
+                continue
+            try:
+                store = TradesStore(mu_manager._user_data_dir(u))
+                events = store.all_events()
+            except Exception as e:  # noqa: BLE001
+                results[u] = f"기록 접근 실패: {e}"
+                continue
+            existing = [
+                (ev.symbol, ev.direction, ev.ts_ms, ev.qty)
+                for ev in events if ev.event_type in close_types
+            ]
+            added = 0
+            failed = False
+            for cp in cps or []:
+                c_ts = int(getattr(cp, "closed_at_ts", 0) or 0)
+                sym = str(getattr(cp, "symbol", "") or "")
+                dirn = str(getattr(cp, "direction", "") or "")
+                qty = float(getattr(cp, "qty", 0) or 0)
+                if (c_ts < since_ms or not sym
+                        or dirn not in ("long", "short") or qty <= 0):
+                    continue
+                dup = any(
+                    s == sym and d == dirn
+                    and abs(t - c_ts) <= 600_000
+                    and abs(q - qty) <= max(qty * 0.02, 1e-9)
+                    for (s, d, t, q) in existing
+                )
+                if dup:
+                    continue
+                ev = TradeEvent(
+                    ts_ms=c_ts,
+                    event_type=TradeEventType.SYNC_CLOSE,
+                    symbol=sym,
+                    direction=dirn,
+                    price=float(getattr(cp, "exit_price", 0) or 0),
+                    qty=qty,
+                    pnl_usdt=float(getattr(cp, "pnl_usd", 0) or 0),
+                    setup_ts_ms=None,
+                    reason=(
+                        "backfill: 거래소 closed-pnl 보충 "
+                        f"(entry={float(getattr(cp, 'entry_price', 0) or 0)})"
+                    ),
+                    mode="live",
+                )
+                try:
+                    store.record(ev)
+                except Exception as e:  # noqa: BLE001
+                    results[u] = f"기록 쓰기 실패: {e}"
+                    failed = True
+                    break
+                existing.append((sym, dirn, c_ts, qty))
+                added += 1
+            if not failed:
+                results[u] = f"+{added}건"
+            logger.info("[admin] 백필 — %s: %s", u, results.get(u))
+        return {"ok": True, "days": days, "results": results}
+
     @app.post("/admin/position/close")
     async def admin_force_close(
         code: str = Query(...),

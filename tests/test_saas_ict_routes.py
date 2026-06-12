@@ -885,3 +885,57 @@ def test_status_includes_running_symbols_field(
     body = r.json()
     assert "running_symbols" in body
     assert isinstance(body["running_symbols"], list)
+
+
+def test_admin_trades_backfill_fills_missing_closes(
+    client: TestClient, mu, monkeypatch,
+) -> None:
+    """2026-06-12 백필: 거래소 closed-pnl 에만 있는 청산을 SYNC_CLOSE 로 보충.
+
+    멱등성: 같은 요청 반복 시 중복 기록 0.
+    """
+    import time as _t
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "admin-tok")
+    code = "AICT-BKFL-BKFL-BKFL"
+    _register_user(client, code)
+    client.post("/ict/start?symbol=BTC/USDT:USDT")
+    slot = mu._slots[(code, "BTC/USDT:USDT")]
+    now_ms = int(_t.time() * 1000)
+    # 주의: mu 가 data_dir 미주입이라 사용자 매매 기록이 실행 간 영속 —
+    # 실행마다 고유 심볼로 이전 실행 백필과의 중복 판정을 차단 (결정론).
+    uniq_sym = f"BK{now_ms % 100000}/USDT:USDT"
+    cp = SimpleNamespace(
+        symbol=uniq_sym, direction="short", qty=10170.0,
+        entry_price=0.17, exit_price=0.173, pnl_usd=-30.43,
+        closed_at_ts=now_ms - 3_600_000, opened_at_ts=now_ms - 7_200_000,
+        leverage=10,
+    )
+
+    async def _fake_closed(since_ms=None, limit=200):
+        return [cp]
+
+    slot.client.fetch_closed_positions = _fake_closed  # self-spy 대체 주입
+
+    r = client.post(
+        "/admin/trades/backfill?days=7",
+        headers={"X-Admin-Token": "admin-tok"},
+    )
+    assert r.status_code == 200
+    d = r.json()
+    assert d["results"].get(code) == "+1건", repr(d)
+    # 멱등 — 재실행 시 중복 0.
+    r2 = client.post(
+        "/admin/trades/backfill?days=7",
+        headers={"X-Admin-Token": "admin-tok"},
+    )
+    assert r2.json()["results"][code] == "+0건"
+    # 기록 확인 — 사용자 매매 기록에 SYNC_CLOSE 백필 행.
+    from aurora_ict.interfaces.trades_store import TradesStore
+    store = TradesStore(mu._user_data_dir(code))
+    evs = [e for e in store.all_events() if e.symbol == uniq_sym]
+    assert len(evs) == 1
+    assert evs[0].pnl_usdt == -30.43
+    assert "backfill" in evs[0].reason
+    client.post("/ict/stop?symbol=BTC/USDT:USDT")
