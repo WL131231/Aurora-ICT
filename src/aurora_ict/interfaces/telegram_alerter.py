@@ -370,8 +370,32 @@ class TelegramAlerter:
             text = (msg.get("text") or "").strip()
             await self._handle_message(chat_id, text)
 
+    async def restart(self) -> None:
+        """봇 자체 재시작 — HTTP 클라이언트 재생성 + getUpdates 오프셋 리셋.
+
+        2026-06-12 파트너 요청: 알림 봇이 먹통일 때 텔레그램에서 /restart 로
+        즉시 복구. 폴링 루프는 그대로 두고(태스크 유지) 연결만 새로 만든다 —
+        fly 프로세스 안에서 돌아 프로세스 재실행은 서버 전체 재시작이 되기 때문.
+        """
+        old = self._client
+        self._client = httpx.AsyncClient(timeout=30.0)
+        self._offset = 0
+        try:
+            await old.aclose()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("restart: 구 클라이언트 정리 실패(무시): %s", e)
+        logger.info("텔레그램 알림 봇 재시작 — 클라이언트 재생성 + offset 리셋.")
+
     async def _handle_message(self, chat_id: str, text: str) -> None:
         """수신 메시지 처리 — 코드면 연동, 재등록 버튼이면 교체 모드, 아니면 안내."""
+        # 2026-06-12 파트너: /restart — 봇 연결 자체 재시작 (먹통 복구용).
+        if text.strip().lower().startswith("/restart"):
+            await self.restart()
+            await self.send(
+                chat_id, "🔄 알림 봇 재시작 완료 — 연결을 새로 만들었어요.",
+                keyboard=True,
+            )
+            return
         # 2026-06-12: 하단 '코드 재등록' 버튼 — 다음 코드 수신 시 이 채팅의
         # 기존 연동을 모두 풀고 새 코드로 교체.
         if _BTN_RELINK in text or text == "/relink":
