@@ -1636,6 +1636,8 @@ let _fixedPairs = new Set([
   "DOGE/USDT:USDT", "LINK/USDT:USDT", "HYPE/USDT:USDT",
 ]);
 let _maxChoicePairs = 3;
+// 2026-06-12 선택 추천 (2차 검증 양면 흑자, 순서=순위) — 피커 상단 고정 + 배지.
+let _recommendedPairs = ["NEAR/USDT:USDT", "ARB/USDT:USDT"];
 let _runningSymbols = new Set();
 
 /** 가동 중인 페어 중 고정7 밖(사용자 선택) 페어 수. */
@@ -1679,6 +1681,7 @@ async function loadTradablePairs() {
       _fixedPairs = new Set(r.fixed_pairs);
     }
     if (r.max_choice_pairs) _maxChoicePairs = r.max_choice_pairs;
+    if (Array.isArray(r.recommended_pairs)) _recommendedPairs = r.recommended_pairs;
   } catch (e) { /* 폴백(BTC/ETH) 유지 */ }
   _updateChartPairBtnLabel();
 }
@@ -1784,6 +1787,12 @@ function _renderPickerRows(filter) {
     : _tradablePairs.map((s) => ({ symbol: s, last: null, pct24h: null, volume: null }));
   rows = rows.filter((r) => !_pickerExclude.has(r.symbol));
   if (q) rows = rows.filter((r) => _symLabel(r.symbol).toUpperCase().includes(q));
+  // 2026-06-12: 추천 페어 상단 고정 (검증 양면 흑자, _recommendedPairs 순서=순위).
+  rows.sort((a, b) => {
+    const ra = _recommendedPairs.indexOf(a.symbol);
+    const rb = _recommendedPairs.indexOf(b.symbol);
+    return (ra < 0 ? 99 : ra) - (rb < 0 ? 99 : rb);
+  });
   list.innerHTML = "";
   if (!rows.length) {
     list.innerHTML = '<div class="pair-picker-empty">결과 없음</div>';
@@ -1797,8 +1806,10 @@ function _renderPickerRows(filter) {
     row.dataset.symbol = r.symbol;
     const fixedTag = _fixedPairs.has(r.symbol)
       ? ' <span class="ppr-fixed">고정</span>' : "";
+    const recTag = (!fixedTag && _recommendedPairs.includes(r.symbol))
+      ? ' <span class="ppr-rec">추천</span>' : "";
     row.innerHTML =
-      `<span class="ppr-sym">${_symLabel(r.symbol)}${fixedTag}</span>` +
+      `<span class="ppr-sym">${_symLabel(r.symbol)}${fixedTag}${recTag}</span>` +
       `<span class="ppr-price">${_fmtPrice(r.last)}</span>` +
       `<span class="ppr-pct ${pct.cls}">${pct.text}</span>` +
       `<span class="ppr-vol">${_fmtVol(r.volume)}</span>`;

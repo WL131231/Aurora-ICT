@@ -39,6 +39,14 @@ FIXED_PAIRS = (
     "HYPE/USDT:USDT",
 )
 
+# 추천 선택 페어 — 2026-06-12 2차(9국면) 검증 양면 흑자 (파트너 결정:
+# 고정 승격 대신 선택 추천 1순위). 피커 상단 고정 + '추천' 배지용. 순서 = 순위.
+#   NEAR(+1.19/+1.27, n129) > ARB(+0.52/+0.74, n81)
+RECOMMENDED_PAIRS = (
+    "NEAR/USDT:USDT",
+    "ARB/USDT:USDT",
+)
+
 # 제외 페어 — 백테스트에서 IN/OUT 양면 마이너스로 검증 탈락. 화이트리스트에서
 # 빼고, 직접 가동 요청도 차단한다.
 #   BNB: 11페어 검증 (2026-06-12)
@@ -111,6 +119,7 @@ __all__ = [
     "EXCLUDED_PAIRS",
     "FIXED_PAIRS",
     "MAJOR_PAIRS",
+    "RECOMMENDED_PAIRS",
     "PairRegistry",
     "PairSource",
 ]

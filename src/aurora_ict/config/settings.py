@@ -227,6 +227,11 @@ class IctSettings(BaseSettings):
     # 누적 수익 / 시작 equity * 100 ≥ 한도 → 그날 새 진입 중단 ("몇 % 먹고 종료").
     # Reset 시점: 손실 한도와 동일하게 NY local 자정.
     daily_profit_limit_pct: float = Field(default=0.0, ge=0.0, le=100.0)
+    # daily_pair_loss_limit_r (2026-06-12 파트너 결정):
+    # 페어별 일일 손실 한도 — R(리스크% 1회분) 배수 단위. 이 페어의 오늘 누적
+    # 손실이 R×배수에 닿으면 *그 페어만* 당일 진입 중단 (다른 페어는 계속).
+    # 단일 페어 폭주(6/6: 한 페어 19연속 -33%) 차단. 기본 2R ON. 0 = 비활성.
+    daily_pair_loss_limit_r: float = Field(default=2.0, ge=0.0, le=20.0)
 
     # HTF EMA bias 필터 — multi_tf 와 별개의 단순 directional filter.
     # 진입 직전 htf_ema_bias_tf (기본 1h) EMA20 vs 가격 비교 → 추세 방향 setup 만 진입.
