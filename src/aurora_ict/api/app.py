@@ -1014,6 +1014,23 @@ def _register_multi_user_routes(
         from aurora_ict.api.trades_router import _check_admin_cookie_or_header
         _check_admin_cookie_or_header(cookie_token, x_admin_token)
         rows: list[dict[str, Any]] = []
+        # 2026-06-12 파트너 요청 v2: 실시간 PnL — 심볼당 현재가 1회 조회(캐시)로
+        # 슬롯 수와 무관하게 거래소 호출을 심볼 수로 제한.
+        mark_cache: dict[str, float | None] = {}
+
+        async def _mark(bot: Any, sym: str) -> float | None:
+            if sym in mark_cache:
+                return mark_cache[sym]
+            price: float | None = None
+            try:
+                ohlcv = await bot.client.fetch_ohlcv(sym, "1m", 2)
+                if ohlcv:
+                    price = float(ohlcv[-1][4])
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[admin/positions] %s 현재가 조회 실패: %s", sym, e)
+            mark_cache[sym] = price
+            return price
+
         for (u, sym), slot in list(mu_manager._slots.items()):
             bot = slot.bot
             if bot is None:
@@ -1026,28 +1043,45 @@ def _register_multi_user_routes(
                 if pos is None:
                     continue
                 entry = float(pos.entry)
+                qty = float(pos.qty)
                 is_long = pos.direction is Direction.LONG
                 liq = entry * (1.0 - 0.95 / lev) if is_long else entry * (1.0 + 0.95 / lev)
                 sl = float(pos.stop_loss)
                 beyond = (sl <= liq) if is_long else (sl >= liq)
+                # 실시간 PnL — active 만 (pending 은 미체결이라 손익 없음).
+                mark = unreal = roi = None
+                if kind == "active":
+                    mark = await _mark(bot, sym)
+                    if mark is not None:
+                        unreal = (mark - entry) * qty if is_long else (entry - mark) * qty
+                        margin = entry * qty / lev
+                        roi = (unreal / margin * 100.0) if margin > 0 else 0.0
                 rows.append({
                     "user_code": u,
                     "symbol": sym,
                     "kind": kind,
                     "direction": "long" if is_long else "short",
                     "entry": entry,
-                    "qty": float(pos.qty),
+                    "qty": qty,
                     "stop_loss": sl,
                     "take_profit": float(pos.take_profit),
                     "leverage": lev,
                     "liq_price": round(liq, 6),
                     "sl_beyond_liq": beyond,
                     "bot_state": bot.state.value,
+                    "mark_price": mark,
+                    "unrealized_pnl": unreal,
+                    "roi_pct": roi,
                 })
         # 위험(청산가 밖 SL) 먼저 보이게 정렬.
         rows.sort(key=lambda r: (not r["sl_beyond_liq"], r["user_code"]))
+        total_pnl = sum(
+            r["unrealized_pnl"] for r in rows
+            if isinstance(r.get("unrealized_pnl"), (int, float))
+        )
         return {"positions": rows, "count": len(rows),
-                "risky": sum(1 for r in rows if r["sl_beyond_liq"])}
+                "risky": sum(1 for r in rows if r["sl_beyond_liq"]),
+                "total_unrealized_pnl": round(total_pnl, 4)}
 
     @app.get("/ict/position")
     async def get_position_mu(

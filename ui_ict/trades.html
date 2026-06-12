@@ -435,7 +435,27 @@
     </div>
     <div id="all-pos-box" style="display:none;margin:8px 0;padding:8px;border:1px solid #333;border-radius:6px">
       <div id="all-pos-summary" style="margin-bottom:6px;color:var(--text-2)"></div>
-      <div id="all-pos-rows" style="font-family:monospace;font-size:12px;line-height:1.7"></div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">
+          <thead>
+            <tr style="color:var(--text-3);text-align:right">
+              <th style="text-align:left;padding:4px 8px">코드</th>
+              <th style="text-align:left;padding:4px 8px">페어</th>
+              <th style="text-align:left;padding:4px 8px">방향</th>
+              <th style="padding:4px 8px">진입가</th>
+              <th style="padding:4px 8px">현재가</th>
+              <th style="padding:4px 8px">PnL (USDT)</th>
+              <th style="padding:4px 8px">ROI</th>
+              <th style="padding:4px 8px">SL</th>
+              <th style="padding:4px 8px">TP</th>
+              <th style="padding:4px 8px">청산가</th>
+              <th style="padding:4px 8px">레버</th>
+              <th style="padding:4px 8px">수량</th>
+            </tr>
+          </thead>
+          <tbody id="all-pos-rows"></tbody>
+        </table>
+      </div>
     </div>
 
     <table>
@@ -931,21 +951,58 @@
       document.body.removeChild(a);
     };
 
-    // 2026-06-12: 전 사용자 열린 포지션 — 위험(SL이 청산가 밖) 우선 표시.
+    // 2026-06-12: 전 사용자 열린 포지션 — 위험 우선 + 실시간 PnL 표 (10초 갱신).
+    const _fmtNum = (v, d) => (v == null || isNaN(v)) ? "-"
+      : Number(v).toLocaleString("en-US", { maximumFractionDigits: d ?? 6 });
+    const _pnlCell = (v, suffix) => {
+      if (v == null || isNaN(v)) return '<span style="color:var(--text-3)">-</span>';
+      const c = v >= 0 ? "#34d399" : "#fb7185";
+      const s = v >= 0 ? "+" : "";
+      return `<span style="color:${c};font-weight:700">${s}${Number(v).toFixed(2)}${suffix || ""}</span>`;
+    };
+    let _allPosTimer = null;
+    async function refreshAllPositions() {
+      const d = await api("/admin/positions");
+      $("all-pos-box").style.display = "";
+      const tot = d.total_unrealized_pnl;
+      $("all-pos-summary").innerHTML =
+        `열린 포지션 ${d.count}건 · 위험(SL이 청산가 밖) ${d.risky}건`
+        + ` · 합산 PnL ${_pnlCell(tot, " USDT")}`
+        + ' <span style="color:var(--text-3)">(10초마다 갱신)</span>';
+      const sym = (s) => (s || "").split("/")[0];
+      $("all-pos-rows").innerHTML = (d.positions || []).map((r) => {
+        const risky = r.sl_beyond_liq;
+        const dirC = r.direction === "long" ? "#34d399" : "#fb7185";
+        const pend = r.kind === "pending"
+          ? ' <span style="color:var(--text-3)">(대기)</span>' : "";
+        const rowStyle = risky
+          ? "background:rgba(251,113,133,0.08)" : "";
+        const warn = risky
+          ? ' <span style="color:#fb7185;font-weight:700">⚠</span>' : "";
+        return `<tr style="${rowStyle};border-top:1px solid #222;text-align:right">`
+          + `<td style="text-align:left;padding:4px 8px"><b>${r.user_code}</b>${warn}</td>`
+          + `<td style="text-align:left;padding:4px 8px">${sym(r.symbol)}</td>`
+          + `<td style="text-align:left;padding:4px 8px;color:${dirC};font-weight:700">${r.direction.toUpperCase()}${pend}</td>`
+          + `<td style="padding:4px 8px">${_fmtNum(r.entry)}</td>`
+          + `<td style="padding:4px 8px">${_fmtNum(r.mark_price)}</td>`
+          + `<td style="padding:4px 8px">${_pnlCell(r.unrealized_pnl)}</td>`
+          + `<td style="padding:4px 8px">${_pnlCell(r.roi_pct, "%")}</td>`
+          + `<td style="padding:4px 8px">${_fmtNum(r.stop_loss)}</td>`
+          + `<td style="padding:4px 8px">${_fmtNum(r.take_profit)}</td>`
+          + `<td style="padding:4px 8px;color:var(--text-3)">${_fmtNum(r.liq_price)}</td>`
+          + `<td style="padding:4px 8px">${r.leverage}x</td>`
+          + `<td style="padding:4px 8px">${_fmtNum(r.qty)}</td>`
+          + "</tr>";
+      }).join("") || '<tr><td colspan="12" style="padding:8px">열린 포지션 없음</td></tr>';
+    }
     $("btn-all-pos").onclick = async () => {
       try {
-        const d = await api("/admin/positions");
-        const box = $("all-pos-box");
-        box.style.display = "";
-        $("all-pos-summary").textContent =
-          `열린 포지션 ${d.count}건 · 위험(SL이 청산가 밖) ${d.risky}건`;
-        $("all-pos-rows").innerHTML = (d.positions || []).map((r) => {
-          const warn = r.sl_beyond_liq
-            ? '<span style="color:#fb7185;font-weight:700">⚠ SL>청산가</span> ' : "";
-          return `${warn}<b>${r.user_code}</b> ${r.symbol} ${r.direction.toUpperCase()}`
-            + ` ${r.kind} · entry ${r.entry} · SL ${r.stop_loss} · TP ${r.take_profit}`
-            + ` · liq≈${r.liq_price} · ${r.leverage}x · qty ${r.qty}`;
-        }).join("<br/>") || "열린 포지션 없음";
+        await refreshAllPositions();
+        // 실시간 갱신 — 10초. 다시 누르면 타이머 재시작 (중복 방지).
+        if (_allPosTimer) clearInterval(_allPosTimer);
+        _allPosTimer = setInterval(() => {
+          refreshAllPositions().catch(() => {});
+        }, 10000);
       } catch (e) { toast(e.message, true); }
     };
 
