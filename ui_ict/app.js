@@ -1637,7 +1637,7 @@ let _fixedPairs = new Set([
 ]);
 let _maxChoicePairs = 3;
 // 2026-06-12 선택 추천 (2차 검증 양면 흑자, 순서=순위) — 피커 상단 고정 + 배지.
-let _recommendedPairs = ["NEAR/USDT:USDT", "ARB/USDT:USDT"];
+let _recommendedPairs = ["NEAR/USDT:USDT", "ENA/USDT:USDT", "FIL/USDT:USDT", "ARB/USDT:USDT"];
 let _runningSymbols = new Set();
 
 /** 가동 중인 페어 중 고정7 밖(사용자 선택) 페어 수. */
