@@ -2540,6 +2540,11 @@ class BotIctInstance:
             logger.warning("trades record 실패: %s", e)
         # 2026-06-08: 매매 알림 — 연동된 사용자에게 텔레그램 발송(fire-and-forget).
         # 미연동·전송 실패는 콜백 내부에서 흡수. 알림이 매매를 막지 않게.
+        # 2026-06-12: RECOVERED(재시작 시 기존 포지션 재인식)는 텔레그램 생략 —
+        # 배포/재시작마다 같은 포지션 알림이 반복돼 소음(파트너 보고). 기록(DB)은
+        # 유지, 포지션 확인은 UI/전체 포지션(admin)으로.
+        if event_type is TradeEventType.RECOVERED:
+            return
         if self.alert_cb is not None and self.user_code:
             try:
                 task = asyncio.create_task(self.alert_cb(self.user_code, event))
