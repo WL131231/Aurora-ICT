@@ -459,13 +459,22 @@ class BotIctInstance:
         # 2026-06-12 고아 주문 청소 (LINK 사고): 재시작(강제 종료 배포)으로 stop()
         # 의 pending 취소가 못 돈 경우, 전생의 미체결 지정가가 거래소에 남아
         # 봇 모르게 체결된다(무SL 고아 포지션). 시작 시점엔 이 봇의 pending 의도가
-        # 없으므로 trading order 전부 취소 — position attached SL/TP conditional
-        # 은 영향 없음 (stop() 과 동일 전제).
-        try:
-            await self.client.cancel_all_orders(self.symbol)
-            logger.info("startup 고아 주문 청소 — cancel_all_orders(%s)", self.symbol)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("startup 고아 주문 청소 실패 (무시): %s", e)
+        # 없으므로 trading order 전부 취소.
+        # 2026-06-13 회귀 수정(#TPSL-STRIP): 활성 포지션이 있으면 skip — Bybit 의
+        # 주문 동봉형 SL/TP 가 조건부 주문으로 살아 있어 cancel_all 이 보호장치를
+        # 벗겨버렸다 (전 사용자 XRP/LINK 무방비 사고). 포지션 보유 시 고아
+        # 지정가는 sync 의 방향 검증·입양이 처리하므로 청소는 무포지션일 때만.
+        if self.active_position is None:
+            try:
+                await self.client.cancel_all_orders(self.symbol)
+                logger.info("startup 고아 주문 청소 — cancel_all_orders(%s)", self.symbol)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("startup 고아 주문 청소 실패 (무시): %s", e)
+        else:
+            logger.info(
+                "startup 고아 주문 청소 skip — 활성 포지션 보유 (SL/TP 보존, %s)",
+                self.symbol,
+            )
         # #RECONCILE 2026-06-06: 재기동(crash) 중 청산돼 trades DB 에 청산 이벤트가
         # 누락된 ENTRY(orphan)를 거래소 closed-pnl 로 대조해 보충. 봇 진행 막지 않게
         # 실패는 무시.
@@ -2019,6 +2028,38 @@ class BotIctInstance:
                 last_known.qty, contracts,
             )
             last_known.qty = contracts
+        # 2026-06-13 #TPSL-VERIFY (전 사용자 무방비 사고): 봇은 SL/TP 를 안다고
+        # 기억하는데 거래소엔 없는 상태(재시작 청소가 conditional 을 벗김 등)를
+        # 매 sync 마다 검증·재장착. 0.1% 허용 오차(틱 라운딩 흡수).
+        ex_sl = float(
+            ex_pos.get("stopLossPrice") or ex_pos.get("stop_loss") or 0,
+        ) or 0.0
+        ex_tp = float(
+            ex_pos.get("takeProfitPrice") or ex_pos.get("take_profit") or 0,
+        ) or 0.0
+        want_sl = float(last_known.stop_loss or 0.0)
+        want_tp = float(last_known.take_profit or 0.0)
+        need = (
+            (want_sl > 0 and (ex_sl <= 0 or abs(ex_sl - want_sl) > want_sl * 0.001))
+            or (want_tp > 0 and (ex_tp <= 0 or abs(ex_tp - want_tp) > want_tp * 0.001))
+        )
+        if need:
+            logger.warning(
+                "#TPSL-VERIFY 재장착 — %s 거래소(sl=%.4f tp=%.4f) vs 봇(sl=%.4f tp=%.4f)",
+                self.symbol, ex_sl, ex_tp, want_sl, want_tp,
+            )
+            try:
+                ok = await self.client.set_position_tpsl(
+                    self.symbol,
+                    stop_loss=(want_sl if want_sl > 0 else None),
+                    take_profit=(want_tp if want_tp > 0 else None),
+                )
+                if not ok:
+                    logger.error(
+                        "#TPSL-VERIFY 재장착 실패 — 다음 step 재시도 (%s)", self.symbol,
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.error("#TPSL-VERIFY 재장착 예외 — %s: %s", self.symbol, e)
 
     async def _emergency_close(
         self, reason: str = "SL 적용 실패 비상청산 (무SL 방지)",
