@@ -432,6 +432,8 @@
               data-i18n="trades.csvAll">전체 CSV 다운로드</button>
       <!-- 2026-06-12 파트너 요청: 전 사용자 열린 포지션 한눈에 (위험 SL 경고). -->
       <button id="btn-all-pos" class="accent" style="display:none">전체 포지션</button>
+      <!-- 2026-06-12: 스냅샷 유실 청산 기록 백필 (거래소 closed-pnl 보충, 멱등). -->
+      <button id="btn-backfill" class="accent" style="display:none">기록 백필</button>
     </div>
     <div id="all-pos-box" style="display:none;margin:8px 0;padding:8px;border:1px solid #333;border-radius:6px">
       <div id="all-pos-summary" style="margin-bottom:6px;color:var(--text-2)"></div>
@@ -579,6 +581,7 @@
       $("btn-admin-logout").style.display = isAdmin ? "" : "none";
       $("btn-csv-all").style.display = isAdmin ? "" : "none";
       $("btn-all-pos").style.display = isAdmin ? "" : "none";
+      $("btn-backfill").style.display = isAdmin ? "" : "none";
       $("admin-section").classList.toggle("show", isAdmin);
       if (isAdmin) await loadUserDropdown();
     }
@@ -1015,6 +1018,24 @@
           + "</tr>";
       }).join("") || '<tr><td colspan="13" style="padding:8px">열린 포지션 없음</td></tr>';
     }
+    // 2026-06-12: 유실 청산 기록 백필 — 거래소 closed-pnl 보충 (멱등).
+    $("btn-backfill").onclick = async () => {
+      const daysIn = prompt("며칠치 거래소 청산내역으로 보충할까요? (1~30)", "7");
+      if (daysIn == null) return;
+      const days = parseInt(daysIn, 10);
+      if (!(days >= 1 && days <= 30)) { toast("1~30 사이 숫자", true); return; }
+      if (!confirm(`전 사용자 최근 ${days}일 청산내역을 대조해\n기록에 없는 청산을 보충합니다. 진행할까요?`)) return;
+      const btn = $("btn-backfill");
+      btn.disabled = true;
+      try {
+        const r = await api(`/admin/trades/backfill?days=${days}`, { method: "POST" });
+        const lines = Object.entries(r.results || {})
+          .map(([c, v]) => `${c}: ${v}`).join("\n") || "대상 없음";
+        alert(`백필 완료 (${r.days}일)\n\n${lines}`);
+      } catch (e) { toast(e.message, true); }
+      btn.disabled = false;
+    };
+
     // 2026-06-12: admin 강제 청산 — 행의 '청산' 버튼 (confirm 후 시장가).
     $("all-pos-rows").addEventListener("click", async (e) => {
       const btn = e.target.closest(".pos-close-btn");
