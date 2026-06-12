@@ -41,7 +41,14 @@ FIXED_PAIRS = (
 
 # 제외 페어 — 백테스트에서 IN/OUT 양면 마이너스로 검증 탈락. 화이트리스트에서
 # 빼고, 직접 가동 요청도 차단한다.
-EXCLUDED_PAIRS = frozenset({"BNB/USDT:USDT"})
+#   BNB: 11페어 검증 (2026-06-12)
+#   UNI(-0.78/-0.57)·APT(-0.60/-0.20)·TON(-0.23/-0.46): 신규 8페어 검증 (2026-06-12)
+EXCLUDED_PAIRS = frozenset({
+    "BNB/USDT:USDT",
+    "UNI/USDT:USDT",
+    "APT/USDT:USDT",
+    "TON/USDT:USDT",
+})
 
 
 class PairSource(Protocol):
