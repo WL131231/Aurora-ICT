@@ -1110,3 +1110,60 @@ def test_daily_pair_limit_resets_on_new_day() -> None:
     bot._maybe_reset_daily_pnl(1000.0)  # 오늘 날짜와 다름 → reset
     assert bot._daily_pair_limit_hit is False
     assert bot._today_pair_realized_pnl_usdt == 0.0
+
+
+@pytest.mark.asyncio
+async def test_startup_cancel_skipped_when_position_recovered() -> None:
+    """#TPSL-STRIP 회귀: 활성 포지션 복구 시 startup cancel_all 금지 (SL/TP 보존)."""
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.fetch_position = AsyncMock(return_value={
+        "contracts": 1.0, "side": "short", "entryPrice": 100.0,
+        "stopLossPrice": 103.0, "takeProfitPrice": 95.0,
+    })
+    client.cancel_all_orders = AsyncMock()
+    bot = BotIctInstance(client=client, step_interval_sec=3600)
+    await bot.start()
+    assert bot.active_position is not None
+    client.cancel_all_orders.assert_not_awaited()  # 보호장치 벗기면 안 됨
+    await bot.stop()
+
+
+@pytest.mark.asyncio
+async def test_tpsl_verify_reasserts_when_exchange_missing() -> None:
+    """#TPSL-VERIFY: 봇 기억엔 SL/TP 있는데 거래소에 없으면 재장착."""
+    from aurora_ict.bot.bot_ict_instance import _ActivePosition
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.set_position_tpsl = AsyncMock(return_value=True)
+    bot = BotIctInstance(client=client)
+    bot.active_position = _ActivePosition(
+        direction=Direction.SHORT, entry=1.1386, stop_loss=1.1537,
+        take_profit=1.0954, qty=1682.5, setup_ts_ms=1,
+    )
+    # 거래소: 같은 방향·수량인데 SL/TP 없음 (벗겨진 상태).
+    await bot._reconcile_open_position({
+        "contracts": 1682.5, "side": "short", "entryPrice": 1.1386,
+        "stopLossPrice": 0, "takeProfitPrice": 0,
+    })
+    client.set_position_tpsl.assert_awaited()
+    kw = client.set_position_tpsl.await_args.kwargs
+    assert kw["stop_loss"] == 1.1537 and kw["take_profit"] == 1.0954
+
+
+@pytest.mark.asyncio
+async def test_tpsl_verify_noop_when_exchange_matches() -> None:
+    """#TPSL-VERIFY: 거래소 값 일치(틱 오차 내)면 재장착 안 함."""
+    from aurora_ict.bot.bot_ict_instance import _ActivePosition
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.set_position_tpsl = AsyncMock(return_value=True)
+    bot = BotIctInstance(client=client)
+    bot.active_position = _ActivePosition(
+        direction=Direction.SHORT, entry=1.1386, stop_loss=1.1537,
+        take_profit=1.0954, qty=1682.5, setup_ts_ms=1,
+    )
+    await bot._reconcile_open_position({
+        "contracts": 1682.5, "side": "short", "entryPrice": 1.1386,
+        "stopLossPrice": 1.1537, "takeProfitPrice": 1.0954,
+    })
+    client.set_position_tpsl.assert_not_awaited()
