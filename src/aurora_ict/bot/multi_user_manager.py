@@ -45,7 +45,12 @@ from aurora_ict.bot.pair_registry import (
     MAJOR_PAIRS,
     PairRegistry,
 )
-from aurora_ict.config.settings import TRADE_TIMEFRAMES, IctSettings, RunMode
+from aurora_ict.config.settings import (
+    TRADE_TIMEFRAMES,
+    IctSettings,
+    RunMode,
+    origo1_ttl_for_symbol,
+)
 
 # 페어 확장 (파트너 결정 2026-06-05 → 고정7 구도 2026-06-12):
 #   - 고정 7(FIXED_PAIRS, 백테스트 검증) + 사용자 선택 3 = 총 10.
@@ -376,7 +381,10 @@ class MultiUserBotManager:
             enable_trail=settings.enable_trail,
             trail_buffer_ratio=settings.trail_buffer_ratio,
             use_market_entry=settings.use_market_entry,
-            entry_limit_ttl_sec=settings.entry_limit_ttl_sec,
+            # #ORIGO-1: 페어별 베스트 ttl (BTC 1h, 나머지 settings 기본 30분).
+            entry_limit_ttl_sec=origo1_ttl_for_symbol(
+                settings.symbol, settings.entry_limit_ttl_sec,
+            ),
             min_sl_distance_pct=settings.min_sl_distance_pct,
             max_sl_distance_pct=settings.max_sl_distance_pct,
             sl_dist_mult=settings.sl_dist_mult,

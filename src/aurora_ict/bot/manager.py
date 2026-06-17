@@ -24,7 +24,12 @@ from aurora_ict.bot.bot_ict_instance import (
     BotState,
     ExchangeClientProtocol,
 )
-from aurora_ict.config.settings import IctSettings, RunMode, get_settings
+from aurora_ict.config.settings import (
+    IctSettings,
+    RunMode,
+    get_settings,
+    origo1_ttl_for_symbol,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +117,10 @@ class BotManager:
             enable_trail=self.settings.enable_trail,
             trail_buffer_ratio=self.settings.trail_buffer_ratio,
             use_market_entry=self.settings.use_market_entry,
-            entry_limit_ttl_sec=self.settings.entry_limit_ttl_sec,
+            # #ORIGO-1: 페어별 베스트 ttl (BTC 1h, 나머지 settings 기본 30분).
+            entry_limit_ttl_sec=origo1_ttl_for_symbol(
+                self.settings.symbol, self.settings.entry_limit_ttl_sec,
+            ),
             min_sl_distance_pct=self.settings.min_sl_distance_pct,
             max_sl_distance_pct=self.settings.max_sl_distance_pct,
             max_entry_distance_pct=self.settings.max_entry_distance_pct,
