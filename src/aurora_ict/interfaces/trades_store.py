@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -207,12 +208,29 @@ class TradesStore:
         """
         with self._lock:
             # 1) JSONL append (atomic line write) — source of truth.
-            try:
-                with self.jsonl_path.open("a", encoding="utf-8") as f:
-                    f.write(event.to_json_line())
-            except OSError as e:
-                logger.exception("trades.jsonl append 실패: %s", e)
-                return  # JSONL 실패하면 SQLite/journal 도 건너뜀 — 정합 회피
+            # 2026-06-17 #SYNC-FIX: JSONL(source of truth) append 3회 재시도.
+            # 기존엔 1회 실패 후 조용히 return → 거래소 체결됐는데 기록이 영구
+            # 누락(라이브 불일치 사용자 보고). 최종 실패 시 raise 해 호출자
+            # (_record_trade)가 ERROR + 큐 보관으로 다음 기회에 재기록하게 한다.
+            _jsonl_exc: OSError | None = None
+            for attempt in range(3):
+                try:
+                    with self.jsonl_path.open("a", encoding="utf-8") as f:
+                        f.write(event.to_json_line())
+                    _jsonl_exc = None
+                    break
+                except OSError as e:
+                    _jsonl_exc = e
+                    logger.warning(
+                        "trades.jsonl append 실패 (시도 %d/3): %s", attempt + 1, e,
+                    )
+                    time.sleep(0.1 * (attempt + 1))
+            if _jsonl_exc is not None:
+                logger.error(
+                    "trades.jsonl append 최종 실패 — 기록 누락 위험, 호출자 큐 보관: %s",
+                    _jsonl_exc,
+                )
+                raise _jsonl_exc
             # 2) 사람이 읽기 좋은 trade_journal.log 도 append (실패해도 비치명).
             try:
                 with self.journal_path.open("a", encoding="utf-8") as jf:
@@ -220,33 +238,40 @@ class TradesStore:
             except OSError as e:
                 logger.warning("trade_journal.log append 실패: %s", e)
             # 3) SQLite insert (JSONL 성공 후).
-            try:
-                self._conn.execute(
-                    """
-                    INSERT INTO trades
-                    (ts_ms, event_type, symbol, direction, price, qty,
-                     pnl_usdt, setup_ts_ms, reason, context_json, mode)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        event.ts_ms,
-                        event.event_type.value,
-                        event.symbol,
-                        event.direction,
-                        event.price,
-                        event.qty,
-                        event.pnl_usdt,
-                        event.setup_ts_ms,
-                        event.reason,
-                        event.context_json,
-                        event.mode,
-                    ),
-                )
-                self._conn.commit()
-            except sqlite3.Error as e:
-                logger.warning(
-                    "trades.db insert 실패 (JSONL 은 박힘 — rebuild 권장): %s", e,
-                )
+            # 2026-06-17 #SYNC-FIX: SQLite lock/busy 일시 실패도 3회 재시도.
+            # JSONL 은 이미 박혀 rebuild 가능하나, 즉시 정합을 위해 짧게 재시도.
+            for attempt in range(3):
+                try:
+                    self._conn.execute(
+                        """
+                        INSERT INTO trades
+                        (ts_ms, event_type, symbol, direction, price, qty,
+                         pnl_usdt, setup_ts_ms, reason, context_json, mode)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            event.ts_ms,
+                            event.event_type.value,
+                            event.symbol,
+                            event.direction,
+                            event.price,
+                            event.qty,
+                            event.pnl_usdt,
+                            event.setup_ts_ms,
+                            event.reason,
+                            event.context_json,
+                            event.mode,
+                        ),
+                    )
+                    self._conn.commit()
+                    break
+                except sqlite3.Error as e:
+                    if attempt < 2:
+                        time.sleep(0.1 * (attempt + 1))
+                        continue
+                    logger.warning(
+                        "trades.db insert 최종 실패 (JSONL 은 박힘 — rebuild 권장): %s", e,
+                    )
 
     def all_events(self) -> list[TradeEvent]:
         """JSONL 전체 이벤트 시간순 반환 — source of truth.

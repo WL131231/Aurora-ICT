@@ -105,6 +105,47 @@ async def test_sync_emergency_close_on_direction_mismatch() -> None:
     assert bot.active_position is None
 
 
+def test_record_trade_queues_failed_event_and_reflushes(tmp_path) -> None:
+    """#SYNC-FIX(2026-06-17): record 실패 → 큐 보관, 다음 record 성공 시 재기록.
+
+    거래소 체결됐는데 기록(JSONL/DB)이 일시 실패로 누락되던 라이브 불일치 해소.
+    store.record 를 자기 인스턴스 wrapper 로 교체(self-spy, mock 0) — 첫 호출만
+    실패시키고, 둘째 호출 성공 시 _flush_failed_trades 가 큐를 비우는지 검증.
+    """
+    from aurora_ict.interfaces.trades_store import TradeEventType, TradesStore
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    bot = BotIctInstance(client=client, symbol="BTCUSDT")
+    store = TradesStore(tmp_path)
+    bot._trades_store = store
+    real_record = store.record
+    state = {"fail": True}
+
+    def spy(ev: Any) -> None:
+        if state["fail"]:
+            raise OSError("disk full 시뮬")
+        real_record(ev)
+
+    store.record = spy  # type: ignore[method-assign]
+
+    # 1) 기록 실패 → 큐 보관 (이벤트 유실 안 됨)
+    bot._record_trade(
+        TradeEventType.ENTRY, direction=Direction.LONG, price=100.0, qty=1.0,
+    )
+    assert len(bot._failed_trade_events) == 1
+
+    # 2) 다음 record 성공 → _flush_failed_trades 가 큐 비우고 재기록
+    state["fail"] = False
+    bot._record_trade(
+        TradeEventType.SL_HIT, direction=Direction.LONG, price=95.0, qty=1.0,
+        entry_for_pnl=100.0,
+    )
+    assert bot._failed_trade_events == []
+    types = [e.event_type for e in store.all_events()]
+    assert TradeEventType.ENTRY in types  # 큐에서 재기록됨
+    assert TradeEventType.SL_HIT in types
+
+
 @pytest.mark.asyncio
 async def test_run_loop_auto_stops_on_repeated_auth_error() -> None:
     """키 무효(AuthenticationError)가 step 에서 임계치만큼 연속되면 봇 자동 정지."""

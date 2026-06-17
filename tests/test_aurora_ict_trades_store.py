@@ -171,6 +171,37 @@ def test_store_survives_recreate(tmp_path: Path) -> None:
     store2.close()
 
 
+def test_jsonl_append_retries_then_raises(tmp_path: Path) -> None:
+    """#SYNC-FIX(2026-06-17): JSONL append 불가 시 3회 재시도 후 raise.
+
+    기존엔 1회 실패 후 조용히 return → 거래소 체결됐는데 기록이 영구 누락
+    (라이브 불일치 사용자 보고). 이제 raise 로 호출자(_record_trade)가 인지해
+    큐 보관·재기록하게 한다. jsonl_path 를 디렉토리로 바꿔 open("a") 가
+    OSError(IsADirectory) 나게 유도 (자기 인스턴스 속성 교체 — mock 0).
+    """
+    store = TradesStore(tmp_path)
+    bad_dir = tmp_path / "as_dir"
+    bad_dir.mkdir()
+    store.jsonl_path = bad_dir  # 디렉토리 → append open 실패
+    with pytest.raises(OSError):
+        store.record(_make_event())
+    store.close()
+
+
+def test_sqlite_insert_failure_keeps_jsonl_no_raise(tmp_path: Path) -> None:
+    """#SYNC-FIX: SQLite insert 가 끝내 실패해도 JSONL(원본)은 기록 + raise 안 함.
+
+    커넥션을 닫아 insert 가 실패하게 해도 JSONL append 는 성공 → record 가
+    예외 없이 끝나고 JSONL 에 1줄 남는다 (rebuild 로 SQLite 복원 가능).
+    """
+    store = TradesStore(tmp_path)
+    store._conn.close()  # 이후 insert 는 실패하지만 JSONL 은 정상
+    store.record(_make_event(ts_ms=999))  # raise 하면 안 됨
+    lines = (tmp_path / "trades.jsonl").read_text(encoding="utf-8").strip().split("\n")
+    assert len(lines) == 1
+    assert json.loads(lines[0])["ts_ms"] == 999
+
+
 def test_pnl_field_stored(tmp_path: Path) -> None:
     """pnl_usdt 가 SQLite 에도 저장됨."""
     store = TradesStore(tmp_path)
