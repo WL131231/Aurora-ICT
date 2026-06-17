@@ -67,6 +67,7 @@ from aurora_ict.strategy.multi_tf_bias import (
 from aurora_ict.strategy.silver_bullet import Direction, SilverBulletSetup
 from aurora_ict.strategy.trend_state import TrendState, evaluate_trend
 from aurora_ict.timing.killzone import classify_killzone, in_trade_window_sub
+from aurora_ict.timing.power_of_3 import AmdPhase, amd_phase
 
 logger = logging.getLogger(__name__)
 
@@ -933,6 +934,8 @@ class BotIctInstance:
         # #CISD 2026-06-06: 가격 전달 전환(CISD)이 setup 방향과 일치하면 confluence +1.
         # MSS 1캔들 micro 신호 — 게이트·qty 산정 전에 적용돼야 효과.
         self._apply_cisd_boost(signal.setup, df)
+        # #PO3 2026-06-17: AMD Distribution 국면 진입이면 +1 (cisd+po3 5년 robust 흑자).
+        self._apply_po3_boost(signal.setup, df)
         # #SMT 2026-06-06: 상관 자산(BTC↔ETH) divergence 가 setup 방향과 일치하면 +1.
         # 게이트·qty 산정 전에 적용. corr 심볼 OHLCV fetch 필요해 async.
         await self._apply_smt_boost(signal.setup, df)
@@ -2322,6 +2325,28 @@ class BotIctInstance:
             logger.info(
                 "CISD 순응 가점 — setup=%s cisd=%s score→%d",
                 setup.direction.value, cisd.value, setup.confluence_score,
+            )
+
+    def _apply_po3_boost(self, setup: SilverBulletSetup, df: pd.DataFrame) -> None:
+        """Power of 3 (AMD) Distribution 국면 순응 시 confluence +1 (2026-06-17).
+
+        AMD = Accumulation/Manipulation/Distribution. Distribution(NY 진짜 방향성
+        단계)에서 진입하면 London 가짜 움직임(Manipulation)을 피하고 추세에 순응한다.
+        5년·7페어 백테스트 검증: cisd+po3 조합이 robust 흑자(+3.18%, base −0.76 대비).
+        시간 기반(방향 무관)이라 현재 봉(df 마지막) 시각으로 AMD phase 를 판정한다.
+        in-place 가산.
+
+        Args:
+            setup: confluence_score 를 in-place 가산할 setup.
+            df: 현재 OHLCV — 마지막 봉 시각으로 AMD phase 판정 (라인 880 ts_ms 동일 방식).
+        """
+        ts_ms = int(df.index[-1].value // 10**6)
+        if amd_phase(ts_ms) is AmdPhase.DISTRIBUTION:
+            setup.confluence_score += 1
+            setup.confluences.append("po3_distribution")
+            logger.info(
+                "PO3 Distribution 가점 — setup=%s score→%d",
+                setup.direction.value, setup.confluence_score,
             )
 
     async def _apply_smt_boost(

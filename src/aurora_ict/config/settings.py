@@ -28,6 +28,23 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # 1m 은 노이즈 과대로 비허용.
 TRADE_TIMEFRAMES: tuple[str, ...] = ("5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w")
 
+# 2026-06-17 #ORIGO-1: 페어별 베스트 진입대기 ttl(초) override.
+# 7페어 5년 백테스트 — BTC 는 1h(3600)가 최적(robust 검증), 나머지는 30분(기본).
+# trail·전체ttl1h 처럼 BTC 단독 함정을 피하려 페어별로 검증된 값만 예외 부여.
+PAIR_TTL_OVERRIDES: dict[str, int] = {"BTCUSDT": 3600}
+
+
+def origo1_ttl_for_symbol(symbol: str, default_ttl: int) -> int:
+    """심볼별 베스트 진입대기 ttl(초) — BTC 1h, 나머지 default(보통 30분).
+
+    Args:
+        symbol: 거래 심볼 (예 "BTCUSDT").
+        default_ttl: override 없는 심볼의 기본 ttl(초).
+    Returns:
+        해당 심볼의 ttl(초).
+    """
+    return PAIR_TTL_OVERRIDES.get(symbol, default_ttl)
+
 
 class RunMode(StrEnum):
     """봇 실행 모드."""
@@ -158,7 +175,10 @@ class IctSettings(BaseSettings):
     # 2026-06-03: 30봉 (2.5h) 가드 너무 짧아 진입 빈도 낮음 → 120봉 (10h) 완화
     # (파트너 결정). ICT 정통 (fvg.filled / ob.mitigated) 가드가 별도 작동하므로
     # 시간 가드만 풀어도 안전.
-    setup_stale_bars: int = Field(default=120, ge=1, le=500)
+    # 2026-06-17: 백테스트 t6/s3 정합 — 120봉(10h)은 질 낮은 진입 양산해 5년 −8% 적자
+    # 였고, 3봉(15분)으로 타이트하게 줄여야 흑자(cisd+po3 조합 시 +3.18%). cisd+po3
+    # 가점이 게이트 통과를 늘려(진입 186→598건) 짧은 stale 의 빈도 감소를 보완 (파트너 결정).
+    setup_stale_bars: int = Field(default=3, ge=1, le=500)
     # disable_time_filter: True 면 Silver Bullet / Killzone 시간 윈도우 무시 (24h 매매).
     # 라이선스 정책 (model_validator):
     #   - referral: 사용자 설정 따름 (default True = 24h)
@@ -185,7 +205,9 @@ class IctSettings(BaseSettings):
     # 체결 안 되면 타점 포기하고 새로 잡기.
     # 2026-06-11 #EDGE-V2: 상한 3600→14400 — 백테스트 검증값(120분 대기)이
     # 들어갈 수 있게. 좋은 자리는 타점 되돌림을 길게 기다리는 게 체결률·성과 우위.
-    entry_limit_ttl_sec: int = Field(default=300, ge=30, le=14400)
+    # 2026-06-17: 백테스트 t6/s3 정합 — entry_ttl 30분(5m×6봉=1800초). stale 15분과
+    # 짝. 좋은 타점 되돌림을 30분 기다려 체결률↑ (cisd+po3 5년 robust 흑자 구성).
+    entry_limit_ttl_sec: int = Field(default=1800, ge=30, le=14400)
     # min_sl_distance_pct: SL 거리가 entry 의 이 비율 미만이면 setup skip.
     # 지난 12거래 분석 결과 SL 너무 짧은 setup 손실 비중 커서 0.0005 → 0.0007 상향.
     # 2026-05-29: 새벽 3연속 SL 풀히트 (실측 SL=0.32%) 회고 — ranging 시장에서
@@ -324,15 +346,22 @@ class IctSettings(BaseSettings):
         """
         if self.license_type.startswith("sub_"):
             self.disable_time_filter = False
+            # 2026-06-17 #ORIGO-1: 5분봉 강제 (검증된 베스트 TF). env/사용자가 다른
+            # TF 로 바꿔놔도 무시 — 라이브가 15m 로 새어 백테스트 엣지가 깨지던 문제
+            # 원천 차단 (버전당 베스트 TF 고정).
+            self.timeframe = "5m"
             if self.min_confluence < 4:
                 self.min_confluence = 4
             if self.min_rr < 2.5:
                 self.min_rr = 2.5
             if self.sl_dist_mult < 3.0:
                 self.sl_dist_mult = 3.0
-            if self.entry_limit_ttl_sec < 7200:
-                self.entry_limit_ttl_sec = 7200
-            fresh_bars = max(1, 30 // max(1, self.timeframe_minutes))
+            # #ORIGO-1: ttl 30분(1800) 강제 — 7페어 5년 백테스트 최적(+9.54%).
+            # BTC 만 manager 에서 1h(3600) override(페어별 베스트 ttl). 기존 2h(7200)는
+            # 7페어 백테스트 손실 구간이라 폐기.
+            self.entry_limit_ttl_sec = 1800
+            # stale 15분(3봉 @5m) — 백테스트 t6/s3 정합 (신선한 자리만 진입).
+            fresh_bars = max(1, 15 // max(1, self.timeframe_minutes))
             if self.setup_stale_bars > fresh_bars:
                 self.setup_stale_bars = fresh_bars
         return self

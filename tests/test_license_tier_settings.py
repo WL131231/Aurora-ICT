@@ -82,7 +82,7 @@ def test_referral_respects_user_disable_time_filter_setting(monkeypatch):
 
 
 def test_subscription_enforces_edge_v2(monkeypatch):
-    """2026-06-11 #EDGE-V2: 구독제 = 등급4 + RR2.5 + SLx3 + 대기120분 강제."""
+    """2026-06-17 #ORIGO-1: 구독제 = 등급4 + RR2.5 + SLx3 + 5분봉 + ttl 30분 강제."""
     _clean_env(monkeypatch)
     monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "sub_90d")
     monkeypatch.setenv("AURORA_ICT_MIN_CONFLUENCE", "2")
@@ -90,12 +90,13 @@ def test_subscription_enforces_edge_v2(monkeypatch):
     assert s.min_confluence == 4
     assert s.min_rr == 2.5
     assert s.sl_dist_mult == 3.0
-    assert s.entry_limit_ttl_sec == 7200
+    assert s.entry_limit_ttl_sec == 1800  # #ORIGO-1 30분 (BTC 만 manager 서 1h)
+    assert s.timeframe == "5m"  # #ORIGO-1 베스트 TF 강제
     assert s.disable_time_filter is False  # 킬존 유지
 
 
 def test_subscription_respects_more_conservative_values(monkeypatch):
-    """구독제 강제는 '최소' 방향 — 사용자가 더 보수적이면 유지."""
+    """구독제 min/rr/sl 강제는 '최소' 방향(보수 유지). 단 ttl 은 #ORIGO-1 이 30분 강제."""
     _clean_env(monkeypatch)
     monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "sub_90d")
     monkeypatch.setenv("AURORA_ICT_MIN_CONFLUENCE", "5")
@@ -103,25 +104,20 @@ def test_subscription_respects_more_conservative_values(monkeypatch):
     monkeypatch.setenv("AURORA_ICT_SL_DIST_MULT", "4.0")
     monkeypatch.setenv("AURORA_ICT_ENTRY_LIMIT_TTL_SEC", "10800")
     s = IctSettings(_env_file=None)
-    assert s.min_confluence == 5
+    assert s.min_confluence == 5  # 보수 유지
     assert s.min_rr == 3.0
     assert s.sl_dist_mult == 4.0
-    assert s.entry_limit_ttl_sec == 10800
+    assert s.entry_limit_ttl_sec == 1800  # #ORIGO-1 ttl 강제 (사용자 10800 무시)
 
 
-def test_subscription_freshness_30m_converted_by_tf(monkeypatch):
-    """2026-06-12 #FRESH-30: 구독제 신선도 30분 — TF 봉수 환산 상한."""
+def test_subscription_freshness_15m_at_5m(monkeypatch):
+    """2026-06-17 #ORIGO-1: 구독제 신선도 15분 — 5분봉 강제라 3봉. env TF 무시."""
     _clean_env(monkeypatch)
     monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "sub_90d")
-    monkeypatch.setenv("AURORA_ICT_TIMEFRAME", "5m")
+    monkeypatch.setenv("AURORA_ICT_TIMEFRAME", "15m")  # 무시됨 (5m 강제)
     s = IctSettings(_env_file=None)
-    assert s.setup_stale_bars == 6  # 30분 / 5m = 6봉 (기본 120 → 상한)
-    monkeypatch.setenv("AURORA_ICT_TIMEFRAME", "15m")
-    s = IctSettings(_env_file=None)
-    assert s.setup_stale_bars == 2  # 30/15
-    monkeypatch.setenv("AURORA_ICT_TIMEFRAME", "1h")
-    s = IctSettings(_env_file=None)
-    assert s.setup_stale_bars == 1  # 최소 1봉
+    assert s.timeframe == "5m"  # #ORIGO-1 5분봉 강제
+    assert s.setup_stale_bars == 3  # 15분 / 5m = 3봉
 
 
 def test_subscription_freshness_keeps_stricter_user_value(monkeypatch):
@@ -140,7 +136,7 @@ def test_referral_keeps_stale_bars(monkeypatch):
     monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "referral")
     monkeypatch.setenv("AURORA_ICT_TIMEFRAME", "5m")
     s = IctSettings(_env_file=None)
-    assert s.setup_stale_bars == 120  # 기본값 그대로
+    assert s.setup_stale_bars == 3  # 기본값(cisd+po3 정합 3봉=15분), referral 강제 X
 
 
 def test_referral_keeps_user_values(monkeypatch):
@@ -152,7 +148,7 @@ def test_referral_keeps_user_values(monkeypatch):
     assert s.min_confluence == 2
     assert s.min_rr == 2.0
     assert s.sl_dist_mult == 1.0
-    assert s.entry_limit_ttl_sec == 300
+    assert s.entry_limit_ttl_sec == 1800  # 기본(cisd+po3 정합 1800=30분), referral 강제 X
 
 
 def test_invalid_license_type_falls_back_to_referral(monkeypatch):
@@ -238,3 +234,26 @@ def test_inject_license_type_env_does_not_overwrite_other_env(monkeypatch, tmp_p
     assert env["PATH"] == "/usr/bin"
     assert env["OTHER_VAR"] == "value"
     assert env["AURORA_ICT_LICENSE_TYPE"] == "sub_30d"
+
+
+# ============================================================
+# #ORIGO-1 (2026-06-17): 5분봉 강제 + 페어별 ttl
+# ============================================================
+
+
+def test_subscription_forces_5m_timeframe(monkeypatch):
+    """구독제는 5분봉 강제 — 사용자가 15m 로 바꿔놔도 무시 (베스트 TF 락)."""
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "sub_365d")
+    monkeypatch.setenv("AURORA_ICT_TIMEFRAME", "15m")
+    s = IctSettings(_env_file=None)
+    assert s.timeframe == "5m"
+
+
+def test_origo1_ttl_per_symbol():
+    """페어별 베스트 ttl — BTC 1h(3600), 나머지 default(30분)."""
+    from aurora_ict.config.settings import origo1_ttl_for_symbol
+    assert origo1_ttl_for_symbol("BTCUSDT", 1800) == 3600  # BTC 1h
+    assert origo1_ttl_for_symbol("ETHUSDT", 1800) == 1800  # 나머지 기본
+    assert origo1_ttl_for_symbol("SOLUSDT", 1800) == 1800
+    assert origo1_ttl_for_symbol("HYPEUSDT", 1800) == 1800
