@@ -65,7 +65,7 @@ _ADMIN_COOKIE_TTL_SEC = 30 * 24 * 3600  # 30일
 # CSV 컬럼 순서 — UI / Excel 호환.
 # 2026-05-29: mode 컬럼 추가 (DEMO/LIVE 구분, 파트너 요청).
 _CSV_HEADERS = (
-    "ts_ms", "event_type", "mode", "symbol", "direction", "price", "qty",
+    "ts_ms", "event_type", "mode", "model", "symbol", "direction", "price", "qty",
     "pnl_usdt", "setup_ts_ms", "reason",
 )
 
@@ -127,7 +127,7 @@ def _query_trades(
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     sql = (
         "SELECT ts_ms, event_type, symbol, direction, price, qty, "
-        "pnl_usdt, setup_ts_ms, reason, context_json, mode "
+        "pnl_usdt, setup_ts_ms, reason, context_json, mode, model "
         f"FROM trades{where_sql} "
         "ORDER BY ts_ms DESC LIMIT ?"
     )
@@ -143,6 +143,11 @@ def _query_trades(
             conn.commit()
         except sqlite3.OperationalError:
             pass  # 이미 컬럼 있음 또는 trades 테이블 자체 없음 (빈 DB)
+        try:  # 2026-06-17: 봇 모델(Origo 1.1 등) 컬럼 — 옛 db idempotent ALTER.
+            conn.execute("ALTER TABLE trades ADD COLUMN model TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
         try:
             rows = conn.execute(sql, params).fetchall()
         except sqlite3.OperationalError as e:
@@ -172,6 +177,7 @@ def _trades_to_csv(
             r.get("ts_ms", ""),
             r.get("event_type", ""),
             r.get("mode") or "",  # DEMO/LIVE — 구식 row 는 빈값.
+            r.get("model") or "",  # 봇 모델(Origo 1.1 등) — 구식 row 는 빈값.
             r.get("symbol", ""),
             r.get("direction", ""),
             r.get("price", ""),
