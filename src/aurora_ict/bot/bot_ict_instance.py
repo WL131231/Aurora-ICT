@@ -30,7 +30,6 @@ from ccxt.base.errors import AuthenticationError
 
 from aurora_ict.bot.structure_trail import compute_structure_trail
 from aurora_ict.indicators.cisd import CisdType, detect_cisd
-from aurora_ict.timing.power_of_3 import AmdPhase, amd_phase
 from aurora_ict.indicators.daily_bias import compute_daily_bias
 from aurora_ict.indicators.dol import compute_dol
 from aurora_ict.indicators.liquidity import detect_liquidity_sweeps
@@ -68,6 +67,7 @@ from aurora_ict.strategy.multi_tf_bias import (
 from aurora_ict.strategy.silver_bullet import Direction, SilverBulletSetup
 from aurora_ict.strategy.trend_state import TrendState, evaluate_trend
 from aurora_ict.timing.killzone import classify_killzone, in_trade_window_sub
+from aurora_ict.timing.power_of_3 import AmdPhase, amd_phase
 
 logger = logging.getLogger(__name__)
 
