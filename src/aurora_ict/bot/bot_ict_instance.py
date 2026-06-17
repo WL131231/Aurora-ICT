@@ -384,6 +384,9 @@ class BotIctInstance:
     _trend_cache: dict[str, tuple[int, TrendState]] = field(default_factory=dict)
     # 매매 이벤트 영구 저장 (#BUG-2 해소) — lazy init in _record_trade.
     _trades_store: TradesStore | None = field(default=None)
+    # 2026-06-17 #SYNC-FIX: record 실패한 이벤트 큐 — 거래소 체결됐는데 기록(JSONL/DB)
+    # 이 일시 실패(디스크/락)로 누락되던 문제. 다음 _record_trade 성공 시 재기록.
+    _failed_trade_events: list[TradeEvent] = field(default_factory=list)
     # #SAFETY-1 daily loss limit 추적 — NY local 자정 기준 reset.
     _today_realized_pnl_usdt: float = field(default=0.0)
     _today_date_str: str = field(default="")  # "YYYY-MM-DD" NY local
@@ -2804,8 +2807,14 @@ class BotIctInstance:
         )
         try:
             self._trades_store.record(event)
+            self._flush_failed_trades()  # 이전 실패분이 있으면 재기록 시도
         except Exception as e:  # noqa: BLE001
-            logger.warning("trades record 실패: %s", e)
+            # 2026-06-17 #SYNC-FIX: 기록 실패를 ERROR 로 승격 + 큐 보관 → 다음
+            # _record_trade 성공 시 _flush_failed_trades 로 재기록. (기존 warning 만 →
+            # 거래소 체결됐는데 DB 영구 누락되던 라이브 불일치 해소.) active_position
+            # reset 은 그대로 진행하되 기록만 지연 재시도.
+            logger.error("trades record 실패 — 큐 보관 후 재시도 예정: %s", e)
+            self._failed_trade_events.append(event)
         # 2026-06-08: 매매 알림 — 연동된 사용자에게 텔레그램 발송(fire-and-forget).
         # 미연동·전송 실패는 콜백 내부에서 흡수. 알림이 매매를 막지 않게.
         # 2026-06-12: RECOVERED(재시작 시 기존 포지션 재인식)는 텔레그램 생략 —
@@ -2823,6 +2832,26 @@ class BotIctInstance:
                 task.add_done_callback(_log_alert_task_exc)
             except RuntimeError:
                 pass  # 실행 중 이벤트 루프 없음(동기 테스트) — skip
+
+    def _flush_failed_trades(self) -> None:
+        """이전에 기록 실패한 이벤트를 재기록 (#SYNC-FIX, 2026-06-17).
+
+        _record_trade 가 record 성공 직후 호출 — 큐에 쌓인 실패분을 순서대로
+        재기록 시도. 여전히 실패하면 큐에 남겨 다음 기회에 재시도.
+        """
+        if not self._failed_trade_events:
+            return
+        still_failed: list[TradeEvent] = []
+        for ev in self._failed_trade_events:
+            try:
+                self._trades_store.record(ev)
+                logger.info(
+                    "trades 큐 재기록 성공: %s %s", ev.event_type.value, ev.symbol,
+                )
+            except Exception as e:  # noqa: BLE001
+                still_failed.append(ev)
+                logger.warning("trades 큐 재기록 실패 (유지): %s", e)
+        self._failed_trade_events = still_failed
 
     async def _reconcile_orphan_entries(self) -> None:
         """startup — 청산 누락 ENTRY(orphan)를 거래소 closed-pnl 로 보충 (#RECONCILE).
@@ -2867,12 +2896,24 @@ class BotIctInstance:
             len(orphans), self.symbol,
         )
         oldest = min(e.ts_ms for e in orphans)
-        try:
-            closed = await self.client.fetch_closed_positions(
-                since_ms=oldest - 60_000, limit=200,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("reconcile: closed-pnl 조회 실패 — skip: %s", e)
+        # 2026-06-17 #SYNC-FIX: 거래소 closed-pnl 조회를 3회 backoff 재시도.
+        # 1회 실패 후 바로 return 하면 재기동 중 청산된 orphan 이 영구 누락 →
+        # API 일시 지연/네트워크 hiccup 흡수. 최종 실패 시 다음 startup 에서 재시도.
+        closed = None
+        for attempt in range(3):
+            try:
+                closed = await self.client.fetch_closed_positions(
+                    since_ms=oldest - 60_000, limit=200,
+                )
+                break
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "reconcile: closed-pnl 조회 실패 (시도 %d/3): %s", attempt + 1, e,
+                )
+                if attempt < 2:
+                    await asyncio.sleep(0.5 * (2 ** attempt))
+        if closed is None:
+            logger.error("reconcile: closed-pnl 조회 최종 실패 — 다음 startup 재시도")
             return
         tol = self._PNL_MATCH_OPENED_TOLERANCE_MS
         used_opened: set[int] = set()  # cp 1건당 orphan 1건 매칭 (중복 방지).
