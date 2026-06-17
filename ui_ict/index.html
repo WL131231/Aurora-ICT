@@ -204,6 +204,21 @@
     color: var(--text-3);
     line-height: 1.4;
   }
+  /* 2026-06-17 #ORIGO-MODEL: 모델 선택 드롭다운 (TF 토글 톤 차용). */
+  .model-select {
+    width: 100%;
+    margin-top: 4px;
+    padding: 7px 9px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    color: var(--text-1);
+    letter-spacing: 0.03em;
+    cursor: pointer;
+  }
+  .model-select:focus { outline: none; border-color: #34d399; }
 
   /* 2026-05-29 v2: 사이드바 페어 선택 토글 (BTC/ETH 복수 선택).
      trade-tf-toggle 톤 재사용, 2 column 그리드. */
@@ -2133,18 +2148,14 @@
     </div>
     <p class="pair-hint" id="pair-limit-hint" data-i18n="hint.pairSelect">🔒 고정 7페어는 START 시 자동 가동 — 추가로 3개까지 직접 선택 가능</p>
 
-    <h2 data-i18n="sidebar.tradeTimeframe">Trade Timeframe</h2>
-    <div class="trade-tf-toggle" id="trade-tf-toggle">
-      <button data-trade-tf="5m">5m</button>
-      <button data-trade-tf="15m">15m</button>
-      <button data-trade-tf="30m">30m</button>
-      <button data-trade-tf="1h" class="active">1h</button>
-      <button data-trade-tf="2h">2h</button>
-      <button data-trade-tf="4h">4h</button>
-      <button data-trade-tf="1d">1d</button>
-      <button data-trade-tf="1w">1w</button>
-    </div>
-    <p class="trade-tf-hint" data-i18n="hint.tradeTf">진입 봉 단위 — 선택한 TF 이상 봉으로 매매 결정 (1m 은 노이즈로 제외)</p>
+    <!-- 2026-06-17 #ORIGO-MODEL: 봇 모델 선택 (Claude 모델선택 UX). TF·전략·ttl 은
+         모델 프리셋에 고정 — 사용자가 TF 못 건드림(라이브가 15m 로 새어 백테스트
+         엣지 깨지던 손실 원인 차단). 추후 Origo 2(추세형) 등 option 추가. -->
+    <h2>모델</h2>
+    <select id="model-select" class="model-select">
+      <option value="origo-1.1" selected>Origo 1.1 — 단타 (5분봉)</option>
+    </select>
+    <p class="trade-tf-hint">검증된 모델 — 봉·전략·진입대기가 자동으로 고정됩니다.</p>
 
     <h2 data-i18n="sidebar.apiCredentials">API Credentials</h2>
     <!-- 2026-05-29: demo/live 슬롯 분리. 라디오로 저장 대상 모드 선택.
@@ -2415,6 +2426,7 @@
           <thead>
             <tr>
               <th>Market</th>
+              <th>Model</th>
               <th class="num">Entry</th>
               <th class="num">Qty</th>
               <th class="num">P&amp;L</th>
@@ -2422,7 +2434,7 @@
             </tr>
           </thead>
           <tbody id="pnl-tbody">
-            <tr><td colspan="5" class="pnl-empty">청산 거래 없음 — 첫 종료 시 표시됩니다</td></tr>
+            <tr><td colspan="6" class="pnl-empty">청산 거래 없음 — 첫 종료 시 표시됩니다</td></tr>
           </tbody>
         </table>
       </div>

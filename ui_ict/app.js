@@ -1190,7 +1190,7 @@ function renderPnL(data) {
   _lastTrades = trades;
   count.textContent = trades.length;
   if (trades.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" class="pnl-empty">청산 거래 없음 — 첫 종료 시 표시됩니다</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="pnl-empty">청산 거래 없음 — 첫 종료 시 표시됩니다</td></tr>';
     renderPnLChart(trades);
     return;
   }
@@ -1208,6 +1208,7 @@ function renderPnL(data) {
     const tstr = ts ? `${String(ts.getMonth()+1).padStart(2,"0")}-${String(ts.getDate()).padStart(2,"0")} ${String(ts.getHours()).padStart(2,"0")}:${String(ts.getMinutes()).padStart(2,"0")}` : "—";
     return `<tr>
       <td><span class="${dirCls}">${sym}</span></td>
+      <td>${t.model || "—"}</td>
       <td class="num">${entry}</td>
       <td class="num">${qty}</td>
       <td class="num ${pnlCls}">${pnlStr}</td>
@@ -1580,8 +1581,9 @@ function _updateVizButtons() {
 }
 _updateVizButtons();
 
-// 사이드바 매매 TF 토글 — 클릭 시 POST /ict/timeframe
-$("trade-tf-toggle").addEventListener("click", async (ev) => {
+// 2026-06-17 #ORIGO-MODEL: 매매 TF 토글 제거(모델 프리셋이 TF 고정). DOM 부재 시
+// null 안전(?.) — 핸들러 미부착. 모델 선택 동작은 추후(Origo 2 추가 시).
+$("trade-tf-toggle")?.addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button[data-trade-tf]");
   if (!btn) return;
   const tf = btn.dataset.tradeTf;

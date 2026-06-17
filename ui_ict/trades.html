@@ -468,6 +468,8 @@
           <th data-i18n="trades.colType">유형</th>
           <!-- 2026-05-29 파트너 요청: DEMO/LIVE 구분 컬럼 추가. -->
           <th data-i18n="trades.colMode">모드</th>
+          <!-- 2026-06-17 파트너 요청: 봇 모델(Origo 1.1 등) 구분 컬럼. -->
+          <th data-i18n="trades.colModel">모델</th>
           <th data-i18n="trades.colDirection">방향</th>
           <th data-i18n="trades.colSymbol">심볼</th>
           <th data-i18n="trades.colPrice">가격</th>
@@ -477,7 +479,7 @@
         </tr>
       </thead>
       <tbody id="rows">
-        <tr><td colspan="9" class="empty" data-i18n="trades.loading">로딩 중…</td></tr>
+        <tr><td colspan="10" class="empty" data-i18n="trades.loading">로딩 중…</td></tr>
       </tbody>
     </table>
   </div>
@@ -737,6 +739,7 @@
         <td>${fmtTs(r.ts_ms)}</td>
         <td><span class="ev ev-${escapeHtml(r.event_type)}">${escapeHtml(r.event_type)}</span></td>
         <td style="${modeStyle};font-size:10px;letter-spacing:0.1em">${modeTxt}</td>
+        <td style="color:var(--text-2);font-size:11px">${escapeHtml(r.model || "—")}</td>
         <td class="${dirCls}">${escapeHtml(r.direction || "—")}</td>
         <td>${escapeHtml(r.symbol || "—")}</td>
         <td>${fmt(r.price, 2)}</td>
