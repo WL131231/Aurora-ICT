@@ -33,6 +33,10 @@ TRADE_TIMEFRAMES: tuple[str, ...] = ("5m", "15m", "30m", "1h", "2h", "4h", "1d",
 # trail·전체ttl1h 처럼 BTC 단독 함정을 피하려 페어별로 검증된 값만 예외 부여.
 PAIR_TTL_OVERRIDES: dict[str, int] = {"BTCUSDT": 3600}
 
+# 2026-06-17 #ORIGO-MODEL: 현재 봇 모델명 — 매매 기록에 어느 모델로 매매됐는지 태그.
+# 버전 프리셋이 늘면 settings 필드로 전환. 일단 단일 모델 상수.
+ORIGO_MODEL_NAME = "Origo 1.1"
+
 
 def origo1_ttl_for_symbol(symbol: str, default_ttl: int) -> int:
     """심볼별 베스트 진입대기 ttl(초) — BTC 1h, 나머지 default(보통 30분).

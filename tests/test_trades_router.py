@@ -280,7 +280,7 @@ def test_export_my_trades_csv(data_dir):
     text = r.text
     # header — 2026-05-29: mode 컬럼 추가 (DEMO/LIVE 구분).
     assert text.startswith(
-        "ts_ms,event_type,mode,symbol,direction,price,qty,pnl_usdt",
+        "ts_ms,event_type,mode,model,symbol,direction,price,qty,pnl_usdt",
     )
     # 두 행 모두 포함
     assert "1000" in text
@@ -395,7 +395,7 @@ def test_admin_export_all_combines_users_with_code_column(data_dir, monkeypatch)
     assert "trades_all_users.csv" in r.headers["content-disposition"]
     text = r.text
     # user_code 가 맨 앞 컬럼.
-    assert text.startswith("user_code,ts_ms,event_type,mode,symbol,direction")
+    assert text.startswith("user_code,ts_ms,event_type,mode,model,symbol,direction")
     assert "AICT-AAAA-AAAA-AAAA" in text
     assert "AICT-BBBB-BBBB-BBBB" in text
     assert "1000" in text

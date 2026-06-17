@@ -29,6 +29,7 @@ import pandas as pd
 from ccxt.base.errors import AuthenticationError
 
 from aurora_ict.bot.structure_trail import compute_structure_trail
+from aurora_ict.config.settings import ORIGO_MODEL_NAME
 from aurora_ict.indicators.cisd import CisdType, detect_cisd
 from aurora_ict.indicators.daily_bias import compute_daily_bias
 from aurora_ict.indicators.dol import compute_dol
@@ -2820,6 +2821,8 @@ class BotIctInstance:
             context_json=context_json,
             # 2026-05-29: DEMO/LIVE 구분 — UI 가 "유형" 옆 컬럼에 표시.
             mode=self.run_mode,
+            # 2026-06-17: 봇 모델 태그 — 매매 기록 [모델] 컬럼 (어느 모델로 매매됐는지).
+            model=ORIGO_MODEL_NAME,
         )
         # 2026-06-09: 매매 이벤트를 fly 로그에도 남긴다 — 진입은 "Execute setup"
         # 으로만 찍히고 청산(SL/TP)은 DB 만 기록돼 로그 모니터링에서 누락됐다.

@@ -508,7 +508,7 @@ function _renderTradesFiltered() {
     _renderPnlChart(trades);
 
     if (trades.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="trades-empty">거래내역 없음</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" class="trades-empty">거래내역 없음</td></tr>';
         return;
     }
     const fmtPrice = (v) => Number(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -566,6 +566,7 @@ function _renderTradesFiltered() {
         <tr class="trade-row" data-trade-idx="${idx}">
             <td>${fmtSymbol(t.symbol)}</td>
             <td class="mono">${t.instrument}</td>
+            <td class="mono trade-model">${t.model || "—"}</td>
             <td class="mono">${fmtPrice(t.entry_price)}</td>
             <td class="mono">${fmtPrice(t.exit_price)}</td>
             <td class="mono">${fmtQty(t.qty, t.direction)}</td>

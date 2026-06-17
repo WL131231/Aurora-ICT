@@ -79,6 +79,9 @@ class TradeEvent:
     # 2026-05-29 PR 매매기록 DEMO/LIVE 구분 (파트너 요청): 이 매매가 발생한
     # run_mode. "demo" / "live". 기존 jsonl row 는 None — UI 가 "—" 표시.
     mode: str | None = None
+    # 2026-06-17: 어느 봇 모델(예 "Origo 1.1")로 매매됐는지 구분 (파트너 요청).
+    # 기존 매매(이 필드 추가 전)는 None — UI 가 "—" 표시.
+    model: str | None = None
 
     def to_json_line(self) -> str:
         """JSONL 1줄 직렬화 — trailing newline 포함."""
@@ -107,7 +110,8 @@ CREATE TABLE IF NOT EXISTS trades (
     setup_ts_ms INTEGER,
     reason TEXT NOT NULL DEFAULT '',
     context_json TEXT,
-    mode TEXT
+    mode TEXT,
+    model TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts_ms);
 CREATE INDEX IF NOT EXISTS idx_trades_setup ON trades(setup_ts_ms);
@@ -190,6 +194,8 @@ class TradesStore:
             "ALTER TABLE trades ADD COLUMN context_json TEXT",
             # 2026-05-29: DEMO/LIVE 구분 컬럼 (파트너 요청).
             "ALTER TABLE trades ADD COLUMN mode TEXT",
+            # 2026-06-17: 봇 모델(Origo 1.1 등) 구분 컬럼 (파트너 요청).
+            "ALTER TABLE trades ADD COLUMN model TEXT",
         ):
             try:
                 self._conn.execute(alter_sql)
@@ -246,8 +252,8 @@ class TradesStore:
                         """
                         INSERT INTO trades
                         (ts_ms, event_type, symbol, direction, price, qty,
-                         pnl_usdt, setup_ts_ms, reason, context_json, mode)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         pnl_usdt, setup_ts_ms, reason, context_json, mode, model)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             event.ts_ms,
@@ -261,6 +267,7 @@ class TradesStore:
                             event.reason,
                             event.context_json,
                             event.mode,
+                            event.model,
                         ),
                     )
                     self._conn.commit()
@@ -308,8 +315,8 @@ class TradesStore:
                 """
                 INSERT INTO trades
                 (ts_ms, event_type, symbol, direction, price, qty,
-                 pnl_usdt, setup_ts_ms, reason, context_json, mode)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 pnl_usdt, setup_ts_ms, reason, context_json, mode, model)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -324,6 +331,7 @@ class TradesStore:
                         e.reason,
                         e.context_json,
                         e.mode,
+                        e.model,
                     )
                     for e in events
                 ],
