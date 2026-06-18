@@ -204,10 +204,10 @@
     color: var(--text-3);
     line-height: 1.4;
   }
-  /* 2026-06-17 #ORIGO-MODEL: 모델 선택 드롭다운 (TF 토글 톤 차용). */
-  .model-select {
+  /* 2026-06-18 #ORIGO-MODEL: custom 모델 드롭다운 — 펼침 슬라이드(max-height) + caret 회전. */
+  .model-dd { position: relative; width: 100%; margin-top: 4px; }
+  .model-dd-trigger {
     width: 100%;
-    margin-top: 4px;
     padding: 7px 9px;
     font-size: 11px;
     font-weight: 500;
@@ -217,8 +217,35 @@
     color: var(--text-1);
     letter-spacing: 0.03em;
     cursor: pointer;
+    font-family: inherit;
+    display: flex; align-items: center; justify-content: space-between;
+    transition: border-color .15s ease;
   }
-  .model-select:focus { outline: none; border-color: #34d399; }
+  .model-dd-trigger:hover { border-color: var(--line-strong); }
+  .model-dd.open .model-dd-trigger { border-color: #34d399; }
+  .model-dd-caret { opacity: 0.55; transition: transform .2s ease; }
+  .model-dd.open .model-dd-caret { transform: rotate(180deg); }
+  .model-dd-menu {
+    position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 300;
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-radius: 4px;
+    overflow: hidden;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    max-height: 0; opacity: 0; visibility: hidden;
+    transition: max-height .22s cubic-bezier(.2, .8, .2, 1), opacity .18s ease, visibility .18s ease;
+  }
+  .model-dd.open .model-dd-menu { max-height: 240px; opacity: 1; visibility: visible; }
+  .model-dd-opt {
+    padding: 8px 9px;
+    font-size: 11px;
+    color: var(--text-1);
+    letter-spacing: 0.03em;
+    cursor: pointer;
+    transition: background .12s ease;
+  }
+  .model-dd-opt:hover { background: var(--bg-2); }
+  .model-dd-opt.is-selected { color: #34d399; }
 
   /* 2026-05-29 v2: 사이드바 페어 선택 토글 (BTC/ETH 복수 선택).
      trade-tf-toggle 톤 재사용, 2 column 그리드. */
@@ -366,20 +393,29 @@
     font-family: inherit;
   }
   .pair-select-btn:hover { border-color: var(--line-strong); }
+  /* 2026-06-18 파트너: 툭 뜨던 오버레이를 fade+scale 로 부드럽게.
+     [hidden] 을 display:none 대신 opacity/visibility 로 처리해 transition 가능. */
   .pair-picker-overlay {
     position: fixed; inset: 0; z-index: 1000;
     background: rgba(0, 0, 0, 0.6);
     display: flex; align-items: flex-start; justify-content: center;
     padding-top: 8vh;
+    opacity: 1; visibility: visible;
+    transition: opacity .18s ease, visibility .18s ease;
   }
-  .pair-picker-overlay[hidden] { display: none; }
+  .pair-picker-overlay[hidden] {
+    display: flex; opacity: 0; visibility: hidden; pointer-events: none;
+  }
   .pair-picker {
     width: 380px; max-width: 92vw; max-height: 70vh;
     display: flex; flex-direction: column;
     background: var(--surface); border: 1px solid var(--line-strong);
     border-radius: 8px; overflow: hidden;
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    transform: translateY(0) scale(1);
+    transition: transform .2s cubic-bezier(.2, .8, .2, 1);
   }
+  .pair-picker-overlay[hidden] .pair-picker { transform: translateY(-10px) scale(0.97); }
   .pair-picker-head {
     display: flex; gap: 8px; padding: 12px;
     border-bottom: 1px solid var(--line);
@@ -805,8 +841,9 @@
   .mobile-sidebar-toggle span {
     display: block; height: 2px; background: var(--text-2); border-radius: 1px;
   }
-  /* P&L 패널 접힘 — body 클래스로 토글 (데스크탑) */
-  body.pnl-collapsed .pnl-panel { display: none; }
+  /* P&L 패널 접힘 — body 클래스로 토글 (데스크탑). display:none 대신 width:0 으로
+     슬라이드(2026-06-18 파트너). overflow:hidden 이라 내용은 잘리며 부드럽게 사라짐. */
+  body.pnl-collapsed .pnl-panel { width: 0; opacity: 0; border-left: 0; }
 
   /* ============================================================
      2026-05-28: 모바일 가로 전용 추가 컴포넌트
@@ -1024,6 +1061,8 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    /* 2026-06-18 파트너: ≡ 로 접고 펼 때 width 트랜지션으로 부드럽게 슬라이드. */
+    transition: width .25s cubic-bezier(.2, .8, .2, 1), opacity .2s ease;
   }
   .pnl-panel .positions-header { padding: 10px 14px; }
 
@@ -2152,9 +2191,18 @@
          모델 프리셋에 고정 — 사용자가 TF 못 건드림(라이브가 15m 로 새어 백테스트
          엣지 깨지던 손실 원인 차단). 추후 Origo 2(추세형) 등 option 추가. -->
     <h2>모델</h2>
-    <select id="model-select" class="model-select">
-      <option value="origo-1.1" selected>Origo 1.1 — 단타 (5분봉)</option>
-    </select>
+    <!-- 2026-06-18: native select → custom 드롭다운 (펼침 슬라이드, Origo 2 대비). -->
+    <div class="model-dd" id="model-dd" data-value="origo-1.1">
+      <button type="button" class="model-dd-trigger" id="model-dd-trigger" aria-expanded="false">
+        <span id="model-dd-label">Origo 1.1 — 단타형</span>
+        <svg class="model-dd-caret" width="10" height="6" viewBox="0 0 10 6" aria-hidden="true">
+          <path d="M1 1l4 4 4-4" stroke="currentColor" fill="none" stroke-width="1.5"/>
+        </svg>
+      </button>
+      <div class="model-dd-menu" id="model-dd-menu" role="listbox">
+        <div class="model-dd-opt is-selected" data-value="origo-1.1" role="option">Origo 1.1 — 단타형</div>
+      </div>
+    </div>
     <p class="trade-tf-hint">검증된 모델 — 봉·전략·진입대기가 자동으로 고정됩니다.</p>
 
     <h2 data-i18n="sidebar.apiCredentials">API Credentials</h2>
