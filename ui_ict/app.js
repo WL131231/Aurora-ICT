@@ -1581,6 +1581,39 @@ function _updateVizButtons() {
 }
 _updateVizButtons();
 
+// 2026-06-18 #ORIGO-MODEL: custom 모델 드롭다운 — 클릭 펼침(슬라이드) + 외부클릭 닫힘
+// + 옵션 선택. 옵션 1개(Origo 1.1)지만 Origo 2 추가 대비 구조. 선택 동작(봇 적용)은
+// 모델 다중화 시 연결 — 현재는 표시·선택 상태만 관리.
+(function initModelDropdown() {
+  const dd = $("model-dd");
+  if (!dd) return;
+  const trigger = $("model-dd-trigger");
+  const menu = $("model-dd-menu");
+  const label = $("model-dd-label");
+  trigger.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = dd.classList.toggle("open");
+    trigger.setAttribute("aria-expanded", open ? "true" : "false");
+  });
+  menu.querySelectorAll(".model-dd-opt").forEach((opt) => {
+    opt.addEventListener("click", () => {
+      menu.querySelectorAll(".model-dd-opt").forEach((o) => o.classList.remove("is-selected"));
+      opt.classList.add("is-selected");
+      label.textContent = opt.textContent;
+      dd.dataset.value = opt.dataset.value;
+      dd.classList.remove("open");
+      trigger.setAttribute("aria-expanded", "false");
+    });
+  });
+  // 외부 클릭 시 닫힘 (열려 있을 때만).
+  document.addEventListener("click", () => {
+    if (dd.classList.contains("open")) {
+      dd.classList.remove("open");
+      trigger.setAttribute("aria-expanded", "false");
+    }
+  });
+})();
+
 // 2026-06-17 #ORIGO-MODEL: 매매 TF 토글 제거(모델 프리셋이 TF 고정). DOM 부재 시
 // null 안전(?.) — 핸들러 미부착. 모델 선택 동작은 추후(Origo 2 추가 시).
 $("trade-tf-toggle")?.addEventListener("click", async (ev) => {
