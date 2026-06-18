@@ -388,6 +388,8 @@ class MultiUserBotManager:
             min_sl_distance_pct=settings.min_sl_distance_pct,
             max_sl_distance_pct=settings.max_sl_distance_pct,
             sl_dist_mult=settings.sl_dist_mult,
+            sl_dist_mult_ct=settings.sl_dist_mult_ct,
+            ct_trend_threshold=settings.ct_trend_threshold,
             shadow_log_enabled=settings.shadow_log_enabled,
             max_entry_distance_pct=settings.max_entry_distance_pct,
             heartbeat_interval_sec=settings.heartbeat_interval_sec,

@@ -115,6 +115,9 @@ class SilverBulletSetup:
     confluence_score: int = 0
     confluences: list[str] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
+    # 2026-06-18 #CT-SL: 진입 직전 20봉 방향정합 추세(%). bot 이 진입 시 채워 넣고,
+    # 역추세(<ct_trend_threshold)면 SL 거리 배수를 sl_dist_mult_ct(x4)로 전환.
+    entry_trend_pct: float = 0.0
     # LuxAlgo Silver Bullet "Strict" mode — FVG 가 mean threshold 까지 retrace 됐는지.
     # entry limit 가 FVG mean 인데, 가격이 그 raw 까지 실제로 닿았는지 확인.
     # True → active setup (entry 가능). False → retrace 미발생 (대기 또는 skip).
