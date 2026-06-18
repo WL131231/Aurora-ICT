@@ -292,6 +292,11 @@ class BotIctInstance:
     # 넓힐수록 스탑헌트 생존으로 단조 개선, x3.0 에서 BTC IN/OUT 흑자.
     # TP 는 원 RR 유지 비례 확장. risk sizing ON 이면 건당 손실(R) 불변.
     sl_dist_mult: float = 1.0
+    # 2026-06-18 #CT-SL: 역추세 진입(signed_trend < ct_trend_threshold)이면 SL 배수를
+    # sl_dist_mult 대신 이 값으로. 0=비활성. Origo 구독제는 settings validator 가 4.0
+    # 강제(순추세/횡보 x3, 역추세 x4 — 7페어 5년 robust, net +4.0%p).
+    sl_dist_mult_ct: float = 0.0
+    ct_trend_threshold: float = 0.0
     # 2026-06-11 #SHADOW: FSD-style 데이터 플라이휠 — 게이트에 걸려 *거른* setup
     # 도 특징과 함께 JSONL 기록(행동 영향 0). 진입한 것만 기록하면 학습 데이터가
     # 편향·희소해지므로, 거른 자리의 사후 결과까지 모아 오프라인 학습 재료로.
@@ -940,6 +945,12 @@ class BotIctInstance:
         # #SMT 2026-06-06: 상관 자산(BTC↔ETH) divergence 가 setup 방향과 일치하면 +1.
         # 게이트·qty 산정 전에 적용. corr 심볼 OHLCV fetch 필요해 async.
         await self._apply_smt_boost(signal.setup, df)
+        # #OTE-FIB 2026-06-18: 직전 임펄스 swing leg 의 피보나치 0.618~0.786(ICT OTE)
+        # 되돌림 진입이면 confluence +1. 게이트·qty 전에 적용 (net +0.5%p·거래+12).
+        self._apply_ote_boost(signal.setup, df)
+        # #CT-SL 2026-06-18: 진입 직전 20봉 방향정합 추세 기록 → _execute_setup 이
+        # 역추세면 SL 배수를 sl_dist_mult_ct(x4)로 전환 (confluence·게이트엔 영향 0).
+        self._set_entry_trend(signal.setup, df)
         # B+ 등급 게이트 (#1/#8) — HTF boost 까지 반영된 최종 score 가 기준 미만이면 skip.
         # 빈도↓·품질↑ (하루 ~4~5개 목표). min_confluence=0 이면 비활성(기존 동작).
         if signal.setup.confluence_score < self.min_confluence:
@@ -1561,11 +1572,19 @@ class BotIctInstance:
         # risk_based_sizing(기본 ON)이면 qty 가 1/배수로 줄어 건당 손실(R) 불변.
         # max_sl 게이트(위)는 원본 거리 기준 통과 후 적용, entry 보정(아래)의
         # 평행이동은 확장된 거리를 그대로 보존한다.
-        if self.sl_dist_mult > 0 and self.sl_dist_mult != 1.0 and setup.entry > 0:
+        # #CT-SL 2026-06-18: 역추세(되돌림) 진입이면 SL 배수를 sl_dist_mult_ct(x4)로 전환.
+        # signed_trend = 진입 직전 20봉 변화율 × 방향부호. <ct_trend_threshold 면 역추세.
+        # 순추세/횡보는 기존 sl_dist_mult(x3) 유지. 7페어 5년 robust(net +4.0%p).
+        eff_mult = self.sl_dist_mult
+        if self.sl_dist_mult_ct > 0.0:
+            _sign = 1.0 if setup.direction is Direction.LONG else -1.0
+            if setup.entry_trend_pct * _sign < self.ct_trend_threshold:
+                eff_mult = self.sl_dist_mult_ct
+        if eff_mult > 0 and eff_mult != 1.0 and setup.entry > 0:
             risk = abs(setup.entry - setup.stop_loss)
             if risk > 0:
                 rr0 = abs(setup.take_profit - setup.entry) / risk
-                new_risk = risk * self.sl_dist_mult
+                new_risk = risk * eff_mult
                 # 2026-06-12 hotfix #LIQ-CAP: 확장 SL 거리가 레버리지 청산 거리
                 # (entry/leverage)의 80% 를 넘지 않게 캡. 넘으면 SL 도달 전에
                 # 강제청산돼 "건당 1R" 관리가 붕괴 + TP 도 비현실 값이 됨
@@ -1579,7 +1598,7 @@ class BotIctInstance:
                         capped = max(risk, cap)
                         logger.info(
                             "SL 확장 청산가 캡 — x%.1f(%.4f) → %.4f (lev=%d)",
-                            self.sl_dist_mult, new_risk, capped, self.leverage,
+                            eff_mult, new_risk, capped, self.leverage,
                         )
                         new_risk = capped
                 if setup.direction is Direction.LONG:
@@ -2307,6 +2326,51 @@ class BotIctInstance:
                 "DOL 역방향 감점 — setup=%s draw=%s score→%d",
                 setup.direction.value, draw.value, setup.confluence_score,
             )
+
+    def _apply_ote_boost(self, setup: SilverBulletSetup, df: pd.DataFrame) -> None:
+        """직전 임펄스 swing leg 의 피보나치 0.618~0.786(ICT OTE) 되돌림 진입 시 +1.
+
+        ZigZag auto-fib 의 핵심(마지막 pivot leg → retracement)을 swing detector 로
+        재현. 진입 방향과 임펄스 방향 정합 필요(LONG=상승 leg 되돌림 매수, SHORT=하락
+        leg 되돌림 매도). 7페어 5년 검증: net +0.5%p·거래 +12 — ICT 정통 OTE 편입.
+        in-place 가산.
+        """
+        from aurora_ict.indicators.swing_points import SwingType, detect_swing_points
+
+        swings = detect_swing_points(df)
+        if len(swings) < 2:
+            return
+        a, b = swings[-2], swings[-1]  # 직전 leg (a→b)
+        is_long = setup.direction is Direction.LONG
+        if is_long and b.type is not SwingType.HIGH:
+            return
+        if (not is_long) and b.type is not SwingType.LOW:
+            return
+        hi, lo = max(a.price, b.price), min(a.price, b.price)
+        if hi <= lo:
+            return
+        cl = float(df["close"].iloc[-1])
+        retr = (hi - cl) / (hi - lo) if is_long else (cl - lo) / (hi - lo)
+        if 0.618 <= retr <= 0.786:  # ICT OTE 구간(sweet spot 0.705)
+            setup.confluence_score += 1
+            setup.confluences.append("ote")
+            logger.info(
+                "OTE fib 가점 — setup=%s retr=%.3f score→%d",
+                setup.direction.value, retr, setup.confluence_score,
+            )
+
+    def _set_entry_trend(self, setup: SilverBulletSetup, df: pd.DataFrame) -> None:
+        """진입 직전 20봉 변화율(%)을 setup.entry_trend_pct 에 기록 (#CT-SL).
+
+        _execute_setup 이 signed_trend(= 이 값 × 방향부호) < ct_trend_threshold 면
+        역추세(되돌림)로 보고 SL 배수를 sl_dist_mult_ct(x4)로 전환. confluence·게이트
+        영향 0 (SL 거리만). 데이터 부족(<21봉)이면 0 유지(= 순추세 취급, x3).
+        """
+        closes = df["close"]
+        if len(closes) > 20:
+            past = float(closes.iloc[-21])
+            if past > 0:
+                setup.entry_trend_pct = (float(closes.iloc[-1]) - past) / past * 100.0
 
     def _apply_cisd_boost(self, setup: SilverBulletSetup, df: pd.DataFrame) -> None:
         """CISD(Change in State of Delivery) 순응 시 confluence +1 (#CISD 2026-06-06).

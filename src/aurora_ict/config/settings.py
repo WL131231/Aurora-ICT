@@ -234,6 +234,13 @@ class IctSettings(BaseSettings):
     # 넓힐수록 스탑헌트 생존으로 단조 개선. TP 는 원 RR 유지 비례 확장,
     # risk_based_sizing ON 이면 qty 가 줄어 건당 손실(R) 불변.
     sl_dist_mult: float = Field(default=1.0, ge=0.25, le=5.0)
+    # 2026-06-18 #CT-SL 국면별 동적 SL: 진입 시점 "방향 정합 추세"(signed_trend
+    # = 진입직전 20봉 변화율 × 방향부호)가 ct_trend_threshold 미만 = 역추세(되돌림
+    # 진입)이면 sl_dist_mult 대신 sl_dist_mult_ct 사용. 0=비활성(항상 sl_dist_mult).
+    # 근거: 7페어 5년 백테스트에서 역추세 분위 x4 가 전·후반 robust(되돌림이 터지면
+    # 큰 폭 → 먼 TP 가 먹음), 순추세 x3 유지. net +4.0%p·승률 유지(Origo 1.1 개선).
+    sl_dist_mult_ct: float = Field(default=0.0, ge=0.0, le=5.0)
+    ct_trend_threshold: float = Field(default=0.0, ge=-100.0, le=100.0)
     # 2026-06-11 #SHADOW: 거른 setup 도 특징과 함께 기록(FSD-style 플라이휠).
     # 행동 영향 0, 사용자별 shadow_setups.jsonl. 오프라인 학습 데이터 축적용.
     shadow_log_enabled: bool = Field(default=True)
@@ -360,6 +367,9 @@ class IctSettings(BaseSettings):
                 self.min_rr = 2.5
             if self.sl_dist_mult < 3.0:
                 self.sl_dist_mult = 3.0
+            # #CT-SL: 역추세(되돌림) 진입은 x4 (robust). 순추세/횡보는 위 x3 유지.
+            self.sl_dist_mult_ct = 4.0
+            self.ct_trend_threshold = 0.0
             # #ORIGO-1: ttl 30분(1800) 강제 — 7페어 5년 백테스트 최적(+9.54%).
             # BTC 만 manager 에서 1h(3600) override(페어별 베스트 ttl). 기존 2h(7200)는
             # 7페어 백테스트 손실 구간이라 폐기.
