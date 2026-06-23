@@ -1352,3 +1352,35 @@ async def test_partial_exit_once_only() -> None:
     )
     await bot._maybe_partial_exit(df)
     client.place_order.assert_not_awaited()
+
+
+# ===== #REGIME-ROLLING 2026-06-23 횡보 임계 롤링 분위 전환 검증 =====
+
+
+def test_regime_floor_fallback_when_insufficient_samples() -> None:
+    """롤링 표본 < MIN 이면 페어별 q33 하드코딩 fallback (배포 직후 안전)."""
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    bot = BotIctInstance(client=client, symbol="BTCUSDT", regime_rolling_enabled=True)
+    assert len(bot._trend_history) == 0
+    assert bot._regime_floor() == pytest.approx(0.230)  # BTC q33 하드코딩
+
+
+def test_regime_floor_uses_rolling_quantile_when_enough() -> None:
+    """롤링 표본 >= MIN 이면 실시간 33분위를 floor 로(페어 변동성 자동 적응)."""
+    from aurora_ict.bot.bot_ict_instance import REGIME_ROLLING_MIN
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    bot = BotIctInstance(client=client, symbol="BTCUSDT", regime_rolling_enabled=True)
+    n = REGIME_ROLLING_MIN
+    for i in range(n):
+        bot._trend_history.append(float(i))  # 0..n-1
+    # 33분위 = sorted[n//3] = n//3 (하드코딩 0.23 과 무관한 롤링값 확인)
+    assert bot._regime_floor() == pytest.approx(float(n // 3))
+
+
+def test_regime_floor_disabled_keeps_hardcoded() -> None:
+    """regime_rolling_enabled=False 면 표본 충분해도 q33 하드코딩 고정."""
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    bot = BotIctInstance(client=client, symbol="ETHUSDT", regime_rolling_enabled=False)
+    for i in range(100):
+        bot._trend_history.append(float(i))
+    assert bot._regime_floor() == pytest.approx(0.268)  # ETH q33 하드코딩 유지
