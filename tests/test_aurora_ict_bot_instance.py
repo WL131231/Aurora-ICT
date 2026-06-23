@@ -1287,6 +1287,7 @@ def test_calc_tp1_long_short_and_off() -> None:
 async def test_partial_exit_closes_half_and_moves_sl_to_breakeven() -> None:
     """TP1(1R) 도달 → 50% reduce_only 청산 + 나머지 50% SL 본전 이동."""
     import pandas as pd
+
     from aurora_ict.bot.bot_ict_instance import _ActivePosition
     client = _mock_client([[1, 100, 101, 99, 100, 10]])
     bot = BotIctInstance(
@@ -1316,6 +1317,7 @@ async def test_partial_exit_closes_half_and_moves_sl_to_breakeven() -> None:
 async def test_partial_exit_skips_when_tp1_not_reached() -> None:
     """TP1 미도달 봉이면 부분익절 안 함 (원 포지션·SL 유지)."""
     import pandas as pd
+
     from aurora_ict.bot.bot_ict_instance import _ActivePosition
     client = _mock_client([[1, 100, 101, 99, 100, 10]])
     bot = BotIctInstance(client=client, symbol="BTCUSDT", partial_tp_rr=1.0)
@@ -1336,6 +1338,7 @@ async def test_partial_exit_skips_when_tp1_not_reached() -> None:
 async def test_partial_exit_once_only() -> None:
     """이미 부분익절(partial_done)한 포지션은 재청산 안 함 (중복 방지)."""
     import pandas as pd
+
     from aurora_ict.bot.bot_ict_instance import _ActivePosition
     client = _mock_client([[1, 100, 101, 99, 100, 10]])
     bot = BotIctInstance(client=client, symbol="BTCUSDT", partial_tp_rr=1.0)
