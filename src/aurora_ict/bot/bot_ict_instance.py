@@ -320,9 +320,10 @@ class BotIctInstance:
     }
     # partial_tp_rr: 분할익절 — TP1(이익 partial_tp_rr×R) 도달 시 50% reduce_only 청산.
     # 0=off. partial_be=True 면 부분익절 후 나머지 50% SL 을 본전으로(무손실 보호).
-    # 2026-06-23 연구: 1R 분할 + 본전이동 = 체감승률 30→53%·연속손절 반토막(net 흑자
-    # 유지·최대DD↓). 단타(작은 TP)·스윙(먼 TP) 트레이드오프를 분할이 우회.
-    partial_tp_rr: float = 1.0
+    # 2026-06-23 연구: 분할 + 본전이동 = 체감승률↑·연속손절↓, 단타/스윙 트레이드오프
+    # 우회. RR 점검(고래 RR사수 교훈): 1.0R 은 RR 0.92로 비대칭 역전(net 약함) →
+    # 1.5R 채택 = RR 1.47·net+69(횡보회피포함)·체감승률 43%·연속손절 6.1. RR 더 보존.
+    partial_tp_rr: float = 1.5
     partial_be: bool = True
     # 2026-06-11 #EDGE-V2: SL 거리 배수 (1.0=원본). 백테스트 10국면 검증 —
     # 넓힐수록 스탑헌트 생존으로 단조 개선, x3.0 에서 BTC IN/OUT 흑자.
