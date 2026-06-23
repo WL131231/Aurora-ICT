@@ -71,6 +71,7 @@ def generate_ict_signal(
     disable_time_filter: bool = False,
     min_sl_distance_pct: float = 0.0,
     prefer_direction: Direction | None = None,
+    ote_level: float = 0.5,
 ) -> ICTSignal:
     """OHLCV DataFrame으로부터 ICT signal을 한 건 생성.
 
@@ -108,6 +109,7 @@ def generate_ict_signal(
         expand_to_killzone=expand_to_killzone,
         disable_time_filter=disable_time_filter,
         min_sl_distance_pct=min_sl_distance_pct,
+        ote_level=ote_level,
     )
 
     # v0.4.71+ Phase B: 새 4 source (Turtle / Mitigation / Implied / Rejection) setup

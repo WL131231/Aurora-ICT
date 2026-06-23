@@ -250,6 +250,7 @@ async def test_step_executes_long_setup() -> None:
         symbol="BTCUSDT",
         min_rr=1.0,
         fvg_min_size_pct=0.001,
+        regime_filter_enabled=False,  # 진입 로직 검증 — 횡보 게이트 격리
     )
     sig = await bot.step()
     assert sig.action is SignalAction.ENTER_LONG
@@ -309,6 +310,7 @@ async def test_step_allows_entry_inside_killzone_for_sub_license() -> None:
         min_rr=1.0,
         fvg_min_size_pct=0.001,
         disable_time_filter=False,
+        regime_filter_enabled=False,  # 킬존 진입 검증 — 횡보 게이트 격리
     )
     sig = await bot.step()
     assert sig.action is SignalAction.ENTER_LONG
@@ -336,6 +338,29 @@ async def test_step_grade_gate_skips_low_confluence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_step_regime_filter_skips_ranging_setup() -> None:
+    """#REGIME 2026-06-23: 횡보 국면(|진입추세%| < 페어별 floor) setup 진입 skip.
+
+    합성 long setup 은 |entry_trend| ≈ 0(횡보) → BTCUSDT floor 0.23 미만이라 차단.
+    같은 데이터로 regime off(다른 테스트들)면 정상 진입하므로 게이트가 유일 원인.
+    """
+    start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
+    rows = _ohlcv_rows(start, _bars_long_setup())
+    client = _mock_client(rows)
+    bot = BotIctInstance(
+        client=client,
+        symbol="BTCUSDT",
+        min_rr=1.0,
+        fvg_min_size_pct=0.001,
+        regime_filter_enabled=True,  # 횡보 게이트 ON (라이브 기본값)
+    )
+    sig = await bot.step()
+    assert sig.action is SignalAction.ENTER_LONG   # 신호 자체는 검출됨
+    assert client.place_order.await_count == 0     # 횡보 국면이라 진입 skip
+    assert bot.active_position is None
+
+
+@pytest.mark.asyncio
 async def test_step_high_rr_bypass_passes_when_rr_above_threshold() -> None:
     """고RR 예외(#high-rr-bypass) — confluence 미달이어도 rr >= bypass 임계면 진입.
 
@@ -352,6 +377,7 @@ async def test_step_high_rr_bypass_passes_when_rr_above_threshold() -> None:
         fvg_min_size_pct=0.001,
         min_confluence=99,           # 등급 게이트 무조건 막힘
         high_rr_bypass_min_rr=1.0,   # rr 1.43 >= 1.0 → 예외 통과
+        regime_filter_enabled=False,  # 고RR 예외 검증 — 횡보 게이트 격리
     )
     sig = await bot.step()
     assert sig.action is SignalAction.ENTER_LONG
@@ -535,7 +561,10 @@ async def test_step_duplicate_setup_filtered() -> None:
     start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
     rows = _ohlcv_rows(start, _bars_long_setup())
     client = _mock_client(rows)
-    bot = BotIctInstance(client=client, min_rr=1.0, fvg_min_size_pct=0.001)
+    bot = BotIctInstance(
+        client=client, min_rr=1.0, fvg_min_size_pct=0.001,
+        regime_filter_enabled=False,  # 중복 진입 필터 검증 — 횡보 게이트 격리
+    )
     # 첫 step
     await bot.step()
     assert bot.active_position is not None
@@ -755,7 +784,10 @@ async def test_marketable_limit_pending_when_unfilled() -> None:
     client = _mock_client(rows)
     # 미체결 시뮬 — filled_qty / avg_fill_price 없음.
     client.place_order = AsyncMock(return_value={"orderId": "PENDING1"})
-    bot = BotIctInstance(client=client, min_rr=1.0, fvg_min_size_pct=0.001)
+    bot = BotIctInstance(
+        client=client, min_rr=1.0, fvg_min_size_pct=0.001,
+        regime_filter_enabled=False,  # 미체결 pending 검증 — 횡보 게이트 격리
+    )
     await bot.step()
     # entry 1회 — #LIVE-4: SL/TP 동봉 안 함 (체결 후 set_position_tpsl)
     assert client.place_order.await_count == 1
@@ -1236,3 +1268,87 @@ async def test_tpsl_verify_emergency_close_when_sl_breached() -> None:
     client.set_position_tpsl.assert_not_awaited()
     client.place_order.assert_awaited()
     assert bot.active_position is None
+
+
+# ===== #PARTIAL-TP 2026-06-23 분할익절(체감승률) 검증 =====
+
+
+def test_calc_tp1_long_short_and_off() -> None:
+    """_calc_tp1: 롱=entry+R, 숏=entry-R. partial_tp_rr<=0 / risk<=0 이면 0(비대상)."""
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    bot = BotIctInstance(client=client, symbol="BTCUSDT", partial_tp_rr=1.0)
+    assert bot._calc_tp1(100.0, 98.0, Direction.LONG) == pytest.approx(102.0)
+    assert bot._calc_tp1(100.0, 102.0, Direction.SHORT) == pytest.approx(98.0)
+    bot.partial_tp_rr = 0.0
+    assert bot._calc_tp1(100.0, 98.0, Direction.LONG) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_partial_exit_closes_half_and_moves_sl_to_breakeven() -> None:
+    """TP1(1R) 도달 → 50% reduce_only 청산 + 나머지 50% SL 본전 이동."""
+    import pandas as pd
+
+    from aurora_ict.bot.bot_ict_instance import _ActivePosition
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    bot = BotIctInstance(
+        client=client, symbol="BTCUSDT", partial_tp_rr=1.0, partial_be=True,
+    )
+    # 롱: entry 100, SL 98(risk 2) → tp1 102(1R), swing TP 110
+    bot.active_position = _ActivePosition(
+        direction=Direction.LONG, entry=100.0, stop_loss=98.0,
+        take_profit=110.0, qty=0.1, setup_ts_ms=1, tp1_price=102.0,
+    )
+    df = pd.DataFrame(
+        [{"open": 101.0, "high": 103.0, "low": 101.0, "close": 102.5, "volume": 1.0}],
+    )
+    await bot._maybe_partial_exit(df)
+    assert client.place_order.await_count == 1
+    kw = client.place_order.await_args_list[0].kwargs
+    assert kw["side"] == "sell"               # 롱 → sell 로 부분청산
+    assert kw["qty"] == pytest.approx(0.05)    # 50%
+    assert kw["reduce_only"] is True
+    assert bot.active_position.partial_done is True
+    assert bot.active_position.qty == pytest.approx(0.05)
+    assert bot.active_position.stop_loss == pytest.approx(100.0)  # 본전
+    client.set_position_tpsl.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_partial_exit_skips_when_tp1_not_reached() -> None:
+    """TP1 미도달 봉이면 부분익절 안 함 (원 포지션·SL 유지)."""
+    import pandas as pd
+
+    from aurora_ict.bot.bot_ict_instance import _ActivePosition
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    bot = BotIctInstance(client=client, symbol="BTCUSDT", partial_tp_rr=1.0)
+    bot.active_position = _ActivePosition(
+        direction=Direction.LONG, entry=100.0, stop_loss=98.0,
+        take_profit=110.0, qty=0.1, setup_ts_ms=1, tp1_price=102.0,
+    )
+    df = pd.DataFrame(
+        [{"open": 100.5, "high": 101.5, "low": 100.0, "close": 101.0, "volume": 1.0}],
+    )
+    await bot._maybe_partial_exit(df)
+    client.place_order.assert_not_awaited()
+    assert bot.active_position.partial_done is False
+    assert bot.active_position.qty == pytest.approx(0.1)
+
+
+@pytest.mark.asyncio
+async def test_partial_exit_once_only() -> None:
+    """이미 부분익절(partial_done)한 포지션은 재청산 안 함 (중복 방지)."""
+    import pandas as pd
+
+    from aurora_ict.bot.bot_ict_instance import _ActivePosition
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    bot = BotIctInstance(client=client, symbol="BTCUSDT", partial_tp_rr=1.0)
+    bot.active_position = _ActivePosition(
+        direction=Direction.LONG, entry=100.0, stop_loss=100.0,
+        take_profit=110.0, qty=0.05, setup_ts_ms=1, tp1_price=102.0,
+        partial_done=True,
+    )
+    df = pd.DataFrame(
+        [{"open": 102.0, "high": 103.0, "low": 102.0, "close": 102.5, "volume": 1.0}],
+    )
+    await bot._maybe_partial_exit(df)
+    client.place_order.assert_not_awaited()
