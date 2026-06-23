@@ -288,6 +288,20 @@ class BotIctInstance:
     # max_sl_distance_pct: SL 거리 / entry 가 이 비율 초과면 setup skip (비정상 큰 SL 차단).
     # 0 = 비활성.
     max_sl_distance_pct: float = 0.0
+    # ote_level: FVG 되돌림 진입 깊이. 0.5=CE(기존), 0.707=깊은 OTE 진입.
+    # 2026-06-23 안정형 하이브리드 연구: 0.707+swing+횡보게이트+분할익절 = 시드방어형
+    # 최선점(net 흑자 유지·최대DD↓·체감승률↑). 0.707 ≈ ICT OTE sweet spot.
+    ote_level: float = 0.707
+    # regime_filter_enabled: 횡보 국면(|진입추세%| < 페어별 floor) 진입 회피 게이트.
+    # 2026-06-23 연구: 횡보 국면은 모든 TP 적자라 회피가 net 흑자의 필수조건
+    # (게이트 생략·고정공통 임계는 7페어 net 적자, 페어별 q33 만 흑자 +18).
+    regime_filter_enabled: bool = True
+    # REGIME_TREND_FLOOR: 페어별 |진입추세%| 하위33%(q33) floor — 미만이면 횡보 skip.
+    # 2026-06-23 백테 7페어 q33 값(추후 롤링 분위로 전환 예정). 미등록 페어는 0(게이트 off).
+    REGIME_TREND_FLOOR: ClassVar[dict[str, float]] = {
+        "BTCUSDT": 0.230, "ETHUSDT": 0.268, "SOLUSDT": 0.396, "XRPUSDT": 0.271,
+        "DOGEUSDT": 0.275, "LINKUSDT": 0.315, "HYPEUSDT": 0.527,
+    }
     # 2026-06-11 #EDGE-V2: SL 거리 배수 (1.0=원본). 백테스트 10국면 검증 —
     # 넓힐수록 스탑헌트 생존으로 단조 개선, x3.0 에서 BTC IN/OUT 흑자.
     # TP 는 원 RR 유지 비례 확장. risk sizing ON 이면 건당 손실(R) 불변.
@@ -847,6 +861,7 @@ class BotIctInstance:
             disable_time_filter=self.disable_time_filter,
             min_sl_distance_pct=self.min_sl_distance_pct,
             prefer_direction=ema_dir,
+            ote_level=self.ote_level,
         )
 
         # 추세 평가 캐시 갱신 (현재는 로깅용, 향후 가중치 확장 여지).
@@ -951,6 +966,21 @@ class BotIctInstance:
         # #CT-SL 2026-06-18: 진입 직전 20봉 방향정합 추세 기록 → _execute_setup 이
         # 역추세면 SL 배수를 sl_dist_mult_ct(x4)로 전환 (confluence·게이트엔 영향 0).
         self._set_entry_trend(signal.setup, df)
+        # #REGIME 2026-06-23: 횡보 국면 회피 게이트 — 진입 직전 추세(|entry_trend_pct|)가
+        # 페어별 floor(q33) 미만이면 진입 skip. 안정형 하이브리드 연구: 횡보 국면은 모든
+        # TP 가 적자라 "대처 아닌 회피"가 답(회피가 net 흑자의 필수조건). _set_entry_trend
+        # 가 기록한 추세를 재사용(추가 계산 0). 미등록 페어는 floor=0 → 게이트 off.
+        if self.regime_filter_enabled:
+            floor = self.REGIME_TREND_FLOOR.get(self.symbol, 0.0)
+            if floor > 0 and abs(signal.setup.entry_trend_pct) < floor:
+                logger.info(
+                    "횡보 국면 skip — |trend|=%.3f < floor=%.3f (%s %s)",
+                    abs(signal.setup.entry_trend_pct), floor,
+                    signal.setup.direction.value, signal.setup.window,
+                )
+                self._record_shadow(signal.setup, "regime_skip")
+                self._remember_setup(signal.setup)
+                return signal
         # B+ 등급 게이트 (#1/#8) — HTF boost 까지 반영된 최종 score 가 기준 미만이면 skip.
         # 빈도↓·품질↑ (하루 ~4~5개 목표). min_confluence=0 이면 비활성(기존 동작).
         if signal.setup.confluence_score < self.min_confluence:

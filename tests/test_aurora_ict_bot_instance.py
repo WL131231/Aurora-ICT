@@ -250,6 +250,7 @@ async def test_step_executes_long_setup() -> None:
         symbol="BTCUSDT",
         min_rr=1.0,
         fvg_min_size_pct=0.001,
+        regime_filter_enabled=False,  # 진입 로직 검증 — 횡보 게이트 격리
     )
     sig = await bot.step()
     assert sig.action is SignalAction.ENTER_LONG
@@ -309,6 +310,7 @@ async def test_step_allows_entry_inside_killzone_for_sub_license() -> None:
         min_rr=1.0,
         fvg_min_size_pct=0.001,
         disable_time_filter=False,
+        regime_filter_enabled=False,  # 킬존 진입 검증 — 횡보 게이트 격리
     )
     sig = await bot.step()
     assert sig.action is SignalAction.ENTER_LONG
@@ -336,6 +338,29 @@ async def test_step_grade_gate_skips_low_confluence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_step_regime_filter_skips_ranging_setup() -> None:
+    """#REGIME 2026-06-23: 횡보 국면(|진입추세%| < 페어별 floor) setup 진입 skip.
+
+    합성 long setup 은 |entry_trend| ≈ 0(횡보) → BTCUSDT floor 0.23 미만이라 차단.
+    같은 데이터로 regime off(다른 테스트들)면 정상 진입하므로 게이트가 유일 원인.
+    """
+    start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
+    rows = _ohlcv_rows(start, _bars_long_setup())
+    client = _mock_client(rows)
+    bot = BotIctInstance(
+        client=client,
+        symbol="BTCUSDT",
+        min_rr=1.0,
+        fvg_min_size_pct=0.001,
+        regime_filter_enabled=True,  # 횡보 게이트 ON (라이브 기본값)
+    )
+    sig = await bot.step()
+    assert sig.action is SignalAction.ENTER_LONG   # 신호 자체는 검출됨
+    assert client.place_order.await_count == 0     # 횡보 국면이라 진입 skip
+    assert bot.active_position is None
+
+
+@pytest.mark.asyncio
 async def test_step_high_rr_bypass_passes_when_rr_above_threshold() -> None:
     """고RR 예외(#high-rr-bypass) — confluence 미달이어도 rr >= bypass 임계면 진입.
 
@@ -352,6 +377,7 @@ async def test_step_high_rr_bypass_passes_when_rr_above_threshold() -> None:
         fvg_min_size_pct=0.001,
         min_confluence=99,           # 등급 게이트 무조건 막힘
         high_rr_bypass_min_rr=1.0,   # rr 1.43 >= 1.0 → 예외 통과
+        regime_filter_enabled=False,  # 고RR 예외 검증 — 횡보 게이트 격리
     )
     sig = await bot.step()
     assert sig.action is SignalAction.ENTER_LONG
@@ -535,7 +561,10 @@ async def test_step_duplicate_setup_filtered() -> None:
     start = datetime(2026, 5, 12, 10, 0, tzinfo=NY)
     rows = _ohlcv_rows(start, _bars_long_setup())
     client = _mock_client(rows)
-    bot = BotIctInstance(client=client, min_rr=1.0, fvg_min_size_pct=0.001)
+    bot = BotIctInstance(
+        client=client, min_rr=1.0, fvg_min_size_pct=0.001,
+        regime_filter_enabled=False,  # 중복 진입 필터 검증 — 횡보 게이트 격리
+    )
     # 첫 step
     await bot.step()
     assert bot.active_position is not None
@@ -755,7 +784,10 @@ async def test_marketable_limit_pending_when_unfilled() -> None:
     client = _mock_client(rows)
     # 미체결 시뮬 — filled_qty / avg_fill_price 없음.
     client.place_order = AsyncMock(return_value={"orderId": "PENDING1"})
-    bot = BotIctInstance(client=client, min_rr=1.0, fvg_min_size_pct=0.001)
+    bot = BotIctInstance(
+        client=client, min_rr=1.0, fvg_min_size_pct=0.001,
+        regime_filter_enabled=False,  # 미체결 pending 검증 — 횡보 게이트 격리
+    )
     await bot.step()
     # entry 1회 — #LIVE-4: SL/TP 동봉 안 함 (체결 후 set_position_tpsl)
     assert client.place_order.await_count == 1
