@@ -35,7 +35,9 @@ PAIR_TTL_OVERRIDES: dict[str, int] = {"BTCUSDT": 3600}
 
 # 2026-06-17 #ORIGO-MODEL: 현재 봇 모델명 — 매매 기록에 어느 모델로 매매됐는지 태그.
 # 버전 프리셋이 늘면 settings 필드로 전환. 일단 단일 모델 상수.
-ORIGO_MODEL_NAME = "Origo 1.1"
+# 2026-06-23 Origo 1.2 = 안정형 하이브리드(0.707 OTE + 횡보회피 게이트 + 분할익절
+# + 횡보임계 롤링분위). 1.1(cisd+po3+CT-SL+OTE) 위에 시드방어형 전환 적용.
+ORIGO_MODEL_NAME = "Origo 1.2"
 
 
 def origo1_ttl_for_symbol(symbol: str, default_ttl: int) -> int:
