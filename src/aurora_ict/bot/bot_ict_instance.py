@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -154,6 +155,14 @@ class BotState(StrEnum):
 # 보호 SL fallback 폭 — 복구 등으로 SL 거리를 모를 때 entry 대비 이 비율로 임시 SL.
 # 0.5% (20x 면 ~10% 위험) — 무SL 방치보단 안전. 추후 ATR 기반으로 정교화 가능.
 _FALLBACK_SL_PCT = 0.005
+
+# 횡보 게이트 롤링 분위(#REGIME-ROLLING 2026-06-23) — 페어별 q33 하드코딩 대신
+# 최근 N개 setup 의 |진입추세%| 33분위를 실시간 floor 로(페어 변동성 자동 적응).
+REGIME_ROLLING_WINDOW = 150  # 분위 표본 윈도우 (deque maxlen)
+# 최소 표본 — 미만이면 q33 하드코딩 fallback. 2026-06-23 CSV 정합비교: 라이브
+# 변동성이 백테 2.4배라 하드코딩 fallback 이 실제보다 낮음 → 롤링 인계를 빠르게
+# (30→20) 해 배포 직후 부정확 구간 단축. 후보전체 정밀보정은 shadow 데이터 후.
+REGIME_ROLLING_MIN = 20
 
 # DOL 역방향 진입 감점 (#3 보완). 지배적 draw 와 반대인 setup 의 confluence_score 를
 # 이만큼 깎아 B+ 게이트(min_confluence)에서 걸러지게 함. 2 = 보통 setup 은 컷, A급만 통과.
@@ -300,6 +309,9 @@ class BotIctInstance:
     # 2026-06-23 연구: 횡보 국면은 모든 TP 적자라 회피가 net 흑자의 필수조건
     # (게이트 생략·고정공통 임계는 7페어 net 적자, 페어별 q33 만 흑자 +18).
     regime_filter_enabled: bool = True
+    # regime_rolling_enabled: 횡보 floor 를 롤링 33분위로(표본>=REGIME_ROLLING_MIN).
+    # False 면 페어별 q33 하드코딩 고정. 표본 부족(초기)이면 자동 하드코딩 fallback.
+    regime_rolling_enabled: bool = True
     # REGIME_TREND_FLOOR: 페어별 |진입추세%| 하위33%(q33) floor — 미만이면 횡보 skip.
     # 2026-06-23 백테 7페어 q33 값(추후 롤링 분위로 전환 예정). 미등록 페어는 0(게이트 off).
     REGIME_TREND_FLOOR: ClassVar[dict[str, float]] = {
@@ -474,6 +486,10 @@ class BotIctInstance:
     # 가장 최근 진입 setup direction 들 (recent 10) — judgment 응답에 노출하여
     # "long 비율 우세인데 short 만 진입" 같은 의문을 즉시 해소.
     _recent_setup_directions: list[str] = field(default_factory=list)
+    # #REGIME-ROLLING 2026-06-23: 최근 setup |진입추세%| 이력 — 롤링 33분위 floor 계산용.
+    _trend_history: deque[float] = field(
+        default_factory=lambda: deque(maxlen=REGIME_ROLLING_WINDOW), repr=False,
+    )
 
     async def start(self) -> None:
         """봇 기동 (background task 생성).
@@ -984,11 +1000,13 @@ class BotIctInstance:
         # TP 가 적자라 "대처 아닌 회피"가 답(회피가 net 흑자의 필수조건). _set_entry_trend
         # 가 기록한 추세를 재사용(추가 계산 0). 미등록 페어는 floor=0 → 게이트 off.
         if self.regime_filter_enabled:
-            floor = self.REGIME_TREND_FLOOR.get(self.symbol, 0.0)
-            if floor > 0 and abs(signal.setup.entry_trend_pct) < floor:
+            floor = self._regime_floor()  # 롤링 33분위 or q33 하드코딩 fallback
+            cur = abs(signal.setup.entry_trend_pct)
+            self._trend_history.append(cur)  # 다음 분위 계산용 누적(현재 판단은 이전 이력 기준)
+            if floor > 0 and cur < floor:
                 logger.info(
                     "횡보 국면 skip — |trend|=%.3f < floor=%.3f (%s %s)",
-                    abs(signal.setup.entry_trend_pct), floor,
+                    cur, floor,
                     signal.setup.direction.value, signal.setup.window,
                 )
                 self._record_shadow(signal.setup, "regime_skip")
@@ -1112,6 +1130,10 @@ class BotIctInstance:
                 "sl_dist_pct": round(risk / entry * 100, 4) if entry > 0 else None,
                 "align_score": self._last_align_score,
                 "confluences": list(getattr(setup, "confluences", []) or []),
+                # #REGIME-LEARN 2026-06-23: 미진입 setup 까지 진입추세 기록 → 라이브
+                # "후보 전체"(진입+횡보skip+등급skip) 분포 학습 모집단 완성. 횡보 임계
+                # 정확화·롤링 분위 seed 용(진입거래만 기록하면 분포가 높게 편향됨).
+                "entry_trend_pct": round(float(getattr(setup, "entry_trend_pct", 0.0) or 0.0), 4),
             }
             store_dir = Path(self.trades_data_dir or _ict_data_dir())
             store_dir.mkdir(parents=True, exist_ok=True)
@@ -2371,6 +2393,18 @@ class BotIctInstance:
                 "DOL 역방향 감점 — setup=%s draw=%s score→%d",
                 setup.direction.value, draw.value, setup.confluence_score,
             )
+
+    def _regime_floor(self) -> float:
+        """횡보 게이트 floor — 롤링 33분위(표본>=MIN) 또는 페어별 q33 하드코딩 fallback.
+
+        _trend_history(최근 setup |진입추세%|)가 REGIME_ROLLING_MIN 이상 쌓이면
+        실시간 33분위를 floor 로(페어 변동성 자동 적응). 표본 부족(초기 배포 직후)이면
+        REGIME_TREND_FLOOR 하드코딩값으로 안전 동작. 미등록 페어는 0(게이트 off).
+        """
+        if self.regime_rolling_enabled and len(self._trend_history) >= REGIME_ROLLING_MIN:
+            vals = sorted(self._trend_history)
+            return vals[len(vals) // 3]  # 하위 33분위 (백테 q33 동일 방식)
+        return self.REGIME_TREND_FLOOR.get(self.symbol, 0.0)
 
     def _calc_tp1(self, entry: float, stop_loss: float, direction: Direction) -> float:
         """분할익절 TP1(partial_tp_rr×R) 가격 — 진입 시점 risk 기준(이후 trail 무관).
