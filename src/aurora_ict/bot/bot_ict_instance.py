@@ -186,6 +186,10 @@ class _ActivePosition:
     entry_ts_ms: int = 0           # 체결 시각 (close 시점에 duration 계산)
     context_json: str | None = None  # 진입 setup confluences/source/window/HTF FVG snapshot
     equity_at_entry: float = 0.0   # 진입 시점 equity (참고용; close 시 dataset 에 박음)
+    # 분할익절(#PARTIAL-TP 2026-06-23) — 진입 시 계산한 TP1(partial_tp_rr×R) 가격.
+    # 도달 시 50% reduce_only 청산 + (partial_be 면) 나머지 SL 본전. 0=분할 비대상.
+    tp1_price: float = 0.0
+    partial_done: bool = False  # TP1 부분익절 1회 실행 여부 (중복 청산 방지)
 
 
 @dataclass(slots=True)
@@ -302,6 +306,12 @@ class BotIctInstance:
         "BTCUSDT": 0.230, "ETHUSDT": 0.268, "SOLUSDT": 0.396, "XRPUSDT": 0.271,
         "DOGEUSDT": 0.275, "LINKUSDT": 0.315, "HYPEUSDT": 0.527,
     }
+    # partial_tp_rr: 분할익절 — TP1(이익 partial_tp_rr×R) 도달 시 50% reduce_only 청산.
+    # 0=off. partial_be=True 면 부분익절 후 나머지 50% SL 을 본전으로(무손실 보호).
+    # 2026-06-23 연구: 1R 분할 + 본전이동 = 체감승률 30→53%·연속손절 반토막(net 흑자
+    # 유지·최대DD↓). 단타(작은 TP)·스윙(먼 TP) 트레이드오프를 분할이 우회.
+    partial_tp_rr: float = 1.0
+    partial_be: bool = True
     # 2026-06-11 #EDGE-V2: SL 거리 배수 (1.0=원본). 백테스트 10국면 검증 —
     # 넓힐수록 스탑헌트 생존으로 단조 개선, x3.0 에서 BTC IN/OUT 흑자.
     # TP 는 원 RR 유지 비례 확장. risk sizing ON 이면 건당 손실(R) 불변.
@@ -869,6 +879,9 @@ class BotIctInstance:
 
         # 진입 중인 position이 있으면 신규 진입은 막고 상태만 동기화 + trail tick + flip.
         if self.active_position is not None:
+            # #PARTIAL-TP: TP1(1R) 도달 시 50% 부분익절 + 본전SL — trail 보다 먼저
+            # (본전 이동이 trail 기준선을 갱신하므로 순서 중요).
+            await self._maybe_partial_exit(df)
             if self.enable_trail:
                 await self._tick_trail(df)
             await self._maybe_flip(df)
@@ -1799,6 +1812,7 @@ class BotIctInstance:
             entry_ts_ms=int(time.time() * 1000),
             context_json=_market_entry_ctx,
             equity_at_entry=_market_entry_equity,
+            tp1_price=self._calc_tp1(fill_price, setup.stop_loss, setup.direction),
         )
         # #BUG-2 해소: ENTRY 이벤트 기록 (체결됨 — 먼저 기록).
         self._record_trade(
@@ -1876,6 +1890,7 @@ class BotIctInstance:
                 entry_ts_ms=int(time.time() * 1000),
                 context_json=pe.context_json,
                 equity_at_entry=entry_equity,
+                tp1_price=self._calc_tp1(entry_px, pe.stop_loss, pe.direction),
             )
             # #BUG-2: ENTRY 기록 (체결됨 — 먼저 기록).
             self._record_trade(
@@ -2356,6 +2371,66 @@ class BotIctInstance:
                 "DOL 역방향 감점 — setup=%s draw=%s score→%d",
                 setup.direction.value, draw.value, setup.confluence_score,
             )
+
+    def _calc_tp1(self, entry: float, stop_loss: float, direction: Direction) -> float:
+        """분할익절 TP1(partial_tp_rr×R) 가격 — 진입 시점 risk 기준(이후 trail 무관).
+
+        Returns:
+            TP1 가격. partial_tp_rr<=0 또는 risk<=0 이면 0.0(분할 비대상).
+        """
+        if self.partial_tp_rr <= 0:
+            return 0.0
+        risk = abs(entry - stop_loss)
+        if risk <= 0:
+            return 0.0
+        if direction is Direction.LONG:
+            return entry + self.partial_tp_rr * risk
+        return entry - self.partial_tp_rr * risk
+
+    async def _maybe_partial_exit(self, df: pd.DataFrame) -> None:
+        """#PARTIAL-TP 2026-06-23: TP1(1R) 도달 시 50% reduce_only 청산 + 본전SL.
+
+        진입 시 계산한 tp1_price 를 최신 봉 high/low 가 터치하면 1회 부분익절.
+        체감승률↑·연속손절↓ 목적 — 나머지 50% runner 가 swing TP 까지 net 보존
+        (단타/스윙 트레이드오프 우회). 거래소 복원 포지션(tp1_price=0)·이미
+        부분익절(partial_done)은 skip. 부분청산 실패 시 원 포지션 유지하고 계속,
+        본전SL 설정 실패도 로깅만(다음 step 재시도 여지).
+        """
+        pos = self.active_position
+        if pos is None or pos.partial_done or pos.tp1_price <= 0:
+            return
+        if len(df) == 0:
+            return
+        last = df.iloc[-1]
+        hi = float(last["high"])
+        lo = float(last["low"])
+        hit = (hi >= pos.tp1_price) if pos.direction is Direction.LONG else (lo <= pos.tp1_price)
+        if not hit:
+            return
+        half = pos.qty * 0.5
+        side = "sell" if pos.direction is Direction.LONG else "buy"
+        try:
+            await self.client.place_order(
+                symbol=self.symbol, side=side, qty=half, price=None, reduce_only=True,
+            )
+        except Exception as e:  # noqa: BLE001 — 부분익절 실패해도 원 포지션 유지하고 계속
+            logger.error("[%s] 부분익절 청산 실패 — %s", self.symbol, e)
+            return
+        pos.qty -= half
+        pos.partial_done = True
+        # partial_be: 나머지 50% SL 을 본전으로 — TP1 닿은 거래는 최악이 본전(무손실).
+        if self.partial_be:
+            pos.stop_loss = pos.entry
+            try:
+                await self.client.set_position_tpsl(
+                    self.symbol, stop_loss=pos.entry, take_profit=pos.take_profit,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.error("[%s] 부분익절 후 본전 SL 설정 실패 — %s", self.symbol, e)
+        logger.info(
+            "부분익절 — TP1=%.4f 도달, 50%% 청산 + SL 본전 (%s %s, 잔여 qty=%.4f)",
+            pos.tp1_price, self.symbol, pos.direction.value, pos.qty,
+        )
 
     def _apply_ote_boost(self, setup: SilverBulletSetup, df: pd.DataFrame) -> None:
         """직전 임펄스 swing leg 의 피보나치 0.618~0.786(ICT OTE) 되돌림 진입 시 +1.
