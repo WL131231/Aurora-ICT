@@ -159,7 +159,10 @@ _FALLBACK_SL_PCT = 0.005
 # 횡보 게이트 롤링 분위(#REGIME-ROLLING 2026-06-23) — 페어별 q33 하드코딩 대신
 # 최근 N개 setup 의 |진입추세%| 33분위를 실시간 floor 로(페어 변동성 자동 적응).
 REGIME_ROLLING_WINDOW = 150  # 분위 표본 윈도우 (deque maxlen)
-REGIME_ROLLING_MIN = 30      # 최소 표본 — 미만이면 q33 하드코딩 fallback
+# 최소 표본 — 미만이면 q33 하드코딩 fallback. 2026-06-23 CSV 정합비교: 라이브
+# 변동성이 백테 2.4배라 하드코딩 fallback 이 실제보다 낮음 → 롤링 인계를 빠르게
+# (30→20) 해 배포 직후 부정확 구간 단축. 후보전체 정밀보정은 shadow 데이터 후.
+REGIME_ROLLING_MIN = 20
 
 # DOL 역방향 진입 감점 (#3 보완). 지배적 draw 와 반대인 setup 의 confluence_score 를
 # 이만큼 깎아 B+ 게이트(min_confluence)에서 걸러지게 함. 2 = 보통 setup 은 컷, A급만 통과.
@@ -1127,6 +1130,10 @@ class BotIctInstance:
                 "sl_dist_pct": round(risk / entry * 100, 4) if entry > 0 else None,
                 "align_score": self._last_align_score,
                 "confluences": list(getattr(setup, "confluences", []) or []),
+                # #REGIME-LEARN 2026-06-23: 미진입 setup 까지 진입추세 기록 → 라이브
+                # "후보 전체"(진입+횡보skip+등급skip) 분포 학습 모집단 완성. 횡보 임계
+                # 정확화·롤링 분위 seed 용(진입거래만 기록하면 분포가 높게 편향됨).
+                "entry_trend_pct": round(float(getattr(setup, "entry_trend_pct", 0.0) or 0.0), 4),
             }
             store_dir = Path(self.trades_data_dir or _ict_data_dir())
             store_dir.mkdir(parents=True, exist_ok=True)
