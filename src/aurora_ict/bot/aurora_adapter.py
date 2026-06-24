@@ -657,8 +657,15 @@ class AuroraClientAdapter:
         symbol: str,
         stop_loss: float | None = None,
         take_profit: float | None = None,
+        tp_size: float | None = None,
+        tpsl_mode: str = "Full",
     ) -> dict[str, Any]:
         """Bybit V5 set_trading_stop — 활성 포지션에 SL/TP conditional 동시 설정.
+
+        #PARTIAL-TP-ORDER 2026-06-24: tpsl_mode="Partial" + tp_size 면 부분 TP(포지션
+        일부 수량)를 position-attached 로 박는다 — 진입 시 1.5R/swing 두 TP 를 거래소에
+        미리 등록해 봇 폴링 의존 제거. 포지션 닫히면 거래소가 자동 취소(파트너 지적).
+        ⚠️ 부분 TP 2개 처리·자동취소는 거래소 실동작이라 소액 실측 검증 필수(백테 불가).
 
         #LIVE-4 fix: limit entry 주문에 SL/TP 동봉하면 Bybit 가 주문 시점 현재가 기준
         검증 (10001 "StopLoss should greater/lower base_price") 으로 거부 — 계획가가
@@ -678,13 +685,17 @@ class AuroraClientAdapter:
         params: dict[str, Any] = {
             "category": "linear",
             "symbol": raw_symbol,
-            "tpslMode": "Full",
+            "tpslMode": tpsl_mode,  # "Full"(전체) or "Partial"(tp_size 부분 TP)
             "positionIdx": 0,
         }
         if stop_loss is not None:
             params["stopLoss"] = str(stop_loss)
         if take_profit is not None:
             params["takeProfit"] = str(take_profit)
+        # Partial 모드: 부분 TP 수량(tpSize) — 이 수량만 TP 체결(나머지 수량은 유지).
+        # 진입 시 1.5R(50%)·swing(50%) 두 TP 를 부분으로 박는 용도.
+        if tpsl_mode == "Partial" and tp_size is not None:
+            params["tpSize"] = str(tp_size)
         try:
             result = await ex.private_post_v5_position_trading_stop(params)
         except Exception as e:  # noqa: BLE001
