@@ -199,6 +199,11 @@ class _ActivePosition:
     # 도달 시 50% reduce_only 청산 + (partial_be 면) 나머지 SL 본전. 0=분할 비대상.
     tp1_price: float = 0.0
     partial_done: bool = False  # TP1 부분익절 1회 실행 여부 (중복 청산 방지)
+    # partial_tp_exchange 시 거래소 Partial TP 등록 성공 여부 (#PARTIAL-TP-FALLBACK
+    # 2026-06-25). False(기본)면 폴링(_maybe_partial_exit)이 1차 익절 담당 — 진입수량
+    # 50%가 거래소 최소주문 미만이면 Partial TP 가 거부되므로, 등록 성공 시에만 True
+    # 로 올려 폴링을 끈다(이중청산 방지). 소액 포지션 1차익절 구멍 방지.
+    partial_on_exchange: bool = False
 
 
 @dataclass(slots=True)
@@ -2154,9 +2159,27 @@ class BotIctInstance:
             )
             await self._emergency_close()
             return
-        # 같은 방향 — 수량이 1% 초과 차이면 부분 청산 등으로 간주, 거래소 실제로 보정.
+        # 같은 방향 — 수량 변화 처리.
         contracts = float(ex_pos.get("contracts", 0) or 0)
-        if contracts > 0 and abs(contracts - last_known.qty) > last_known.qty * 0.01:
+        # #PARTIAL-TP-FILL 2026-06-25: 거래소 Partial 1.5R TP 체결 감지 — partial_on_exchange
+        # 로 등록한 포지션의 qty 가 절반 이하로 줄면 1.5R 부분익절 체결로 간주.
+        # partial_done 표시 + (partial_be 면) SL 을 본전(entry)으로 — 아래 #TPSL-VERIFY 가
+        # want_sl 변경을 감지해 거래소에 자동 재장착(폴링 _maybe_partial_exit 의 본전SL 과
+        # 동일 효과, 거래소 자동체결 경로용). reduce_only 청산을 봇이 안 했어도 동기 일치.
+        if (
+            self.partial_tp_exchange and last_known.partial_on_exchange
+            and not last_known.partial_done and contracts > 0
+            and contracts <= last_known.qty * 0.6
+        ):
+            logger.info(
+                "Partial 1.5R TP 체결 감지 — qty %.6f→%.6f (%s), SL 본전 이동",
+                last_known.qty, contracts, self.symbol,
+            )
+            last_known.qty = contracts
+            last_known.partial_done = True
+            if self.partial_be:
+                last_known.stop_loss = last_known.entry
+        elif contracts > 0 and abs(contracts - last_known.qty) > last_known.qty * 0.01:
             logger.warning(
                 "포지션 수량 불일치 — 봇=%.4f 거래소=%.4f. 거래소 기준 보정 (부분 청산 등).",
                 last_known.qty, contracts,
@@ -2525,32 +2548,56 @@ class BotIctInstance:
         }
 
     async def _setup_partial_tps(self) -> None:
-        """#PARTIAL-TP-ORDER 2026-06-25(미배포·미연결 골격): 진입 후 활성 포지션에
-        TP 2개(TP1=1.5R 50% + TP2=swing 50%)를 Partial mode 로 거래소 등록 — 봇 폴링
-        대체. 활성 포지션이라 부분 TP 여러개 가능(파트너 지식 6/25). 포지션 닫히면
-        거래소가 position-attached TP 자동 정리.
+        """#PARTIAL-TP-ORDER 2026-06-25: 진입 후 활성 포지션에 1.5R 부분 TP(50%)를
+        Partial mode 로 거래소 등록 — 폴링(_maybe_partial_exit) 대체. swing TP+SL 은
+        _ensure_protective_sl 이 Entire 로 이미 박음(Bybit Entire+Partial 공존, 6/25 실측).
 
-        ⚠️ 미완성: ① _execute_setup 연결 ② TP1 체결 감지(qty 50%↓)→SL본전 ③ Bybit
-        Partial SL/TP 모드 혼합·tpSize 동작 소액 실측. partial_tp_exchange=False 라
-        현재 호출 안 됨(폴링 _maybe_partial_exit 유지).
+        ⚠️ 진입수량 50%가 거래소 최소주문 미만이면 Partial TP 가 거부된다(6/25 실측:
+        BTC 0.001 진입→0.0005 < 최소 0.001 → Entire 만 남음). 그 경우
+        partial_on_exchange=False 로 두어 폴링이 1차 익절을 담당(fallback). 등록 성공
+        시에만 True → 폴링 skip(이중청산 방지).
         """
         pos = self.active_position
         if pos is None or pos.tp1_price <= 0:
             return
-        # swing TP + SL 은 _ensure_protective_sl 이 Entire(전체)로 이미 박음(기존).
-        # Bybit 는 Entire TP/SL + Partial TP 공존 가능(파트너 6/25 실측: Modify TP/SL
-        # > Partial Position 탭). 그래서 여기선 1.5R 부분 TP(50%)만 Partial 로 추가.
         half = pos.qty * 0.5
+        # 사전 최소수량 체크 — partial(50%)이 거래소 최소주문 미만이면 거래소가 거부.
+        # 등록 시도조차 안 하고 폴링 fallback(partial_on_exchange=False 유지).
         try:
-            await self.client.set_position_tpsl(
+            meta = await self.client.fetch_symbol_meta(self.symbol)
+            min_qty = meta.get("min_qty")
+        except Exception:  # noqa: BLE001 — 메타 조회 실패는 retCode 체크로 폴백
+            min_qty = None
+        if min_qty is not None and half < float(min_qty):
+            logger.warning(
+                "[%s] partial 수량 %.6f < 최소주문 %.6f — 거래소 Partial TP skip, "
+                "폴링(_maybe_partial_exit)이 1차 익절 담당(fallback)",
+                self.symbol, half, float(min_qty),
+            )
+            pos.partial_on_exchange = False
+            return
+        # 등록 시도 — 성공(retCode 0) 시에만 partial_on_exchange=True → 폴링 skip.
+        ok = False
+        try:
+            res = await self.client.set_position_tpsl(
                 self.symbol, take_profit=pos.tp1_price, tp_size=half, tpsl_mode="Partial",
             )
+            ok = bool(res) and (
+                int(res.get("retCode", -1)) == 0 or bool(res.get("alreadySet"))
+            )
+        except Exception as e:  # noqa: BLE001 — 등록 실패해도 폴링 분할이 백업
+            logger.error("[%s] Partial TP 등록 예외 — %s", self.symbol, e)
+        pos.partial_on_exchange = ok
+        if ok:
             logger.info(
                 "Partial 1.5R TP 등록 — %.4f(50%%) + Entire swing 공존 (%s)",
                 pos.tp1_price, self.symbol,
             )
-        except Exception as e:  # noqa: BLE001 — 등록 실패해도 폴링 분할이 백업
-            logger.error("[%s] Partial TP 등록 실패 — %s", self.symbol, e)
+        else:
+            logger.warning(
+                "[%s] Partial TP 거래소 등록 실패 — 폴링 fallback 유지 (tp1=%.4f size=%.6f)",
+                self.symbol, pos.tp1_price, half,
+            )
 
     async def _maybe_partial_exit(self, df: pd.DataFrame) -> None:
         """#PARTIAL-TP 2026-06-23: TP1(1R) 도달 시 50% reduce_only 청산 + 본전SL.
@@ -2561,9 +2608,11 @@ class BotIctInstance:
         부분익절(partial_done)은 skip. 부분청산 실패 시 원 포지션 유지하고 계속,
         본전SL 설정 실패도 로깅만(다음 step 재시도 여지).
         """
-        # #PARTIAL-TP-ORDER: 거래소 Partial TP 모드면 폴링 분할 skip(이중청산 방지) —
-        # 1.5R 부분익절은 거래소 Partial TP 가 처리, 본전SL 은 체결 감지 후 별도.
-        if self.partial_tp_exchange:
+        # #PARTIAL-TP-ORDER: 거래소 Partial TP 가 실제로 박힌 경우만 폴링 분할 skip
+        # (이중청산 방지). 진입수량 50%가 최소주문 미만이라 거래소 등록이 실패한
+        # (partial_on_exchange=False) 소액 포지션은 폴링이 1차 익절 담당 — fallback.
+        _pos = self.active_position
+        if self.partial_tp_exchange and _pos is not None and _pos.partial_on_exchange:
             return
         pos = self.active_position
         if pos is None or pos.partial_done or pos.tp1_price <= 0:
