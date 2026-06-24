@@ -2159,9 +2159,27 @@ class BotIctInstance:
             )
             await self._emergency_close()
             return
-        # 같은 방향 — 수량이 1% 초과 차이면 부분 청산 등으로 간주, 거래소 실제로 보정.
+        # 같은 방향 — 수량 변화 처리.
         contracts = float(ex_pos.get("contracts", 0) or 0)
-        if contracts > 0 and abs(contracts - last_known.qty) > last_known.qty * 0.01:
+        # #PARTIAL-TP-FILL 2026-06-25: 거래소 Partial 1.5R TP 체결 감지 — partial_on_exchange
+        # 로 등록한 포지션의 qty 가 절반 이하로 줄면 1.5R 부분익절 체결로 간주.
+        # partial_done 표시 + (partial_be 면) SL 을 본전(entry)으로 — 아래 #TPSL-VERIFY 가
+        # want_sl 변경을 감지해 거래소에 자동 재장착(폴링 _maybe_partial_exit 의 본전SL 과
+        # 동일 효과, 거래소 자동체결 경로용). reduce_only 청산을 봇이 안 했어도 동기 일치.
+        if (
+            self.partial_tp_exchange and last_known.partial_on_exchange
+            and not last_known.partial_done and contracts > 0
+            and contracts <= last_known.qty * 0.6
+        ):
+            logger.info(
+                "Partial 1.5R TP 체결 감지 — qty %.6f→%.6f (%s), SL 본전 이동",
+                last_known.qty, contracts, self.symbol,
+            )
+            last_known.qty = contracts
+            last_known.partial_done = True
+            if self.partial_be:
+                last_known.stop_loss = last_known.entry
+        elif contracts > 0 and abs(contracts - last_known.qty) > last_known.qty * 0.01:
             logger.warning(
                 "포지션 수량 불일치 — 봇=%.4f 거래소=%.4f. 거래소 기준 보정 (부분 청산 등).",
                 last_known.qty, contracts,
