@@ -312,6 +312,10 @@ class BotIctInstance:
     # regime_rolling_enabled: 횡보 floor 를 롤링 33분위로(표본>=REGIME_ROLLING_MIN).
     # False 면 페어별 q33 하드코딩 고정. 표본 부족(초기)이면 자동 하드코딩 fallback.
     regime_rolling_enabled: bool = True
+    # partial_tp_exchange: 진입 시 거래소에 TP 2개(1.5R 50%+swing 50%) Partial 등록 →
+    # 봇 폴링(_maybe_partial_exit) 대체. ⚠️ Bybit Partial SL/TP 모드·tpSize 동작 소액
+    # 실측 전엔 OFF(미배포). True 면 _setup_partial_tps 사용 + 폴링 분할 skip.
+    partial_tp_exchange: bool = False
     # REGIME_TREND_FLOOR: 페어별 |진입추세%| 하위33%(q33) floor — 미만이면 횡보 skip.
     # 2026-06-23 백테 7페어 q33 값(추후 롤링 분위로 전환 예정). 미등록 페어는 0(게이트 off).
     REGIME_TREND_FLOOR: ClassVar[dict[str, float]] = {
@@ -2444,6 +2448,36 @@ class BotIctInstance:
         if risk / entry < 0.001:  # SL≈entry(본전) → 이미 부분익절된 것으로 추정
             return 0.0, True
         return self._calc_tp1(entry, stop_loss, direction), False
+
+    async def _setup_partial_tps(self) -> None:
+        """#PARTIAL-TP-ORDER 2026-06-25(미배포·미연결 골격): 진입 후 활성 포지션에
+        TP 2개(TP1=1.5R 50% + TP2=swing 50%)를 Partial mode 로 거래소 등록 — 봇 폴링
+        대체. 활성 포지션이라 부분 TP 여러개 가능(파트너 지식 6/25). 포지션 닫히면
+        거래소가 position-attached TP 자동 정리.
+
+        ⚠️ 미완성: ① _execute_setup 연결 ② TP1 체결 감지(qty 50%↓)→SL본전 ③ Bybit
+        Partial SL/TP 모드 혼합·tpSize 동작 소액 실측. partial_tp_exchange=False 라
+        현재 호출 안 됨(폴링 _maybe_partial_exit 유지).
+        """
+        pos = self.active_position
+        if pos is None or pos.tp1_price <= 0:
+            return
+        half = pos.qty * 0.5
+        try:
+            # TP1: 1.5R 부분(50%)
+            await self.client.set_position_tpsl(
+                self.symbol, take_profit=pos.tp1_price, tp_size=half, tpsl_mode="Partial",
+            )
+            # TP2: swing 부분(50%)
+            await self.client.set_position_tpsl(
+                self.symbol, take_profit=pos.take_profit, tp_size=half, tpsl_mode="Partial",
+            )
+            logger.info(
+                "Partial TP 2개 등록 — TP1=%.4f(50%%) TP2=%.4f(50%%) (%s)",
+                pos.tp1_price, pos.take_profit, self.symbol,
+            )
+        except Exception as e:  # noqa: BLE001 — 등록 실패해도 폴링 분할이 백업
+            logger.error("[%s] Partial TP 등록 실패 — %s", self.symbol, e)
 
     async def _maybe_partial_exit(self, df: pd.DataFrame) -> None:
         """#PARTIAL-TP 2026-06-23: TP1(1R) 도달 시 50% reduce_only 청산 + 본전SL.
