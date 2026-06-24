@@ -1383,6 +1383,35 @@ def _register_multi_user_routes(
         return {"ok": True, "code": code, "symbol": symbol,
                 "detail": "미추적 포지션 청산 완료"}
 
+    @app.post("/admin/position/force-entry")
+    async def admin_force_entry(
+        code: str = Query(...),
+        symbol: str = Query(default=_DEFAULT_SYMBOL),
+        qty: float = Query(...),
+        x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+        cookie_token: str | None = Cookie(default=None, alias="aurora_admin_token"),
+    ) -> dict[str, Any]:
+        """admin 강제 롱 진입 — partial TP 거래소 등록 실측용 (2026-06-25).
+
+        지정 사용자×심볼 봇이 현재가 기준 최소수량 롱을 강제 진입한다. 정상 진입
+        경로(force_entry_long → _execute_setup)를 그대로 타므로 partial_tp_exchange
+        가 켜진 유저면 거래소에 TP 2개(1.5R Partial + swing Entire)가 박힌다.
+        소액 실측 전용 — 운영 자동매매와 무관, 봇 슬롯이 떠 있어야 동작.
+        """
+        from aurora_ict.api.trades_router import _check_admin_cookie_or_header
+        _check_admin_cookie_or_header(cookie_token, x_admin_token)
+        slot = mu_manager._slots.get((code, symbol))
+        bot = slot.bot if slot is not None else None
+        if bot is None:
+            raise HTTPException(
+                status_code=404, detail="해당 사용자×페어 봇 슬롯 없음(봇 미가동)",
+            )
+        logger.warning(
+            "[admin] 강제 롱 진입 요청 — %s %s qty=%.6f", code, symbol, qty,
+        )
+        result = await bot.force_entry_long(qty)
+        return {"code": code, "symbol": symbol, **result}
+
     @app.get("/ict/position")
     async def get_position_mu(
         user_code: str = Depends(require_auth),

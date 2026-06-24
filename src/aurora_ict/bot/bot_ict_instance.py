@@ -1575,6 +1575,7 @@ class BotIctInstance:
         self,
         setup: SilverBulletSetup,
         htf_flip_target: HtfFvgEntry | None = None,
+        force_qty: float | None = None,
     ) -> None:
         """setup 한 건을 실제 주문으로 실행 (#LIVE-1 fix: marketable limit + SL/TP 동봉).
 
@@ -1721,7 +1722,9 @@ class BotIctInstance:
                     )
 
         equity = await self._fetch_equity()
-        qty = self._calc_qty(setup, equity)
+        # #FORCE-ENTRY 2026-06-25: admin 강제진입은 거래소 최소수량을 직접 지정
+        # (force_qty)해 리스크 기반 sizing(_calc_qty)을 우회한다. 일반 진입=None.
+        qty = force_qty if force_qty is not None else self._calc_qty(setup, equity)
         if qty <= 0:
             logger.warning("qty 계산 결과 0 이하 → skip: setup=%s", setup.ts_ms)
             return
@@ -2454,6 +2457,72 @@ class BotIctInstance:
         if risk / entry < 0.001:  # SL≈entry(본전) → 이미 부분익절된 것으로 추정
             return 0.0, True
         return self._calc_tp1(entry, stop_loss, direction), False
+
+    async def force_entry_long(self, qty: float) -> dict[str, Any]:
+        """admin 강제 롱 진입 — partial TP 거래소 등록 실측용 (#FORCE-ENTRY 2026-06-25).
+
+        현재가 기준으로 ``SilverBulletSetup`` 을 합성해 정상 진입 경로(``_execute_setup``)
+        를 그대로 태운다 → active_position 구성 + ``_ensure_protective_sl`` +
+        (``partial_tp_exchange`` 면) ``_setup_partial_tps`` 까지 실거래 진입과 100% 동일.
+        qty 는 거래소 최소수량을 ``force_qty`` 로 직접 지정해 리스크 sizing 을 우회.
+
+        SL=현재가 -0.5%, swing TP=현재가 +1.5%(RR 3). entry=현재가 limit 이라 즉시
+        체결(marketable). 이미 active/pending 이면 거부(중복 진입 방지). 소액 실측 전용.
+
+        Args:
+            qty: 진입 수량 (거래소 최소수량, 예 BTC 0.001).
+
+        Returns:
+            결과 dict — ok / detail / entry / stop_loss / take_profit / qty.
+        """
+        if self.active_position is not None:
+            return {"ok": False, "detail": "이미 active position 있음 — 강제진입 거부"}
+        if self._pending_entry is not None:
+            return {"ok": False, "detail": "pending entry 대기 중 — 강제진입 거부"}
+        try:
+            px = await self.client.fetch_ticker(self.symbol)
+        except Exception as e:  # noqa: BLE001 — 조회 실패도 봇은 계속 동작
+            return {"ok": False, "detail": f"현재가 조회 실패: {e}"}
+        if not px or px <= 0:
+            return {"ok": False, "detail": "현재가 조회 결과 0 이하"}
+        risk = px * 0.005                  # SL 0.5% 아래
+        stop_loss = px - risk
+        take_profit = px + risk * 3.0      # swing TP — RR 3
+        setup = SilverBulletSetup(
+            ts_ms=int(time.time() * 1000),
+            direction=Direction.LONG,
+            window="force_test",
+            entry=px,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            risk_reward=3.0,
+            confluence_score=99,
+            confluences=["force_entry"],
+            reasons=["admin 강제진입 (partial TP 거래소 등록 실측)"],
+            # fvg=None 이므로 zone/anchor property 가 fvg 를 안 보게 직접 박는다.
+            _zone_high=px,
+            _zone_low=stop_loss,
+            _anchor_idx=0,
+        )
+        logger.warning(
+            "[FORCE-ENTRY] %s 강제 롱 — px=%.4f sl=%.4f tp=%.4f qty=%.6f",
+            self.symbol, px, stop_loss, take_profit, qty,
+        )
+        await self._execute_setup(setup, force_qty=qty)
+        active = self.active_position is not None
+        pending = self._pending_entry is not None
+        return {
+            "ok": active or pending,
+            "detail": (
+                "진입 체결(active)" if active
+                else "지정가 대기(pending)" if pending
+                else "진입 실패 — 주문 reject 가능, 로그 확인"
+            ),
+            "entry": px,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "qty": qty,
+        }
 
     async def _setup_partial_tps(self) -> None:
         """#PARTIAL-TP-ORDER 2026-06-25(미배포·미연결 골격): 진입 후 활성 포지션에
