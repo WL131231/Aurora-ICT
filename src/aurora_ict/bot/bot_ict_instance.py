@@ -1866,6 +1866,9 @@ class BotIctInstance:
         sl_applied = await self._ensure_protective_sl(
             setup.take_profit, abs(setup.entry - setup.stop_loss),
         )
+        # #PARTIAL-TP-ORDER: SL+swing(Entire) 박힌 후 1.5R 부분 TP(Partial) 추가 등록.
+        if sl_applied and self.partial_tp_exchange:
+            await self._setup_partial_tps()
         if sl_applied and htf_flip_target is not None:
             logger.info(
                 "HTF flip target armed — %s zone=[%.4f,%.4f] weight=%d",
@@ -1942,6 +1945,9 @@ class BotIctInstance:
                     "지정가 체결 — active_position 승격 entry=%.4f sl=%.4f tp=%.4f",
                     entry_px, self.active_position.stop_loss, pe.take_profit,
                 )
+                # #PARTIAL-TP-ORDER: SL+swing(Entire) 박힌 후 1.5R 부분 TP(Partial) 추가.
+                if self.partial_tp_exchange:
+                    await self._setup_partial_tps()
             self._pending_entry = None
             return False
         # 미체결 — TTL 만료 체크.
@@ -2462,19 +2468,17 @@ class BotIctInstance:
         pos = self.active_position
         if pos is None or pos.tp1_price <= 0:
             return
+        # swing TP + SL 은 _ensure_protective_sl 이 Entire(전체)로 이미 박음(기존).
+        # Bybit 는 Entire TP/SL + Partial TP 공존 가능(파트너 6/25 실측: Modify TP/SL
+        # > Partial Position 탭). 그래서 여기선 1.5R 부분 TP(50%)만 Partial 로 추가.
         half = pos.qty * 0.5
         try:
-            # TP1: 1.5R 부분(50%)
             await self.client.set_position_tpsl(
                 self.symbol, take_profit=pos.tp1_price, tp_size=half, tpsl_mode="Partial",
             )
-            # TP2: swing 부분(50%)
-            await self.client.set_position_tpsl(
-                self.symbol, take_profit=pos.take_profit, tp_size=half, tpsl_mode="Partial",
-            )
             logger.info(
-                "Partial TP 2개 등록 — TP1=%.4f(50%%) TP2=%.4f(50%%) (%s)",
-                pos.tp1_price, pos.take_profit, self.symbol,
+                "Partial 1.5R TP 등록 — %.4f(50%%) + Entire swing 공존 (%s)",
+                pos.tp1_price, self.symbol,
             )
         except Exception as e:  # noqa: BLE001 — 등록 실패해도 폴링 분할이 백업
             logger.error("[%s] Partial TP 등록 실패 — %s", self.symbol, e)
@@ -2488,6 +2492,10 @@ class BotIctInstance:
         부분익절(partial_done)은 skip. 부분청산 실패 시 원 포지션 유지하고 계속,
         본전SL 설정 실패도 로깅만(다음 step 재시도 여지).
         """
+        # #PARTIAL-TP-ORDER: 거래소 Partial TP 모드면 폴링 분할 skip(이중청산 방지) —
+        # 1.5R 부분익절은 거래소 Partial TP 가 처리, 본전SL 은 체결 감지 후 별도.
+        if self.partial_tp_exchange:
+            return
         pos = self.active_position
         if pos is None or pos.partial_done or pos.tp1_price <= 0:
             return
