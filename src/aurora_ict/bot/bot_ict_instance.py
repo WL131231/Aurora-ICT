@@ -613,6 +613,9 @@ class BotIctInstance:
         # SL/TP — Bybit V5 응답 stopLoss / takeProfit 에서 읽음.
         sl = float(pos.get("stopLossPrice") or pos.get("stop_loss") or 0) or 0.0
         tp = float(pos.get("takeProfitPrice") or pos.get("take_profit") or 0) or 0.0
+        # #RESTORE-PARTIAL 2026-06-24: 복원 포지션도 분할익절 대상(파트너 요청).
+        # SL 이 본전이면 이미 부분익절된 것으로 보고 재청산 방지, 아니면 tp1 계산.
+        _r_tp1, _r_done = self._restore_partial_state(entry_price, sl, direction)
         self.active_position = _ActivePosition(
             direction=direction,
             entry=entry_price,
@@ -620,6 +623,8 @@ class BotIctInstance:
             take_profit=tp,
             qty=contracts,
             setup_ts_ms=0,  # recovery — 원 setup ts_ms 알 수 없어 0
+            tp1_price=_r_tp1,
+            partial_done=_r_done,
         )
         logger.info(
             "recover: 활성 포지션 복원 — %s %s entry=%.4f qty=%.4f sl=%.4f tp=%.4f",
@@ -2422,6 +2427,24 @@ class BotIctInstance:
             return entry + self.partial_tp_rr * risk
         return entry - self.partial_tp_rr * risk
 
+    def _restore_partial_state(
+        self, entry: float, stop_loss: float, direction: Direction,
+    ) -> tuple[float, bool]:
+        """복원 포지션 분할익절 상태 추정 → (tp1_price, partial_done). #RESTORE-PARTIAL.
+
+        SL 이 본전(entry 의 0.1% 이내)이면 이미 부분익절+본전이동된 것으로 보고
+        partial_done=True 로 재청산 방지. 무SL(risk<=0)은 분할 비대상(tp1=0). 그 외엔
+        거래소 entry/SL 로 tp1 계산(SL 원래값이면 R 정확 — 파트너 6/24 복원도 분할 적용).
+        """
+        if self.partial_tp_rr <= 0 or entry <= 0 or stop_loss <= 0:
+            return 0.0, False  # 무SL(SL<=0)/이상 — 분할 비대상
+        risk = abs(entry - stop_loss)
+        if risk <= 0:
+            return 0.0, False
+        if risk / entry < 0.001:  # SL≈entry(본전) → 이미 부분익절된 것으로 추정
+            return 0.0, True
+        return self._calc_tp1(entry, stop_loss, direction), False
+
     async def _maybe_partial_exit(self, df: pd.DataFrame) -> None:
         """#PARTIAL-TP 2026-06-23: TP1(1R) 도달 시 50% reduce_only 청산 + 본전SL.
 
@@ -3751,6 +3774,7 @@ class BotIctInstance:
             entry_ts_ms=int(time.time() * 1000),
             context_json=f'{{"source":"flip","htf_target_tf":"{target.tf}","htf_target_weight":{target.weight}}}',
             equity_at_entry=_flip_entry_equity,
+            tp1_price=self._calc_tp1(new_entry, new_sl, new_direction),
         )
         # #BUG-2: FLIP_OPEN 기록 — 반대 방향 신규 진입.
         self._record_trade(

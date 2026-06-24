@@ -1384,3 +1384,24 @@ def test_regime_floor_disabled_keeps_hardcoded() -> None:
     for i in range(100):
         bot._trend_history.append(float(i))
     assert bot._regime_floor() == pytest.approx(0.268)  # ETH q33 하드코딩 유지
+
+
+def test_restore_partial_state() -> None:
+    """#RESTORE-PARTIAL: 복원 분할 상태 — 정상SL→tp1/미완, 본전SL→이미완(재청산방지), 무SL→비대상."""
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    bot = BotIctInstance(client=client, symbol="BTCUSDT", partial_tp_rr=1.5)
+    # 정상 SL (롱 entry100/SL98, risk2) → tp1=100+1.5*2=103, 미완
+    tp1, done = bot._restore_partial_state(100.0, 98.0, Direction.LONG)
+    assert tp1 == pytest.approx(103.0)
+    assert done is False
+    # 숏 entry100/SL102 → tp1=100-1.5*2=97
+    tp1, done = bot._restore_partial_state(100.0, 102.0, Direction.SHORT)
+    assert tp1 == pytest.approx(97.0)
+    # 본전 SL(0.05%<0.1%) → 이미 부분익절으로 추정(재청산 방지)
+    tp1, done = bot._restore_partial_state(100.0, 100.05, Direction.LONG)
+    assert tp1 == 0.0
+    assert done is True
+    # 무SL(SL=0) → 비대상(음수 tp1 방지)
+    tp1, done = bot._restore_partial_state(100.0, 0.0, Direction.LONG)
+    assert tp1 == 0.0
+    assert done is False
