@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -75,6 +76,16 @@ SlotKey = tuple[str, str]  # (user_code, symbol)
 # #SEC path traversal 방어 — user_code 가 파일 경로에 들어가므로 영숫자/_/- 만 허용.
 # auth.router._CODE_PATTERN 과 동일 규칙(입력단·디렉토리 생성단 이중 검증).
 _SAFE_USER_CODE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+# partial_tp_exchange 시범 적용 유저 화이트리스트 — 진입 시 거래소에 TP 2개(1.5R 50%
+# Partial + swing 50% Entire) 미리 등록(봇 폴링 _maybe_partial_exit 대체). ⚠️ Bybit
+# Partial 모드 소액 실측 단계라 환경변수로 지정한 유저만 ON. 미설정이면 빈 셋 → 전원 OFF.
+# fly secrets set PARTIAL_TP_EXCHANGE_USERS="AICT-0Q8B-D1YU-VFRN" (콤마로 다중 지정).
+_PARTIAL_TP_USERS: frozenset[str] = frozenset(
+    c.strip()
+    for c in os.environ.get("PARTIAL_TP_EXCHANGE_USERS", "").split(",")
+    if c.strip()
+)
 
 
 @dataclass(slots=True)
@@ -418,6 +429,8 @@ class MultiUserBotManager:
             # 2026-06-08: 텔레그램 매매 알림 — 소유자 코드 + 알림 콜백 주입.
             # alerter 미설정(None)이면 콜백도 None → 알림 안 보냄.
             user_code=user_code,
+            # 2026-06-25: Partial TP 거래소 등록 시범 — 화이트리스트 유저만 ON(소액 실측).
+            partial_tp_exchange=user_code in _PARTIAL_TP_USERS,
             alert_cb=(
                 self.alerter.send_trade_alert if self.alerter is not None else None
             ),
