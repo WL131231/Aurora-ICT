@@ -147,6 +147,18 @@ def _ensure_last_run_mode_column(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE users ADD COLUMN last_run_mode TEXT")
 
 
+def _ensure_last_model_column(conn: sqlite3.Connection) -> None:
+    """2026-06-25 #CURSUS: 사용자별 선택 봇 모델(Origo/Cursus) 영속화.
+
+    모델 선택값을 저장해 봇 가동·재가동(auto_resume) 시 multi_user 가 어느 봇
+    클래스(Origo=BotIctInstance / Cursus=BotTrendInstance)를 생성할지 분기한다.
+    NULL 허용 — 구식 사용자/미선택은 DEFAULT_MODEL_NAME(Origo) fallback.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "last_model" not in cols:
+        conn.execute("ALTER TABLE users ADD COLUMN last_model TEXT")
+
+
 def _ensure_last_timeframe_column(conn: sqlite3.Connection) -> None:
     """2026-06-08: 사용자별 마지막 매매 timeframe 영속화.
 
@@ -388,6 +400,8 @@ def _init_db_inner(path: Path) -> None:
         _ensure_bot_running_symbols_column(conn)
         # 2026-05-29 hot-fix: LIVE 사용자 자동 재가동 버그 해소용 last_run_mode.
         _ensure_last_run_mode_column(conn)
+        # 2026-06-25 #CURSUS: 사용자별 선택 봇 모델(Origo/Cursus).
+        _ensure_last_model_column(conn)
         # 2026-06-06: 봇 STOP→START 시 페어 선택 기억용 last_active_pairs.
         _ensure_last_active_pairs_column(conn)
         # 2026-06-08: 가동 중 매매 TF 변경이 재시작 시 회귀하는 버그 — last_timeframe.
@@ -998,6 +1012,41 @@ def set_last_run_mode(db_path: Path | str, code: str, mode: str) -> bool:
         )
         conn.commit()
         return cur.rowcount > 0
+
+
+def set_last_model(db_path: Path | str, code: str, model: str) -> bool:
+    """사용자 선택 봇 모델 영속화 (#CURSUS 2026-06-25).
+
+    Args:
+        db_path: users.db 경로.
+        code: 대상 사용자 라이선스 코드.
+        model: 모델 표시명 (settings.AVAILABLE_MODELS 의 key, 예 "Origo 1.2"/"Cursus 1.0").
+
+    Returns:
+        True 면 UPDATE 1건 성공, False 면 code 미존재.
+    """
+    now = _utcnow_iso()
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            """
+            UPDATE users
+            SET last_model = ?, updated_at = ?
+            WHERE code = ?
+            """,
+            (model, now, code),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_last_model(db_path: Path | str, code: str) -> str | None:
+    """사용자 선택 봇 모델 조회 — 미설정/미존재면 None (호출처 DEFAULT_MODEL_NAME fallback)."""
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT last_model FROM users WHERE code = ?",
+            (code,),
+        ).fetchone()
+    return row[0] if row and row[0] else None
 
 
 def get_last_run_mode(db_path: Path | str, code: str) -> str | None:

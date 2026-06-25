@@ -439,6 +439,31 @@ class MultiUserBotManager:
                 self.alerter.send_user_text if self.alerter is not None else None
             ),
         )
+        # 2026-06-25 #CURSUS: 사용자 선택 모델이 Cursus 면 추세형 봇으로 교체.
+        # BotIctInstance 는 dataclass 생성(거래소 호출 없음 — start() 에서 호출)이라
+        # 교체 비용 무시 가능. 모델 미선택(NULL)은 DEFAULT_MODEL_NAME(Origo) fallback.
+        from aurora_ict.config.settings import AVAILABLE_MODELS, DEFAULT_MODEL_NAME
+        _model = users_db.get_last_model(self.db_path, user_code) or DEFAULT_MODEL_NAME
+        if AVAILABLE_MODELS.get(_model) == "cursus":
+            from aurora_ict.bot.bot_trend_instance import BotTrendInstance
+            from aurora_ict.strategy.dual_st import DualSTConfig
+            bot = BotTrendInstance(
+                client=client,
+                symbol=settings.symbol,
+                leverage=int(settings.leverage),
+                size_pct=0.9,
+                cfg=DualSTConfig(trail_mult=6.0),
+                trades_data_dir=self._user_data_dir(user_code),
+                user_code=user_code,
+                run_mode=settings.run_mode.value,
+                alert_cb=(
+                    self.alerter.send_trade_alert if self.alerter is not None else None
+                ),
+                notify_cb=(
+                    self.alerter.send_user_text if self.alerter is not None else None
+                ),
+            )
+            logger.info("Cursus(추세형) 봇 생성 — %s %s (trail x6.0)", user_code, symbol)
         self._slots[key] = _UserBotSlot(
             symbol=symbol, settings=settings, bot=bot, client=client,
         )

@@ -70,6 +70,10 @@ class RunModeRequest(BaseModel):
     mode: str  # "demo" | "live"
 
 
+class ModelRequest(BaseModel):
+    model: str  # settings.AVAILABLE_MODELS 의 key (예 "Origo 1.2" | "Cursus 1.0")
+
+
 class EnabledRequest(BaseModel):
     enabled: bool
 
@@ -597,6 +601,48 @@ def _register_multi_user_routes(
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e)) from e
         return await mu_manager.status(user_code)
+
+    @app.get("/ict/model")
+    async def get_model_mu(
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """현재 선택 봇 모델 + 선택 가능 목록 (#CURSUS 2026-06-25)."""
+        from aurora_ict.auth import users_db as _users_db
+        from aurora_ict.config.settings import AVAILABLE_MODELS, DEFAULT_MODEL_NAME
+        cur = _users_db.get_last_model(mu_manager.db_path, user_code) or DEFAULT_MODEL_NAME
+        return {"current": cur, "available": list(AVAILABLE_MODELS.keys())}
+
+    @app.post("/ict/model")
+    async def set_model_mu(
+        req: ModelRequest,
+        user_code: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """봇 모델 전환(Origo↔Cursus) — 봇 클래스가 바뀌므로 run-mode 와 동일하게
+        슬롯 폐기 후 재가동(다음 빌드가 새 모델로 봇 생성). 미선택은 Origo fallback.
+        """
+        from aurora_ict.auth import users_db as _users_db
+        from aurora_ict.config.settings import AVAILABLE_MODELS
+        if req.model not in AVAILABLE_MODELS:
+            raise HTTPException(status_code=400, detail=f"알 수 없는 모델: {req.model}")
+        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
+        was_running = (
+            slot is not None and slot.bot is not None
+            and slot.bot.state.value == "running"
+        )
+        if was_running:
+            await mu_manager.stop(user_code)
+        if slot is not None:
+            mu_manager._slots.pop((user_code, _DEFAULT_SYMBOL), None)
+        try:
+            _users_db.set_last_model(mu_manager.db_path, user_code, req.model)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("사용자 %s last_model 박기 실패 (무시): %s", user_code, e)
+        if was_running:
+            try:
+                await mu_manager.start(user_code)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"ok": True, "model": req.model}
 
     @app.post("/ict/enabled")
     async def set_enabled_mu(
