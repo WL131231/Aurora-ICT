@@ -406,6 +406,28 @@ class BotTrendInstance:
             f"{pnl_usdt:+.2f}" if pnl_usdt is not None else "—",
         )
 
+    # ---- ICT(Origo) UI/엔드포인트 호환 메서드 stub (#CURSUS hotfix 2026-06-25) ----
+    # status/daily_loss_limit/pending 등 ICT 전용 API 가 봇 메서드를 호출해도 500 안
+    # 나게. 추세형은 일일 한도·pending limit entry 개념 미사용 → 비활성/빈 응답.
+
+    def daily_loss_status(self) -> dict[str, Any]:
+        """ICT UI 호환 — 추세형은 일일 손실/수익 한도 미사용(비활성)."""
+        return {
+            "limit_pct": self.daily_loss_limit_pct, "today_pnl_usdt": 0.0,
+            "today_pct": 0.0, "start_equity": 0.0, "hit": False,
+            "date_ny": "", "profit_limit_pct": 0.0, "profit_hit": False,
+        }
+
+    def _is_daily_profit_limit_hit(self) -> bool:
+        return False
+
+    def _is_daily_loss_limit_hit(self) -> bool:
+        return False
+
+    async def cancel_pending_entry(self) -> bool:
+        """ICT UI 호환 — 추세형은 pending limit entry 없음."""
+        return False
+
 
 def _isnan(x: float) -> bool:
     """NaN 안전 체크 (float('nan') != 자기자신)."""
