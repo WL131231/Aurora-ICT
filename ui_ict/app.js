@@ -1596,15 +1596,36 @@ _updateVizButtons();
     trigger.setAttribute("aria-expanded", open ? "true" : "false");
   });
   menu.querySelectorAll(".model-dd-opt").forEach((opt) => {
-    opt.addEventListener("click", () => {
+    opt.addEventListener("click", async () => {
       menu.querySelectorAll(".model-dd-opt").forEach((o) => o.classList.remove("is-selected"));
       opt.classList.add("is-selected");
       label.textContent = opt.textContent;
       dd.dataset.value = opt.dataset.value;
       dd.classList.remove("open");
       trigger.setAttribute("aria-expanded", "false");
+      // 2026-06-25 #CURSUS: 봇 적용 연결 — 선택 모델 서버 저장(가동 중이면 슬롯 재가동).
+      const model = opt.dataset.model;
+      if (model) {
+        try {
+          await api("/ict/model", "POST", { model });
+          toast("모델 변경: " + model);
+        } catch (e) { console.warn("모델 전환 실패", e); }
+      }
     });
   });
+  // 초기 — 서버의 현재 선택 모델을 드롭다운에 반영(비로그인 등 실패는 무시).
+  (async () => {
+    try {
+      const r = await api("/ict/model");
+      const cur = r && r.current;
+      if (!cur) return;
+      menu.querySelectorAll(".model-dd-opt").forEach((o) => {
+        const sel = o.dataset.model === cur;
+        o.classList.toggle("is-selected", sel);
+        if (sel) { label.textContent = o.textContent; dd.dataset.value = o.dataset.value; }
+      });
+    } catch (e) { /* 비로그인/초기 로드 — 무시 */ }
+  })();
   // 외부 클릭 시 닫힘 (열려 있을 때만).
   document.addEventListener("click", () => {
     if (dd.classList.contains("open")) {
