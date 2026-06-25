@@ -57,6 +57,20 @@ class _TrendPosition:
     stop: float           # 현재 트레일 SL (추세 방향으로만 갱신)
     entry_ts_ms: int
 
+    # ICT UI(_build_position_payload) 호환 property — 추세형은 stop(트레일)만 쓰고
+    # 고정 TP 없음. position API 가 stop_loss/take_profit/setup_ts_ms 를 읽어도 안전.
+    @property
+    def stop_loss(self) -> float:
+        return self.stop
+
+    @property
+    def take_profit(self) -> float:
+        return 0.0
+
+    @property
+    def setup_ts_ms(self) -> int:
+        return self.entry_ts_ms
+
 
 @dataclass(slots=True)
 class BotTrendInstance:
