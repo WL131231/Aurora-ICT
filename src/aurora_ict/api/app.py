@@ -1528,6 +1528,21 @@ def _register_multi_user_routes(
                     "title": "봇 미가동", "detail": "START 눌러 가동",
                 },
             }
+        if not hasattr(bot, "_htf_fvg_map_cache"):
+            # #CURSUS hotfix 2026-06-25: 추세형 봇(BotTrendInstance)은 ICT judgment
+            # (HTF FVG 가중치) 비대상 — 간단 응답으로 500(AttributeError) 방지.
+            _pos = getattr(bot, "active_position", None)
+            _lp = (100.0 if (_pos is not None and _pos.direction.value == "long")
+                   else 0.0 if _pos is not None else 50.0)
+            return {
+                "direction": {"long_pct": _lp, "short_pct": 100.0 - _lp,
+                              "label": "Cursus 추세형 (Dual SuperTrend)"},
+                "reasons": [],
+                "entry_condition": {
+                    "title": "Cursus — 추세추종",
+                    "detail": "ST 정렬 돌파 진입 · 트레일 청산 (ICT 판단 비대상)",
+                },
+            }
         settings = _user_settings(user_code)
         htf_map = bot._htf_fvg_map_cache or []
         bull_w = sum(int(e.weight) for e in htf_map if e.type.value == "bullish")
@@ -2373,6 +2388,20 @@ def create_app(
                 "direction": {"long_pct": 50, "short_pct": 50, "label": "봇 미가동"},
                 "reasons": [],
                 "entry_condition": {"title": "봇 미가동", "detail": "START 눌러 가동"},
+            }
+        if not hasattr(bot, "_htf_fvg_map_cache"):
+            # #CURSUS hotfix 2026-06-25: 추세형 봇은 ICT judgment 비대상 — 간단 응답.
+            _pos = getattr(bot, "active_position", None)
+            _lp = (100.0 if (_pos is not None and _pos.direction.value == "long")
+                   else 0.0 if _pos is not None else 50.0)
+            return {
+                "direction": {"long_pct": _lp, "short_pct": 100.0 - _lp,
+                              "label": "Cursus 추세형 (Dual SuperTrend)"},
+                "reasons": [],
+                "entry_condition": {
+                    "title": "Cursus — 추세추종",
+                    "detail": "ST 정렬 돌파 진입 · 트레일 청산 (ICT 판단 비대상)",
+                },
             }
         # HTF FVG 가중치 합산 → 방향 확률
         htf_map = bot._htf_fvg_map_cache or []
