@@ -1612,6 +1612,21 @@ _updateVizButtons();
         } catch (e) { console.warn("모델 전환 실패", e); }
       }
     });
+    // 2026-06-25 #CURSUS: 호버 툴팁 — sidebar overflow(한 축 auto면 가로도 clip) 회피
+    // 위해 position:fixed 로 viewport 기준 좌표 계산(옵션 오른쪽). CSS :hover absolute
+    // 만으론 사이드바 밖이 잘려 안 보였음.
+    const _desc = opt.querySelector(".model-dd-desc");
+    if (_desc) {
+      opt.addEventListener("mouseenter", () => {
+        const r = opt.getBoundingClientRect();
+        _desc.style.position = "fixed";
+        _desc.style.left = (r.right + 8) + "px";
+        _desc.style.top = (r.top + r.height / 2) + "px";
+        _desc.style.transform = "translateY(-50%)";
+        _desc.style.display = "block";
+      });
+      opt.addEventListener("mouseleave", () => { _desc.style.display = "none"; });
+    }
   });
   // 초기 — 서버의 현재 선택 모델을 드롭다운에 반영(비로그인 등 실패는 무시).
   (async () => {

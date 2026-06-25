@@ -428,6 +428,11 @@ class BotTrendInstance:
         """ICT UI 호환 — 추세형은 pending limit entry 없음."""
         return False
 
+    def ensure_prefetch_started(self) -> None:
+        """ICT UI 호환 — 추세형은 OHLCV prefetch 캐시 미사용(차트는 get_ohlcv_cached
+        직접 fetch). ensure_bot_ready 가 호출하므로 no-op stub 필수(없으면 차트 경로 깨짐)."""
+        return None
+
     async def get_ohlcv_cached(self, timeframe: str, limit: int) -> list[list[Any]]:
         """차트용 OHLCV — ICT UI(get_ohlcv_mu) 호환. 캐시 없이 거래소 직접 fetch.
 
