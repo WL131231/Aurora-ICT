@@ -202,6 +202,11 @@ class BotTrendInstance:
 
         # 거래소 동기화 — active 인데 거래소 qty 0 이면 트레일 SL 체결로 청산됨.
         await self._sync_position_state(price)
+        # 봇 모르는 거래소 포지션(재시작 사이·수동·force 진입) 입양 — active None 인데
+        # 거래소에 포지션이 있으면 _recover 가 복원. 미인식(active_pos=False) 방지.
+        # 트레일 stop 은 복원 후 다음 step 부터 latest_trail_stop 으로 갱신된다.
+        if self.active_position is None:
+            await self._recover_position_from_exchange()
 
         pos = self.active_position
         if pos is not None:
