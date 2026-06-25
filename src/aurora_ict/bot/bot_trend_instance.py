@@ -107,6 +107,7 @@ class BotTrendInstance:
     _daily_profit_hit: bool = field(default=False)
     _daily_limit_hit: bool = field(default=False)
     _htf_fvg_map_cache: Any = field(default=None)
+    _last_setup_ts_ms: int = field(default=0)
 
     # ---- 생명주기 (BotIctInstance 와 동일 인터페이스) ----
 
