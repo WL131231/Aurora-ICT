@@ -428,6 +428,17 @@ class BotTrendInstance:
         """ICT UI 호환 — 추세형은 pending limit entry 없음."""
         return False
 
+    async def get_ohlcv_cached(self, timeframe: str, limit: int) -> list[list[Any]]:
+        """차트용 OHLCV — ICT UI(get_ohlcv_mu) 호환. 캐시 없이 거래소 직접 fetch.
+
+        BotIctInstance 는 prefetch 캐시를 쓰지만 추세형은 캐시 미운영 — UI 차트
+        표시를 위해 거래소에서 즉시 조회(실패 시 빈 리스트로 차트 비움).
+        """
+        try:
+            return await self.client.fetch_ohlcv(self.symbol, timeframe, limit)
+        except Exception:  # noqa: BLE001
+            return []
+
 
 def _isnan(x: float) -> bool:
     """NaN 안전 체크 (float('nan') != 자기자신)."""
