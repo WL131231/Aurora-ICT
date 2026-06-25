@@ -1599,7 +1599,7 @@ _updateVizButtons();
     opt.addEventListener("click", async () => {
       menu.querySelectorAll(".model-dd-opt").forEach((o) => o.classList.remove("is-selected"));
       opt.classList.add("is-selected");
-      label.textContent = opt.textContent;
+      label.textContent = opt.dataset.model || opt.textContent;
       dd.dataset.value = opt.dataset.value;
       dd.classList.remove("open");
       trigger.setAttribute("aria-expanded", "false");
@@ -1622,7 +1622,7 @@ _updateVizButtons();
       menu.querySelectorAll(".model-dd-opt").forEach((o) => {
         const sel = o.dataset.model === cur;
         o.classList.toggle("is-selected", sel);
-        if (sel) { label.textContent = o.textContent; dd.dataset.value = o.dataset.value; }
+        if (sel) { label.textContent = o.dataset.model || o.textContent; dd.dataset.value = o.dataset.value; }
       });
     } catch (e) { /* 비로그인/초기 로드 — 무시 */ }
   })();

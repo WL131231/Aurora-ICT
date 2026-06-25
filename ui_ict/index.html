@@ -246,6 +246,28 @@
   }
   .model-dd-opt:hover { background: var(--bg-2); }
   .model-dd-opt.is-selected { color: #34d399; }
+  /* 2026-06-25 #CURSUS: 옵션 호버 시 설명 툴팁(Claude 모델선택 UI 스타일) — 라벨은
+     모델명만 깔끔히, 자세한 설명은 호버하면 옵션 오른쪽 박스로. */
+  .model-dd-opt { position: relative; }
+  .model-dd-opt-name { display: block; }
+  .model-dd-desc {
+    display: none;
+    position: absolute;
+    left: calc(100% + 8px);
+    top: 50%;
+    transform: translateY(-50%);
+    white-space: nowrap;
+    background: var(--bg-1, #14181f);
+    border: 1px solid var(--line-strong, #2a3340);
+    padding: 7px 11px;
+    border-radius: 7px;
+    font-size: 11px;
+    color: var(--text-2, #9aa7b4);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+    z-index: 200;
+    pointer-events: none;
+  }
+  .model-dd-opt:hover .model-dd-desc { display: block; }
 
   /* 2026-05-29 v2: 사이드바 페어 선택 토글 (BTC/ETH 복수 선택).
      trade-tf-toggle 톤 재사용, 2 column 그리드. */
@@ -2194,14 +2216,20 @@
     <!-- 2026-06-18: native select → custom 드롭다운 (펼침 슬라이드, Origo 2 대비). -->
     <div class="model-dd" id="model-dd" data-value="origo-1.2">
       <button type="button" class="model-dd-trigger" id="model-dd-trigger" aria-expanded="false">
-        <span id="model-dd-label">Origo 1.2 — 안정형 하이브리드</span>
+        <span id="model-dd-label">Origo 1.2</span>
         <svg class="model-dd-caret" width="10" height="6" viewBox="0 0 10 6" aria-hidden="true">
           <path d="M1 1l4 4 4-4" stroke="currentColor" fill="none" stroke-width="1.5"/>
         </svg>
       </button>
       <div class="model-dd-menu" id="model-dd-menu" role="listbox">
-        <div class="model-dd-opt is-selected" data-value="origo-1.2" data-model="Origo 1.2" role="option">Origo 1.2 — 안정형 하이브리드</div>
-        <div class="model-dd-opt" data-value="cursus-1.0" data-model="Cursus 1.0" role="option">Cursus 1.0 — 추세추종 (Dual SuperTrend)</div>
+        <div class="model-dd-opt is-selected" data-value="origo-1.2" data-model="Origo 1.2" role="option">
+          <span class="model-dd-opt-name">Origo 1.2</span>
+          <span class="model-dd-desc">ICT 기반 로직 · 단타형 (안정형 하이브리드)</span>
+        </div>
+        <div class="model-dd-opt" data-value="cursus-1.0" data-model="Cursus 1.0" role="option">
+          <span class="model-dd-opt-name">Cursus 1.0</span>
+          <span class="model-dd-desc">Dual SuperTrend · 추세추종</span>
+        </div>
       </div>
     </div>
     <p class="trade-tf-hint">검증된 모델 — 봉·전략·진입대기가 자동으로 고정됩니다.</p>
