@@ -99,6 +99,14 @@ class BotTrendInstance:
     _auth_fail_streak: int = field(default=0)
     _sync_failure_streak: int = field(default=0)
     _last_heartbeat_ms: int = field(default=0)
+    # ICT(Origo) UI/엔드포인트 호환 stub — 추세형은 미사용하지만, status/judgment/
+    # position/daily 등 ICT 전용 API 가 이 속성들을 읽어도 AttributeError(500) 안 나게
+    # None/False 로 노출. #CURSUS hotfix 2026-06-25. (분기 조건이 모두 None/False 에서
+    # 안전하게 빠지도록 설계됨 — 추세형은 pending/daily-limit 개념 미사용.)
+    _pending_entry: Any = field(default=None)
+    _daily_profit_hit: bool = field(default=False)
+    _daily_limit_hit: bool = field(default=False)
+    _htf_fvg_map_cache: Any = field(default=None)
 
     # ---- 생명주기 (BotIctInstance 와 동일 인터페이스) ----
 
