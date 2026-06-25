@@ -235,7 +235,8 @@
     max-height: 0; opacity: 0; visibility: hidden;
     transition: max-height .22s cubic-bezier(.2, .8, .2, 1), opacity .18s ease, visibility .18s ease;
   }
-  .model-dd.open .model-dd-menu { max-height: 240px; opacity: 1; visibility: visible; }
+  /* open 시 overflow visible — 호버 설명 툴팁(.model-dd-desc)이 메뉴 밖으로 안 잘리게. */
+  .model-dd.open .model-dd-menu { max-height: 240px; opacity: 1; visibility: visible; overflow: visible; }
   .model-dd-opt {
     padding: 8px 9px;
     font-size: 11px;
