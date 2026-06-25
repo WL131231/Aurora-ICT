@@ -38,6 +38,16 @@ PAIR_TTL_OVERRIDES: dict[str, int] = {"BTCUSDT": 3600}
 # 2026-06-23 Origo 1.2 = 안정형 하이브리드(0.707 OTE + 횡보회피 게이트 + 분할익절
 # + 횡보임계 롤링분위). 1.1(cisd+po3+CT-SL+OTE) 위에 시드방어형 전환 적용.
 ORIGO_MODEL_NAME = "Origo 1.2"
+# 2026-06-25 #CURSUS: 투트랙 2번째 봇 = Cursus(Dual SuperTrend 추세형, dual_st).
+# bot_trend_instance.CURSUS_MODEL_NAME 과 동일 문자열 유지(매매기록 model 태그 정합).
+CURSUS_MODEL_NAME = "Cursus 1.0"
+# 모델 선택 레지스트리 — 표시명 → 전략 id. 사용자가 model 선택 시 multi_user 가
+# origo→BotIctInstance, cursus→BotTrendInstance 로 분기. UI 드롭다운도 이 목록 사용.
+AVAILABLE_MODELS: dict[str, str] = {
+    ORIGO_MODEL_NAME: "origo",
+    CURSUS_MODEL_NAME: "cursus",
+}
+DEFAULT_MODEL_NAME = ORIGO_MODEL_NAME
 
 
 def origo1_ttl_for_symbol(symbol: str, default_ttl: int) -> int:
