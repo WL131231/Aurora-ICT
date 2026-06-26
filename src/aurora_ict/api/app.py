@@ -806,9 +806,10 @@ def _register_multi_user_routes(
                     _slot is not None and _slot.bot is not None
                     and _slot.bot.state.value == "running"
                 )
-                if _running:
-                    await mu_manager.stop(user_code, sym)
-                mu_manager._slots.pop((user_code, sym), None)
+                # stop 이 per-(user,sym) lock 안에서 슬롯 폐기(pop)·클라이언트 정리까지
+                # 담당 — 정지 슬롯도 안전 제거(새 모델로 재생성). 직접 _slots.pop(레이스)
+                # 제거. 모델 전환은 선호 유지(forget_preference=False)라 재가동 시 복원.
+                await mu_manager.stop(user_code, sym, forget_preference=False)
                 if _running:
                     try:
                         await mu_manager.start(user_code, sym)
@@ -1637,6 +1638,12 @@ def _register_multi_user_routes(
         """
         from aurora_ict.api.trades_router import _check_admin_cookie_or_header
         _check_admin_cookie_or_header(cookie_token, x_admin_token)
+        # qty 검증 — 실주문 경로라 음수·0·비정상 거대값은 거부(오타 한 번이 잘못된
+        # 신규 포지션). close_position(fraction 0<f<=1) 와 대칭으로 상한도 둔다.
+        if not (0 < qty <= 1_000_000):
+            raise HTTPException(
+                status_code=400, detail=f"qty 는 0 초과 1,000,000 이하여야 함: {qty}",
+            )
         slot = mu_manager._slots.get((code, symbol))
         bot = slot.bot if slot is not None else None
         if bot is None:
