@@ -1200,6 +1200,8 @@ def _register_multi_user_routes(
                     "liq_price": round(liq, 6),
                     "sl_beyond_liq": beyond,
                     "bot_state": bot.state.value,
+                    # 2026-06-26: 봇 모델 — Cursus(DualSTConfig cfg 보유) vs Origo.
+                    "model": ("Cursus 1.0" if hasattr(bot, "cfg") else "Origo 1.2"),
                     "mark_price": mark,
                     "unrealized_pnl": unreal,
                     "roi_pct": roi,
@@ -1253,6 +1255,7 @@ def _register_multi_user_routes(
                     "liq_price": round(liq, 6),
                     "sl_beyond_liq": beyond,
                     "bot_state": "untracked",
+                    "model": None,
                     "mark_price": mark,
                     "unrealized_pnl": (
                         float(unreal) if isinstance(unreal, (int, float)) else None
