@@ -450,7 +450,8 @@ class MultiUserBotManager:
             bot = BotTrendInstance(
                 client=client,
                 symbol=settings.symbol,
-                leverage=int(settings.leverage),
+                # 2026-06-26 파트너: Cursus 레버 페어별 — BTC 10x, 알트(ETH 포함) 7x.
+                leverage=(10 if settings.symbol.startswith("BTC") else 7),
                 size_pct=0.9,
                 cfg=DualSTConfig(trail_mult=6.0),
                 trades_data_dir=self._user_data_dir(user_code),
