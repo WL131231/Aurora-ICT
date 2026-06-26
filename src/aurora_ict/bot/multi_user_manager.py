@@ -451,9 +451,12 @@ class MultiUserBotManager:
                 client=client,
                 symbol=settings.symbol,
                 # 2026-06-26 파트너: Cursus 레버 페어별 — BTC 10x, 알트(ETH 포함) 7x.
-                leverage=(10 if settings.symbol.startswith("BTC") else 7),
+                # base 자산 정확매칭(startswith 는 BTCDOM 등 BTC-prefix 토큰 오인).
+                leverage=(10 if settings.symbol.split("/")[0] == "BTC" else 7),
                 size_pct=0.9,
                 cfg=DualSTConfig(trail_mult=6.0),
+                # 일일 손실 한도 — Origo 와 동일하게 주입(시드 방어). 0 이면 비활성.
+                daily_loss_limit_pct=settings.daily_loss_limit_pct,
                 trades_data_dir=self._user_data_dir(user_code),
                 user_code=user_code,
                 run_mode=settings.run_mode.value,
