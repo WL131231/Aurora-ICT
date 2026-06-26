@@ -188,6 +188,52 @@ function _applyStOverlay(stOverlay) {
 let _chartModel = null;
 let _userPickedTf = false;   // 사용자가 이 세션에서 TF 를 직접 바꿨나(존중)
 let _modelTfApplied = false;  // 모델 기본 TF 1회 자동 적용 가드
+let _firstBarTimeSec = 0;     // 현재 차트 첫 봉 시각(초) — 마커 범위 필터용
+
+// closed_pnl symbol → base 자산("BTC/USDT:USDT"·"BTCUSDT" 모두 "BTC"로).
+function _baseOf(sym) {
+  if (!sym) return "";
+  const s = String(sym).toUpperCase();
+  if (s.includes("/")) return s.split("/")[0];
+  return s.replace(/USDT.*$/, "").replace(/USD.*$/, "");
+}
+
+// Cursus(추세형) 진입/청산 마커 — closed_pnl(완결 거래) 기반. ICT setup 마커가
+// 없는 Cursus 차트에 봇 진입(화살표)·청산(원) 지점을 표시. 현재 차트 페어만.
+function _applyCursusTradeMarkers(pnl) {
+  const trades = (pnl && pnl.trades) || [];
+  const base = _baseOf(currentChartSymbol);
+  const markers = [];
+  trades.forEach((t) => {
+    if (t.symbol && _baseOf(t.symbol) !== base) return;
+    const isLong = t.direction === "long";
+    if (t.opened_at_ts) {
+      markers.push({
+        time: Math.floor(Number(t.opened_at_ts) / 1000),
+        position: isLong ? "belowBar" : "aboveBar",
+        color: isLong ? "#34d399" : "#fb7185",
+        shape: isLong ? "arrowUp" : "arrowDown",
+        text: isLong ? "롱 진입" : "숏 진입",
+      });
+    }
+    if (t.closed_at_ts) {
+      const pnlUsd = Number(t.pnl_usd || 0);
+      const win = pnlUsd >= 0;
+      markers.push({
+        time: Math.floor(Number(t.closed_at_ts) / 1000),
+        position: isLong ? "aboveBar" : "belowBar",
+        color: win ? "#fbbf24" : "#9ca3af",
+        shape: "circle",
+        text: `청산 ${win ? "+" : ""}${pnlUsd.toFixed(1)}`,
+      });
+    }
+  });
+  // 차트 첫 봉 이전(범위 밖) 마커 제거 + 시간순 정렬.
+  const filtered = markers
+    .filter((m) => !_firstBarTimeSec || m.time >= _firstBarTimeSec)
+    .sort((a, b) => a.time - b.time);
+  candleSeries.setMarkers(filtered);
+}
 
 // 차트 봇 모델에 따라 하단 범례를 ICT(Origo) / SuperTrend(Cursus)로 토글하고,
 // Cursus 면 기본 TF 를 1h 로 1회 자동 전환(사용자 수동 변경은 존중).
@@ -1003,6 +1049,7 @@ function _applyChartData(candles, markers, stOverlay, model) {
   }
   if (candles && candles.length > 0) {
     lastBarTimeSec = candles[candles.length - 1].time;
+    _firstBarTimeSec = candles[0].time;
     // markers 가 차트 첫 봉보다 옛 영역에 뜨는 것 방지 — first ts 이전 필터.
     _filterMarkersByFirstBar(markers, candles[0].time);
   }
@@ -1089,6 +1136,11 @@ async function fetchAndRender() {
       renderPendingLimit(position);
     }
     if (pnl) renderPnL(pnl);
+    // Cursus(추세형) 차트면 진입/청산 마커를 closed_pnl 로 그림 — renderMarkers(ICT)
+    // 가 setMarkers([]) 로 비운 뒤라 여기서 덮어쓴다. ohlcv 있을 때(차트 렌더됨)만.
+    if (ohlcv && _chartModel === "Cursus 1.0") {
+      _applyCursusTradeMarkers(pnl);
+    }
     // 첫 정상 렌더 후 백그라운드 prefetch 1회 시작 — 모든 심볼×TF 미리 캐시해
     // 전환 즉답. 초기 렌더 안정화 후 시작(1.5s 지연).
     if (!_prefetchStarted) setTimeout(_prefetchAllCharts, 1500);
