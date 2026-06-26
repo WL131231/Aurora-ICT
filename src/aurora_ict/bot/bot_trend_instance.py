@@ -25,8 +25,10 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -45,6 +47,8 @@ logger = logging.getLogger(__name__)
 CURSUS_MODEL_NAME = "Cursus 1.0"
 # 거래소 키 무효(잔고 조회 등) 연속 실패가 이 횟수면 봇 자동 정지(무한 재시도 차단).
 _AUTH_FAIL_STOP_THRESHOLD = 5
+# 일일 손실 한도 boundary — ICT 정통 일일 경계와 동일하게 NY local 자정 기준(Origo 차용).
+_NY_TZ = ZoneInfo("America/New_York")
 
 
 @dataclass(slots=True)
@@ -116,6 +120,10 @@ class BotTrendInstance:
     # 현재 포지션의 SL 이 거래소에 확정 등록됐는지. 진입/입양/복원 시 검증 결과로 세팅.
     # False 면 무방비 가능성 → step 에서 강제 재적용(_apply_protective_sl). 청산 시 리셋.
     _sl_synced: bool = field(default=False)
+    # 일일 손실 한도 추적(Origo #SAFETY-1 패턴) — 청산 실현손익 누적, NY 자정 리셋.
+    _today_realized_pnl_usdt: float = field(default=0.0)
+    _today_date_str: str = field(default="")  # "YYYY-MM-DD" NY local
+    _today_start_equity: float = field(default=0.0)
     # ICT(Origo) UI/엔드포인트 호환 stub — 추세형은 미사용하지만, status/judgment/
     # position/daily 등 ICT 전용 API 가 이 속성들을 읽어도 AttributeError(500) 안 나게
     # None/False 로 노출. #CURSUS hotfix 2026-06-25. (분기 조건이 모두 None/False 에서
@@ -255,6 +263,17 @@ class BotTrendInstance:
 
         # 무포지션 — 진입 신호.
         if sig is not None and not _isnan(trail):
+            # 일일 손실 한도 — 도달 시 신규 진입 차단(기존 포지션 트레일/청산은 유지).
+            equity = await self._fetch_equity()
+            self._maybe_reset_daily_pnl(equity)
+            if self._is_daily_loss_limit_hit():
+                if not self._daily_limit_hit:
+                    logger.warning(
+                        "[%s] Cursus 일일 손실 한도 %.1f%% 도달 — 신규 진입 차단",
+                        self.symbol, self.daily_loss_limit_pct,
+                    )
+                    self._daily_limit_hit = True
+                return
             await self._open(sig, price, trail)
 
     async def _open(self, direction: Direction, price: float, trail: float) -> None:
@@ -582,6 +601,10 @@ class BotTrendInstance:
             mode=self.run_mode,
             model=CURSUS_MODEL_NAME,
         )
+        # 청산 이벤트(pnl 산출됨)는 일일 누적 손익에 반영 — 손실 한도 판정용.
+        # ENTRY 는 entry_for_pnl 없어 pnl None → 누적 제외. (SL_HIT/FLIP_CLOSE/SYNC_CLOSE)
+        if pnl_usdt is not None:
+            self._today_realized_pnl_usdt += pnl_usdt
         try:
             self._trades_store.record(event)
         except Exception as e:  # noqa: BLE001
@@ -596,19 +619,60 @@ class BotTrendInstance:
     # status/daily_loss_limit/pending 등 ICT 전용 API 가 봇 메서드를 호출해도 500 안
     # 나게. 추세형은 일일 한도·pending limit entry 개념 미사용 → 비활성/빈 응답.
 
+    def _maybe_reset_daily_pnl(self, equity_now: float | None) -> None:
+        """NY local 자정 기준 일일 누적 손익 리셋 (Origo #SAFETY-1 패턴).
+
+        새 거래일이 시작되면 ``_today_realized_pnl_usdt`` 를 0 으로,
+        ``_today_start_equity`` 를 현재 가용자산으로 갱신한다. equity_now 가 None
+        (잔고 조회 실패)이면 리셋을 보류해 baseline 오염을 막는다.
+
+        Args:
+            equity_now: 현재 가용 자산(USDT). 새 날짜 baseline.
+        """
+        ny_date = datetime.now(UTC).astimezone(_NY_TZ).strftime("%Y-%m-%d")
+        if ny_date == self._today_date_str:
+            return
+        if equity_now is None:
+            logger.warning(
+                "[%s] Cursus daily PnL reset 보류 — 잔고 조회 실패 (NY %s)",
+                self.symbol, ny_date,
+            )
+            return
+        self._today_date_str = ny_date
+        self._today_realized_pnl_usdt = 0.0
+        self._today_start_equity = equity_now if equity_now > 0 else 0.0
+        self._daily_limit_hit = False
+        logger.info(
+            "[%s] Cursus daily reset (NY %s) start_equity=%.2f",
+            self.symbol, ny_date, self._today_start_equity,
+        )
+
     def daily_loss_status(self) -> dict[str, Any]:
-        """ICT UI 호환 — 추세형은 일일 손실/수익 한도 미사용(비활성)."""
+        """일일 손실 현황 — UI/엔드포인트용. 추세형은 수익 한도 미사용(추세 끝까지)."""
+        start = self._today_start_equity
+        pnl = self._today_realized_pnl_usdt
+        pct = (-pnl / start * 100.0) if start > 0 else 0.0
         return {
-            "limit_pct": self.daily_loss_limit_pct, "today_pnl_usdt": 0.0,
-            "today_pct": 0.0, "start_equity": 0.0, "hit": False,
-            "date_ny": "", "profit_limit_pct": 0.0, "profit_hit": False,
+            "limit_pct": self.daily_loss_limit_pct, "today_pnl_usdt": pnl,
+            "today_pct": pct, "start_equity": start,
+            "hit": self._is_daily_loss_limit_hit(),
+            "date_ny": self._today_date_str, "profit_limit_pct": 0.0,
+            "profit_hit": False,
         }
 
     def _is_daily_profit_limit_hit(self) -> bool:
+        # 추세형은 수익 한도 미사용 — 추세를 끝까지 먹는 게 원칙(RR 비대칭).
         return False
 
     def _is_daily_loss_limit_hit(self) -> bool:
-        return False
+        """일일 손실 한도 초과 여부 — True 면 신규 진입 차단.
+
+        ``daily_loss_limit_pct <= 0``(비활성) 또는 시작 equity 미정이면 False.
+        """
+        if self.daily_loss_limit_pct <= 0 or self._today_start_equity <= 0:
+            return False
+        loss_pct = -self._today_realized_pnl_usdt / self._today_start_equity * 100.0
+        return loss_pct >= self.daily_loss_limit_pct
 
     async def cancel_pending_entry(self) -> bool:
         """ICT UI 호환 — 추세형은 pending limit entry 없음."""
