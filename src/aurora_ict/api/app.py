@@ -627,23 +627,38 @@ def _register_multi_user_routes(
         # 2026-06-26 #MULTIPAIR-MODEL: 사용자의 모든 페어 슬롯을 폐기 후 재가동 —
         # _DEFAULT_SYMBOL(BTC) 만 바꾸면 HYPE/SOL 등 다른 페어가 기존 모델로 남아
         # (Origo 봇 유지) Cursus 로직이 안 돈다. 전 페어를 새 모델로 재생성.
+        # 2026-06-26 반응속도: last_model 은 즉시 저장(status 폴링이 새 모델 반영), 전 페어
+        # 슬롯 폐기·재가동(거래소 set_leverage/복원 호출 多)은 백그라운드 task 로 빼서 API
+        # 가 즉시 응답한다(UI 토글 체감 개선). 재가동은 뒤에서 돌고 status 가 따라잡음.
         user_syms = [sym for (u, sym) in list(mu_manager._slots.keys()) if u == user_code]
-        running_syms: list[str] = []
-        for sym in user_syms:
-            _slot = mu_manager._slots.get((user_code, sym))
-            if _slot is not None and _slot.bot is not None and _slot.bot.state.value == "running":
-                running_syms.append(sym)
-                await mu_manager.stop(user_code, sym)
-            mu_manager._slots.pop((user_code, sym), None)
         try:
             _users_db.set_last_model(mu_manager.db_path, user_code, req.model)
         except Exception as e:  # noqa: BLE001
             logger.warning("사용자 %s last_model 박기 실패 (무시): %s", user_code, e)
-        for sym in running_syms:
-            try:
-                await mu_manager.start(user_code, sym)
-            except ValueError as e:
-                logger.warning("모델 전환 후 %s 재가동 실패: %s", sym, e)
+
+        async def _switch_models_bg() -> None:
+            for sym in user_syms:
+                _slot = mu_manager._slots.get((user_code, sym))
+                _running = (
+                    _slot is not None and _slot.bot is not None
+                    and _slot.bot.state.value == "running"
+                )
+                if _running:
+                    await mu_manager.stop(user_code, sym)
+                mu_manager._slots.pop((user_code, sym), None)
+                if _running:
+                    try:
+                        await mu_manager.start(user_code, sym)
+                    except ValueError as e:
+                        logger.warning("모델 전환 후 %s 재가동 실패: %s", sym, e)
+
+        _t = asyncio.create_task(_switch_models_bg())
+        _bg = getattr(app.state, "_switch_tasks", None)
+        if _bg is None:
+            _bg = set()
+            app.state._switch_tasks = _bg
+        _bg.add(_t)
+        _t.add_done_callback(_bg.discard)
         return {"ok": True, "model": req.model}
 
     @app.post("/ict/enabled")
