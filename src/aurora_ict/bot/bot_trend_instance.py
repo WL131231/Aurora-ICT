@@ -207,6 +207,15 @@ class BotTrendInstance:
         # 트레일 stop 은 복원 후 다음 step 부터 latest_trail_stop 으로 갱신된다.
         if self.active_position is None:
             await self._recover_position_from_exchange()
+            # 입양 직후 거래소 SL 즉시 박기(무방비 방지) — _recover 가 SL 못 읽을 수(sl=0).
+            _ap = self.active_position
+            if _ap is not None and not _isnan(trail):
+                _ap.stop = self._liq_capped_sl(trail, _ap.entry, _ap.direction)
+                try:
+                    await self.client.set_position_tpsl(self.symbol, stop_loss=_ap.stop)
+                    logger.info("Cursus 입양 SL 박음 — %.4f (%s)", _ap.stop, self.symbol)
+                except Exception as e:  # noqa: BLE001
+                    logger.error("[%s] 입양 SL 박기 실패: %s", self.symbol, e)
 
         pos = self.active_position
         if pos is not None:
@@ -214,6 +223,7 @@ class BotTrendInstance:
             if not _isnan(trail):
                 new_stop = max(pos.stop, trail) if pos.direction is Direction.LONG \
                     else min(pos.stop, trail)
+                new_stop = self._liq_capped_sl(new_stop, pos.entry, pos.direction)
                 if new_stop != pos.stop:
                     pos.stop = new_stop
                     try:
@@ -241,12 +251,13 @@ class BotTrendInstance:
         except Exception as e:  # noqa: BLE001
             logger.error("[%s] Cursus 진입 주문 실패: %s", self.symbol, e)
             return
+        capped = self._liq_capped_sl(trail, price, direction)
         self.active_position = _TrendPosition(
-            direction=direction, entry=price, qty=qty, stop=trail,
+            direction=direction, entry=price, qty=qty, stop=capped,
             entry_ts_ms=int(time.time() * 1000),
         )
         try:
-            await self.client.set_position_tpsl(self.symbol, stop_loss=trail)
+            await self.client.set_position_tpsl(self.symbol, stop_loss=capped)
         except Exception as e:  # noqa: BLE001
             logger.error("[%s] Cursus 진입 후 SL 설정 실패: %s", self.symbol, e)
         self._record_trade(
@@ -446,6 +457,19 @@ class BotTrendInstance:
     async def cancel_pending_entry(self) -> bool:
         """ICT UI 호환 — 추세형은 pending limit entry 없음."""
         return False
+
+    def _liq_capped_sl(self, stop: float, entry: float, direction: Direction) -> float:
+        """SL 을 레버리지 청산가 안으로 캡 — 강제청산 전 SL 보장(#LIQ-CAP, Origo 차용).
+
+        레버 높을수록 청산가가 entry 에 가까워, ST 트레일 SL(ATR×6)이 청산가 밖이면
+        SL 도달 전 강제청산된다. SL 을 청산거리 80% 안으로 당겨 봇 SL 이 먼저 작동.
+        """
+        if self.leverage <= 0 or entry <= 0:
+            return stop
+        liq_dist = entry / self.leverage * 0.8
+        if direction is Direction.LONG:
+            return max(stop, entry - liq_dist)
+        return min(stop, entry + liq_dist)
 
     def ensure_prefetch_started(self) -> None:
         """ICT UI 호환 — 추세형은 OHLCV prefetch 캐시 미사용(차트는 get_ohlcv_cached
