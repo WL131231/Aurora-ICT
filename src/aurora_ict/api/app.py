@@ -624,24 +624,26 @@ def _register_multi_user_routes(
         from aurora_ict.config.settings import AVAILABLE_MODELS
         if req.model not in AVAILABLE_MODELS:
             raise HTTPException(status_code=400, detail=f"알 수 없는 모델: {req.model}")
-        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
-        was_running = (
-            slot is not None and slot.bot is not None
-            and slot.bot.state.value == "running"
-        )
-        if was_running:
-            await mu_manager.stop(user_code)
-        if slot is not None:
-            mu_manager._slots.pop((user_code, _DEFAULT_SYMBOL), None)
+        # 2026-06-26 #MULTIPAIR-MODEL: 사용자의 모든 페어 슬롯을 폐기 후 재가동 —
+        # _DEFAULT_SYMBOL(BTC) 만 바꾸면 HYPE/SOL 등 다른 페어가 기존 모델로 남아
+        # (Origo 봇 유지) Cursus 로직이 안 돈다. 전 페어를 새 모델로 재생성.
+        user_syms = [sym for (u, sym) in list(mu_manager._slots.keys()) if u == user_code]
+        running_syms: list[str] = []
+        for sym in user_syms:
+            _slot = mu_manager._slots.get((user_code, sym))
+            if _slot is not None and _slot.bot is not None and _slot.bot.state.value == "running":
+                running_syms.append(sym)
+                await mu_manager.stop(user_code, sym)
+            mu_manager._slots.pop((user_code, sym), None)
         try:
             _users_db.set_last_model(mu_manager.db_path, user_code, req.model)
         except Exception as e:  # noqa: BLE001
             logger.warning("사용자 %s last_model 박기 실패 (무시): %s", user_code, e)
-        if was_running:
+        for sym in running_syms:
             try:
-                await mu_manager.start(user_code)
+                await mu_manager.start(user_code, sym)
             except ValueError as e:
-                raise HTTPException(status_code=400, detail=str(e)) from e
+                logger.warning("모델 전환 후 %s 재가동 실패: %s", sym, e)
         return {"ok": True, "model": req.model}
 
     @app.post("/ict/enabled")
