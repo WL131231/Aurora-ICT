@@ -63,6 +63,71 @@ def _rows_to_candles(rows: list[list[Any]]) -> list[dict[str, float]]:
         for r in rows
     ]
 
+
+# Cursus(Dual SuperTrend) 차트 오버레이 색 — 캔들 기본 상승/하락과 동일 톤.
+_ST_UP_COLOR = "#26a69a"  # 상승 추세(가격이 트레일 라인 위)
+_ST_DN_COLOR = "#ef5350"  # 하락 추세(가격이 트레일 라인 아래)
+
+
+def _rows_to_st_overlay(rows: list[list[Any]], cfg: Any) -> dict[str, Any]:
+    """OHLCV rows → Cursus 차트 오버레이(ST1/ST2/trail 라인 + 추세존).
+
+    프론트(app.js)가 Cursus 모델일 때 이 데이터로 SuperTrend 라인 3개와 추세
+    배경색(롱존/숏존)을 그린다. 지표는 백테·실거래와 동일한
+    ``dual_st.supertrend_line`` 을 재사용해 정합을 보장한다.
+
+    NaN(표본 부족 구간)은 제외한다. ``_rows_to_candles`` 와 마찬가지로 수천 봉
+    파이썬 루프 계산이라 호출부에서 ``asyncio.to_thread`` 로 감싼다.
+
+    Args:
+        rows: 거래소 OHLCV rows([[ts_ms, o, h, l, c, v], ...]).
+        cfg: ``DualSTConfig`` (봇 인스턴스의 trail_mult 반영).
+
+    Returns:
+        {"st1": [{time,value}], "st2": [...], "trail": [{time,value,color}],
+         "trend": [{time, zone: "bull"|"bear"|"neutral"}]}.
+    """
+    from aurora_ict.strategy.dual_st import supertrend_line
+
+    empty = {"st1": [], "st2": [], "trail": [], "trend": []}
+    df = pd.DataFrame(
+        rows, columns=["ts_ms", "open", "high", "low", "close", "volume"],
+    )
+    if df.empty:
+        return empty
+    st1 = supertrend_line(df, cfg.st1_mult, cfg.atr_period).tolist()
+    st2 = supertrend_line(df, cfg.st2_mult, cfg.atr_period).tolist()
+    trail = supertrend_line(df, cfg.trail_mult, cfg.atr_period).tolist()
+    times = [int(t // 1000) for t in df["ts_ms"]]
+    close = df["close"].tolist()
+
+    def _line(vals: list[float]) -> list[dict[str, float]]:
+        # v == v 는 NaN 제외(NaN != NaN).
+        return [
+            {"time": t, "value": float(v)}
+            for t, v in zip(times, vals, strict=False) if v == v
+        ]
+
+    # 트레일 라인은 추세 방향별로 색을 나눠(상승=녹/하락=적) 한눈에 추세 표시.
+    trail_line = [
+        {"time": t, "value": float(v), "color": _ST_UP_COLOR if c > v else _ST_DN_COLOR}
+        for t, v, c in zip(times, trail, close, strict=False) if v == v
+    ]
+    # 추세존(배경색): ST1·ST2 둘 다 위=롱존 / 둘 다 아래=숏존 / 그 외 중립(진입 정렬과 동일).
+    trend = []
+    for t, c, a, b in zip(times, close, st1, st2, strict=False):
+        if a != a or b != b:
+            continue
+        if c > a and c > b:
+            zone = "bull"
+        elif c < a and c < b:
+            zone = "bear"
+        else:
+            zone = "neutral"
+        trend.append({"time": t, "zone": zone})
+    return {"st1": _line(st1), "st2": _line(st2), "trail": trail_line, "trend": trend}
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -1921,7 +1986,24 @@ def _register_multi_user_routes(
             raise HTTPException(status_code=502, detail=f"fetch_ohlcv: {e}") from e
         # 수만 봉 변환은 이벤트 루프 밖에서 (#OHLCV-NONBLOCK) — health timeout 방지.
         candles = await asyncio.to_thread(_rows_to_candles, rows)
-        return {"symbol": use_symbol, "timeframe": use_tf, "candles": candles}
+        from aurora_ict.bot.bot_trend_instance import (
+            CURSUS_MODEL_NAME,
+            BotTrendInstance,
+        )
+        from aurora_ict.config.settings import ORIGO_MODEL_NAME
+        is_cursus = isinstance(bot, BotTrendInstance)
+        result: dict[str, Any] = {
+            "symbol": use_symbol,
+            "timeframe": use_tf,
+            "candles": candles,
+            "model": CURSUS_MODEL_NAME if is_cursus else ORIGO_MODEL_NAME,
+        }
+        # Cursus 모델이고 현재 봇 페어면 SuperTrend 라인·추세존 오버레이 추가.
+        if is_cursus and use_symbol == bot.symbol:
+            result["st_overlay"] = await asyncio.to_thread(
+                _rows_to_st_overlay, rows, bot.cfg,
+            )
+        return result
 
     # Static UI mount — SaaS 도 ui_ict 그대로 서빙 (브라우저 → cookie 세션 흐름).
     # single-user 분기와 동일 패턴 (frozen 케이스는 SaaS 에서 없음 — dev / Docker layout 만).
@@ -2787,7 +2869,24 @@ def create_app(
             raise HTTPException(status_code=502, detail=f"fetch_ohlcv: {e}") from e
         # 수만 봉 변환은 이벤트 루프 밖에서 (#OHLCV-NONBLOCK) — health timeout 방지.
         candles = await asyncio.to_thread(_rows_to_candles, rows)
-        return {"symbol": use_symbol, "timeframe": use_tf, "candles": candles}
+        from aurora_ict.bot.bot_trend_instance import (
+            CURSUS_MODEL_NAME,
+            BotTrendInstance,
+        )
+        from aurora_ict.config.settings import ORIGO_MODEL_NAME
+        is_cursus = isinstance(bot, BotTrendInstance)
+        result: dict[str, Any] = {
+            "symbol": use_symbol,
+            "timeframe": use_tf,
+            "candles": candles,
+            "model": CURSUS_MODEL_NAME if is_cursus else ORIGO_MODEL_NAME,
+        }
+        # Cursus 모델이고 현재 봇 페어면 SuperTrend 라인·추세존 오버레이 추가.
+        if is_cursus and use_symbol == bot.symbol:
+            result["st_overlay"] = await asyncio.to_thread(
+                _rows_to_st_overlay, rows, bot.cfg,
+            )
+        return result
 
     # Static UI mount — frozen (PyInstaller) 환경 대응:
     # - dev: <repo_root>/ui_ict/
