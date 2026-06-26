@@ -1062,9 +1062,17 @@ def _register_multi_user_routes(
         else:
             liq_price = ex_entry * (1.0 + (1.0 / lev) * 0.95)
         roi_pct = (unrealized / margin * 100.0) if margin > 0 else 0.0
+        from aurora_ict.bot.bot_trend_instance import (
+            CURSUS_MODEL_NAME,
+            BotTrendInstance,
+        )
+        from aurora_ict.config.settings import ORIGO_MODEL_NAME
         return {
             "active": True,
             "symbol": bot.symbol,
+            # 2026-06-26 파트너: 열린 포지션 표에 어느 모델 봇인지 표시.
+            "model": (CURSUS_MODEL_NAME if isinstance(bot, BotTrendInstance)
+                      else ORIGO_MODEL_NAME),
             "direction": ap.direction.value,
             "entry": ex_entry,
             "stop_loss": ap.stop_loss,
@@ -2356,9 +2364,17 @@ def create_app(
         # Unrealized PnL % (ROI on margin)
         roi_pct = (unrealized / margin * 100.0) if margin > 0 else 0.0
 
+        from aurora_ict.bot.bot_trend_instance import (
+            CURSUS_MODEL_NAME,
+            BotTrendInstance,
+        )
+        from aurora_ict.config.settings import ORIGO_MODEL_NAME
         return {
             "active": True,
             "symbol": bot.symbol,
+            # 2026-06-26 파트너: 열린 포지션 표에 어느 모델 봇인지 표시.
+            "model": (CURSUS_MODEL_NAME if isinstance(bot, BotTrendInstance)
+                      else ORIGO_MODEL_NAME),
             "direction": ap.direction.value,
             "entry": ex_entry,
             "stop_loss": ap.stop_loss,

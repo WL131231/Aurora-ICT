@@ -791,7 +791,7 @@ function _posActiveRow(pos) {
     <tr>
       <td>
         <div>${sym}</div>
-        <div class="${sideClass}" style="font-size:9px; letter-spacing:0.15em">${sideLabel} · ${pos.leverage}×</div>
+        <div class="${sideClass}" style="font-size:9px; letter-spacing:0.15em">${sideLabel} · ${pos.leverage}× · ${pos.model || "—"}</div>
       </td>
       <td>${_fmt(pos.qty, 4)}</td>
       <td>${_fmt(pos.entry, 2)}</td>
