@@ -122,11 +122,67 @@ const chart = LightweightCharts.createChart(chartEl, {
     vertTouchDrag: true,
   },
 });
+// ── Cursus(Dual SuperTrend) 추세 배경 area ──
+// 추세존(롱존=녹 / 숏존=적)을 반투명으로 깔아 한눈에 추세 방향 표시.
+// candleSeries 보다 먼저 생성해 캔들 아래 레이어가 되게 한다(캔들 가림 방지).
+// Origo 모델이면 빈 데이터로 숨김. trail 라인값 아래를 추세색으로 채운다.
+const stBullArea = chart.addAreaSeries({
+  lineColor: "rgba(0,0,0,0)", topColor: "rgba(38,166,154,0.14)",
+  bottomColor: "rgba(38,166,154,0.0)",
+  priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+});
+const stBearArea = chart.addAreaSeries({
+  lineColor: "rgba(0,0,0,0)", topColor: "rgba(239,83,80,0.14)",
+  bottomColor: "rgba(239,83,80,0.0)",
+  priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+});
+
 const candleSeries = chart.addCandlestickSeries({
   upColor: "#34d399", downColor: "#fb7185",
   borderUpColor: "#34d399", borderDownColor: "#fb7185",
   wickUpColor: "#34d399", wickDownColor: "#fb7185",
 });
+
+// ── Cursus SuperTrend 라인 3개 ── (candleSeries 뒤 = 캔들 위, 라인이라 가림 적음)
+// trail(트레일 스탑, ×6): 추세 방향별 색 세그먼트(백엔드가 point.color 제공) — 두껍게.
+// st1(×2)/st2(×3): 진입 판정 밴드 — 가늘고 흐리게(보조).
+const stTrailSeries = chart.addLineSeries({
+  lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
+  crosshairMarkerVisible: false,
+});
+const st1Series = chart.addLineSeries({
+  color: "rgba(120,170,255,0.45)", lineWidth: 1, priceLineVisible: false,
+  lastValueVisible: false, crosshairMarkerVisible: false,
+});
+const st2Series = chart.addLineSeries({
+  color: "rgba(255,180,120,0.45)", lineWidth: 1, priceLineVisible: false,
+  lastValueVisible: false, crosshairMarkerVisible: false,
+});
+
+// Cursus ST 오버레이 적용(없으면 전부 비워 숨김). _applyChartData 가 호출.
+function _applyStOverlay(stOverlay) {
+  if (!stOverlay || !stOverlay.trail || stOverlay.trail.length === 0) {
+    stTrailSeries.setData([]); st1Series.setData([]); st2Series.setData([]);
+    stBullArea.setData([]); stBearArea.setData([]);
+    return;
+  }
+  stTrailSeries.setData(stOverlay.trail);
+  st1Series.setData(stOverlay.st1 || []);
+  st2Series.setData(stOverlay.st2 || []);
+  // 추세존 배경: trail 값을 bull/bear 구간으로 분리해 area 2개로 채움.
+  // 다른 구간은 whitespace(time 만)로 갭 처리 → 색이 끊겨 추세 전환 지점이 보임.
+  const zoneByTime = {};
+  (stOverlay.trend || []).forEach((p) => { zoneByTime[p.time] = p.zone; });
+  const bull = []; const bear = [];
+  stOverlay.trail.forEach((p) => {
+    const z = zoneByTime[p.time];
+    if (z === "bull") { bull.push({ time: p.time, value: p.value }); bear.push({ time: p.time }); }
+    else if (z === "bear") { bear.push({ time: p.time, value: p.value }); bull.push({ time: p.time }); }
+    else { bull.push({ time: p.time }); bear.push({ time: p.time }); }
+  });
+  stBullArea.setData(bull);
+  stBearArea.setData(bear);
+}
 
 // 차트를 기본 뷰로 복귀 — 최근 N봉 + 가격축 autoScale (우측 끝 정렬).
 // 사용자가 줌/스크롤로 흩뜨린 뒤 우측 가격축을 누르면 원위치.
@@ -895,8 +951,9 @@ function renderPositions(pos) {
 // 차트 데이터(candles + markers)를 차트에 적용 — setData + 뷰(첫 로드 줌 /
 // auto-scroll) + 마커. fetchAndRender(fresh)와 TF/페어 전환 시 캐시 즉시 표시가
 // 공용으로 호출한다.
-function _applyChartData(candles, markers) {
+function _applyChartData(candles, markers, stOverlay) {
   candleSeries.setData(candles || []);
+  _applyStOverlay(stOverlay);
   const _newCount = (candles && candles.length) || 0;
   // 첫 로드/전환 시만 최근 N봉 zoom — 이후 refresh 는 사용자 view 유지.
   if (!_chartViewInitialized && _newCount > 0) {
@@ -927,7 +984,7 @@ function _applyChartData(candles, markers) {
 // 전환 시 캐시된 차트가 있으면 즉시 표시(체감 즉답). fresh 는 직후 fetchAndRender 가 갱신.
 function _showCachedChartIfAny() {
   const c = _chartCache.get(`${currentChartSymbol}|${currentTimeframe}`);
-  if (c) _applyChartData(c.candles, c.markers);
+  if (c) _applyChartData(c.candles, c.markers, c.stOverlay);
 }
 
 let _prefetchStarted = false;
@@ -955,7 +1012,7 @@ async function _prefetchAllCharts() {
           api(`/ict/ohlcv?timeframe=${tf}&symbol=${encodeURIComponent(sym)}&limit=${cl}`),
           api(`/ict/markers?timeframe=${tf}&symbol=${encodeURIComponent(sym)}&limit=${MARKER_LIMIT}`),
         ]);
-        _chartCache.set(key, { candles: ohlcv.candles, markers });
+        _chartCache.set(key, { candles: ohlcv.candles, markers, stOverlay: ohlcv.st_overlay });
       } catch (e) { /* prefetch 실패는 무시 — 전환 때 개별 fetch */ }
     }
   }
@@ -992,8 +1049,8 @@ async function fetchAndRender() {
     const [position, pnl] = await Promise.all([positionP, pnlP]);
     if (ohlcv) {
       // fresh 데이터 캐시 갱신 — TF/페어 전환·prefetch 가 재사용해 즉시 표시.
-      _chartCache.set(cacheKey, { candles: ohlcv.candles, markers });
-      _applyChartData(ohlcv.candles, markers);
+      _chartCache.set(cacheKey, { candles: ohlcv.candles, markers, stOverlay: ohlcv.st_overlay });
+      _applyChartData(ohlcv.candles, markers, ohlcv.st_overlay);
     }
     if (position) {
       renderPositions(position);
