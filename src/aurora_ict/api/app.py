@@ -128,6 +128,104 @@ def _rows_to_st_overlay(rows: list[list[Any]], cfg: Any) -> dict[str, Any]:
     return {"st1": _line(st1), "st2": _line(st2), "trail": trail_line, "trend": trend}
 
 
+async def _cursus_judgment_payload(bot: Any) -> dict[str, Any]:
+    """Cursus(추세형) 봇 판단 패널 응답 — 현재 ST 정렬·트레일가·활성 포지션.
+
+    ICT judgment(HTF FVG 가중치) 대신 Dual SuperTrend 상태를 같은 스키마
+    (direction/reasons/entry_condition)로 채워 프론트 판단 패널을 그대로 재사용한다.
+    봇의 캐시 OHLCV 로 최신 봉의 ST1/ST2/트레일 라인을 계산한다.
+
+    Args:
+        bot: ``BotTrendInstance`` (active_position·cfg·timeframe·get_ohlcv_cached 보유).
+
+    Returns:
+        judgment 응답 dict. 데이터 부족·오류 시 정적 fallback.
+    """
+    from aurora_ict.strategy.dual_st import compute_signals
+
+    pos = getattr(bot, "active_position", None)
+    fallback_lp = (
+        100.0 if (pos is not None and pos.direction.value == "long")
+        else 0.0 if pos is not None else 50.0
+    )
+    fallback = {
+        "direction": {
+            "long_pct": fallback_lp, "short_pct": 100.0 - fallback_lp,
+            "label": "Cursus 추세형 (Dual SuperTrend)",
+        },
+        "reasons": [],
+        "entry_condition": {
+            "title": "Cursus — 추세추종",
+            "detail": "ST 정렬 돌파 진입 · 트레일 청산",
+        },
+    }
+    try:
+        rows = await bot.get_ohlcv_cached(bot.timeframe, 300)
+        df = pd.DataFrame(
+            rows, columns=["ts_ms", "open", "high", "low", "close", "volume"],
+        )
+        if df.empty:
+            return fallback
+        sig = await asyncio.to_thread(compute_signals, df, bot.cfg)
+        last = sig.iloc[-1]
+        close = float(last["close"])
+        st1 = float(last["st1"])
+        st2 = float(last["st2"])
+        trail = float(last["trail"])
+    except Exception:  # noqa: BLE001
+        return fallback
+
+    above1 = close > st1
+    above2 = close > st2
+    if above1 and above2:
+        label, long_pct = "롱 추세 정렬", 100.0
+    elif (not above1) and (not above2):
+        label, long_pct = "숏 추세 정렬", 0.0
+    else:
+        label, long_pct = "추세 정렬 대기(혼조)", 50.0
+    reasons = [
+        {
+            "term": "SuperTrend1 (ATR×2)",
+            "range": f"가격이 라인 {'위' if above1 else '아래'} · {st1:,.4f}",
+            "interpretation": "단기 추세 " + ("상승" if above1 else "하락"),
+            "color": "green" if above1 else "red",
+        },
+        {
+            "term": "SuperTrend2 (ATR×3)",
+            "range": f"가격이 라인 {'위' if above2 else '아래'} · {st2:,.4f}",
+            "interpretation": "중기 추세 " + ("상승" if above2 else "하락"),
+            "color": "green" if above2 else "red",
+        },
+        {
+            "term": "트레일 스탑 (ATR×6)",
+            "range": f"{trail:,.4f}",
+            "interpretation": "추세가 이 선을 깨면 청산 (고정 TP 없음)",
+            "color": "yellow",
+        },
+    ]
+    if pos is not None:
+        _dir = "롱" if pos.direction.value == "long" else "숏"
+        entry = float(getattr(pos, "entry", 0) or 0)
+        stop = float(getattr(pos, "stop", 0) or 0)
+        entry_condition = {
+            "title": f"보유 중 — {_dir} @ {entry:,.4f}",
+            "detail": f"트레일 청산선 {stop:,.4f} · 추세 끝까지 보유(고정 TP 없음)",
+        }
+    else:
+        entry_condition = {
+            "title": "진입 대기 — ST1·ST2 정렬 돌파 시 진입",
+            "detail": f"현재 {label} · 조건: 둘 다 위=롱 / 둘 다 아래=숏",
+        }
+    return {
+        "direction": {
+            "long_pct": long_pct, "short_pct": 100.0 - long_pct,
+            "label": f"Cursus 추세형 — {label}",
+        },
+        "reasons": reasons,
+        "entry_condition": entry_condition,
+    }
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -1622,20 +1720,9 @@ def _register_multi_user_routes(
                 },
             }
         if not hasattr(bot, "_htf_fvg_map_cache"):
-            # #CURSUS hotfix 2026-06-25: 추세형 봇(BotTrendInstance)은 ICT judgment
-            # (HTF FVG 가중치) 비대상 — 간단 응답으로 500(AttributeError) 방지.
-            _pos = getattr(bot, "active_position", None)
-            _lp = (100.0 if (_pos is not None and _pos.direction.value == "long")
-                   else 0.0 if _pos is not None else 50.0)
-            return {
-                "direction": {"long_pct": _lp, "short_pct": 100.0 - _lp,
-                              "label": "Cursus 추세형 (Dual SuperTrend)"},
-                "reasons": [],
-                "entry_condition": {
-                    "title": "Cursus — 추세추종",
-                    "detail": "ST 정렬 돌파 진입 · 트레일 청산 (ICT 판단 비대상)",
-                },
-            }
+            # #CURSUS 2026-06-26: 추세형 봇(BotTrendInstance)은 ICT judgment
+            # (HTF FVG 가중치) 비대상 — 추세형 판단(ST 정렬·트레일가) 응답으로 교체.
+            return await _cursus_judgment_payload(bot)
         settings = _user_settings(user_code)
         htf_map = bot._htf_fvg_map_cache or []
         bull_w = sum(int(e.weight) for e in htf_map if e.type.value == "bullish")
@@ -2508,19 +2595,8 @@ def create_app(
                 "entry_condition": {"title": "봇 미가동", "detail": "START 눌러 가동"},
             }
         if not hasattr(bot, "_htf_fvg_map_cache"):
-            # #CURSUS hotfix 2026-06-25: 추세형 봇은 ICT judgment 비대상 — 간단 응답.
-            _pos = getattr(bot, "active_position", None)
-            _lp = (100.0 if (_pos is not None and _pos.direction.value == "long")
-                   else 0.0 if _pos is not None else 50.0)
-            return {
-                "direction": {"long_pct": _lp, "short_pct": 100.0 - _lp,
-                              "label": "Cursus 추세형 (Dual SuperTrend)"},
-                "reasons": [],
-                "entry_condition": {
-                    "title": "Cursus — 추세추종",
-                    "detail": "ST 정렬 돌파 진입 · 트레일 청산 (ICT 판단 비대상)",
-                },
-            }
+            # #CURSUS 2026-06-26: 추세형 봇은 ICT judgment 비대상 — 추세형 판단 응답.
+            return await _cursus_judgment_payload(bot)
         # HTF FVG 가중치 합산 → 방향 확률
         htf_map = bot._htf_fvg_map_cache or []
         bull_w = sum(int(e.weight) for e in htf_map if e.type.value == "bullish")

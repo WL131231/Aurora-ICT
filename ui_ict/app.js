@@ -184,6 +184,33 @@ function _applyStOverlay(stOverlay) {
   stBearArea.setData(bear);
 }
 
+// 현재 차트 봇 모델 상태 — 범례 토글 + 기본 TF 자동 적용용.
+let _chartModel = null;
+let _userPickedTf = false;   // 사용자가 이 세션에서 TF 를 직접 바꿨나(존중)
+let _modelTfApplied = false;  // 모델 기본 TF 1회 자동 적용 가드
+
+// 차트 봇 모델에 따라 하단 범례를 ICT(Origo) / SuperTrend(Cursus)로 토글하고,
+// Cursus 면 기본 TF 를 1h 로 1회 자동 전환(사용자 수동 변경은 존중).
+function _applyChartModel(model) {
+  if (!model) return;
+  const isCursus = model === "Cursus 1.0";
+  const legIct = document.querySelector(".legend-ict");
+  const legCur = document.querySelector(".legend-cursus");
+  if (legIct) legIct.style.display = isCursus ? "none" : "";
+  if (legCur) legCur.style.display = isCursus ? "" : "none";
+  _chartModel = model;
+  // 항목5: Cursus 차트 기본 TF = 1h (봇 운영 TF). 1회·사용자 수동변경 전에만.
+  if (isCursus && !_modelTfApplied && !_userPickedTf
+      && currentTimeframe !== "1h" && VALID_TFS.includes("1h")) {
+    _modelTfApplied = true;
+    currentTimeframe = "1h";
+    localStorage.setItem("aurora_ict_tf", "1h");
+    if (typeof _updateTfButtons === "function") _updateTfButtons();
+    _chartViewInitialized = false;
+    fetchAndRender();
+  }
+}
+
 // 차트를 기본 뷰로 복귀 — 최근 N봉 + 가격축 autoScale (우측 끝 정렬).
 // 사용자가 줌/스크롤로 흩뜨린 뒤 우측 가격축을 누르면 원위치.
 function resetChartView() {
@@ -951,9 +978,10 @@ function renderPositions(pos) {
 // 차트 데이터(candles + markers)를 차트에 적용 — setData + 뷰(첫 로드 줌 /
 // auto-scroll) + 마커. fetchAndRender(fresh)와 TF/페어 전환 시 캐시 즉시 표시가
 // 공용으로 호출한다.
-function _applyChartData(candles, markers, stOverlay) {
+function _applyChartData(candles, markers, stOverlay, model) {
   candleSeries.setData(candles || []);
   _applyStOverlay(stOverlay);
+  _applyChartModel(model);
   const _newCount = (candles && candles.length) || 0;
   // 첫 로드/전환 시만 최근 N봉 zoom — 이후 refresh 는 사용자 view 유지.
   if (!_chartViewInitialized && _newCount > 0) {
@@ -984,7 +1012,7 @@ function _applyChartData(candles, markers, stOverlay) {
 // 전환 시 캐시된 차트가 있으면 즉시 표시(체감 즉답). fresh 는 직후 fetchAndRender 가 갱신.
 function _showCachedChartIfAny() {
   const c = _chartCache.get(`${currentChartSymbol}|${currentTimeframe}`);
-  if (c) _applyChartData(c.candles, c.markers, c.stOverlay);
+  if (c) _applyChartData(c.candles, c.markers, c.stOverlay, c.model);
 }
 
 let _prefetchStarted = false;
@@ -1012,7 +1040,9 @@ async function _prefetchAllCharts() {
           api(`/ict/ohlcv?timeframe=${tf}&symbol=${encodeURIComponent(sym)}&limit=${cl}`),
           api(`/ict/markers?timeframe=${tf}&symbol=${encodeURIComponent(sym)}&limit=${MARKER_LIMIT}`),
         ]);
-        _chartCache.set(key, { candles: ohlcv.candles, markers, stOverlay: ohlcv.st_overlay });
+        _chartCache.set(key, {
+          candles: ohlcv.candles, markers, stOverlay: ohlcv.st_overlay, model: ohlcv.model,
+        });
       } catch (e) { /* prefetch 실패는 무시 — 전환 때 개별 fetch */ }
     }
   }
@@ -1049,8 +1079,10 @@ async function fetchAndRender() {
     const [position, pnl] = await Promise.all([positionP, pnlP]);
     if (ohlcv) {
       // fresh 데이터 캐시 갱신 — TF/페어 전환·prefetch 가 재사용해 즉시 표시.
-      _chartCache.set(cacheKey, { candles: ohlcv.candles, markers, stOverlay: ohlcv.st_overlay });
-      _applyChartData(ohlcv.candles, markers, ohlcv.st_overlay);
+      _chartCache.set(cacheKey, {
+        candles: ohlcv.candles, markers, stOverlay: ohlcv.st_overlay, model: ohlcv.model,
+      });
+      _applyChartData(ohlcv.candles, markers, ohlcv.st_overlay, ohlcv.model);
     }
     if (position) {
       renderPositions(position);
@@ -2050,6 +2082,7 @@ $("tf-toggle").addEventListener("click", async (ev) => {
   if (!btn) return;
   const tf = btn.dataset.tf;
   if (!VALID_TFS.includes(tf) || tf === currentTimeframe) return;
+  _userPickedTf = true;  // 사용자 수동 선택 — 모델 기본 TF 자동전환 비활성
   currentTimeframe = tf;
   localStorage.setItem("aurora_ict_tf", tf);
   _updateTfButtons();
