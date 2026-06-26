@@ -214,19 +214,29 @@ class BotTrendInstance:
             _ap = self.active_position
             if _ap is not None and not _isnan(trail):
                 _ap.stop = self._liq_capped_sl(trail, _ap.entry, _ap.direction)
-                await self._apply_protective_sl(_ap.stop)
+                await self._apply_protective_sl(_ap.stop, price)
 
         pos = self.active_position
         if pos is not None:
-            # 트레일 SL 갱신 — 추세 방향으로만(롱 max / 숏 min).
             if not _isnan(trail):
+                # 트레일 돌파 청산 — 가격이 트레일 스탑을 넘었으면(롱: price<=trail /
+                # 숏: price>=trail) 추세 반전 = 청산 시점. SL 을 박아도 즉시청산가라
+                # 거래소가 거부하므로 봇이 직접 reduce_only 청산(정상 트레일 청산 기록).
+                breached = (
+                    (pos.direction is Direction.LONG and price <= trail)
+                    or (pos.direction is Direction.SHORT and price >= trail)
+                )
+                if breached:
+                    await self._trail_exit(price)
+                    return
+                # 트레일 SL 갱신 — 추세 방향으로만(롱 max / 숏 min).
                 new_stop = max(pos.stop, trail) if pos.direction is Direction.LONG \
                     else min(pos.stop, trail)
                 new_stop = self._liq_capped_sl(new_stop, pos.entry, pos.direction)
                 if not self._sl_synced:
                     # 복원/재시작 직후 SL 미확정(무방비 가능) — 검증+비상청산 경로로 확실히.
                     pos.stop = new_stop
-                    await self._apply_protective_sl(new_stop)
+                    await self._apply_protective_sl(new_stop, price)
                 elif new_stop != pos.stop:
                     # 이미 SL 있음 — 갱신만(실패해도 기존 SL 유지, 다음 step 재시도).
                     pos.stop = new_stop
@@ -270,7 +280,7 @@ class BotTrendInstance:
             reason=f"DualST 진입 trail={trail:.4f}",
         )
         # SL 등록을 검증 — 실패 시 재시도→비상청산(무SL 청산 직행 방지).
-        await self._apply_protective_sl(capped)
+        await self._apply_protective_sl(capped, price)
         logger.info(
             "Cursus 진입 — %s %s price=%.4f qty=%.6f SL=%.4f",
             self.symbol, side, price, qty, trail,
@@ -345,7 +355,7 @@ class BotTrendInstance:
                 "[%s] Cursus 방향 불일치 — 봇=%s 거래소=%s. 비상청산.",
                 self.symbol, pos.direction.value, ex_dir.value,
             )
-            await self._emergency_close("방향 불일치(봇↔거래소) — 무방비 방지")
+            await self._emergency_close("방향 불일치(봇↔거래소) — 무방비 방지", price=price)
 
     async def _recover_position_from_exchange(self, *, record: bool = True) -> None:
         """봇 시작 시 거래소 활성 포지션 복원 — 재시작 중복 진입 방지.
@@ -402,7 +412,7 @@ class BotTrendInstance:
             return False
         return bool(res)
 
-    async def _apply_protective_sl(self, stop: float) -> bool:
+    async def _apply_protective_sl(self, stop: float, price: float | None = None) -> bool:
         """SL 등록 + 검증 + 실패 시 1회 재시도 + 그래도 실패면 비상청산.
 
         고배율 봇 최우선 원칙(청산 방지) — 진입/입양/복원 직후 SL 이 거래소에
@@ -410,6 +420,7 @@ class BotTrendInstance:
 
         Args:
             stop: 등록할 SL 가격.
+            price: 현재가(비상청산 시 PnL 기록용). None 이면 entry 로 기록.
 
         Returns:
             True=SL 보장. False=2회 실패로 비상청산함(active_position=None).
@@ -422,14 +433,47 @@ class BotTrendInstance:
                 "[%s] Cursus SL 미적용(시도 %d/2) — 재시도", self.symbol, attempt,
             )
         logger.error("[%s] Cursus SL 2회 적용 실패 — 무방비 방지 비상청산", self.symbol)
-        await self._emergency_close("SL 적용 실패 — 무방비 방지 비상청산")
+        await self._emergency_close("SL 적용 실패 — 무방비 방지 비상청산", price=price)
         return False
 
-    async def _emergency_close(self, reason: str) -> None:
+    async def _emergency_close(self, reason: str, price: float | None = None) -> None:
         """현재 포지션 reduce_only 시장가 즉시 청산 — 무방비/방향불일치 등 위험 상황.
 
         Args:
             reason: 청산 사유(기록·로그용).
+            price: 현재가(PnL 기록용). None 이면 entry(=PnL 0)로 기록.
+        """
+        pos = self.active_position
+        if pos is None:
+            return
+        close_px = price if (price is not None and price > 0) else pos.entry
+        close_side = "sell" if pos.direction is Direction.LONG else "buy"
+        try:
+            await self.client.place_order(
+                symbol=self.symbol, side=close_side, qty=pos.qty,
+                price=None, reduce_only=True,
+            )
+            self._record_trade(
+                TradeEventType.SYNC_CLOSE, direction=pos.direction, price=close_px,
+                qty=pos.qty, entry_for_pnl=pos.entry, reason=reason,
+            )
+            logger.error("[%s] Cursus 비상청산 실행 — %s", self.symbol, reason)
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                "[%s] Cursus 비상청산 실패(수동 확인 필요): %s", self.symbol, e,
+            )
+        self.active_position = None
+        self._sl_synced = False
+
+    async def _trail_exit(self, price: float) -> None:
+        """가격이 트레일 스탑을 깬 정상 청산 — reduce_only 시장가 + SL_HIT 기록.
+
+        SuperTrend 트레일이 가격 반대편으로 넘어간 상태(추세 반전)는 청산 시점이다.
+        이때 거래소에 SL 을 박으면 즉시청산가라 거부(retCode 10001)되므로, 봇이
+        직접 reduce_only 로 청산한다. 비상청산과 달리 정상 트레일 청산으로 기록.
+
+        Args:
+            price: 현재가(청산가 추정·PnL 기록용).
         """
         pos = self.active_position
         if pos is None:
@@ -440,15 +484,14 @@ class BotTrendInstance:
                 symbol=self.symbol, side=close_side, qty=pos.qty,
                 price=None, reduce_only=True,
             )
-            self._record_trade(
-                TradeEventType.SYNC_CLOSE, direction=pos.direction, price=pos.entry,
-                qty=pos.qty, entry_for_pnl=pos.entry, reason=reason,
-            )
-            logger.error("[%s] Cursus 비상청산 실행 — %s", self.symbol, reason)
         except Exception as e:  # noqa: BLE001
-            logger.error(
-                "[%s] Cursus 비상청산 실패(수동 확인 필요): %s", self.symbol, e,
-            )
+            logger.error("[%s] Cursus 트레일 청산 실패: %s", self.symbol, e)
+            return
+        self._record_trade(
+            TradeEventType.SL_HIT, direction=pos.direction, price=price, qty=pos.qty,
+            entry_for_pnl=pos.entry, reason="트레일 스탑 돌파 청산",
+        )
+        logger.info("Cursus 트레일 청산 — %s price=%.4f", self.symbol, price)
         self.active_position = None
         self._sl_synced = False
 
