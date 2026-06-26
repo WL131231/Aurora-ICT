@@ -1567,6 +1567,12 @@
   .leg-sb::before          { color: rgba(251, 191, 36, 0.5); }
   .leg-setup-long::before  { color: #34d399; }
   .leg-setup-short::before { color: #fb7185; }
+  /* Cursus(추세형) 범례 — SuperTrend 라인·추세존 색 (app.js 오버레이와 일치) */
+  .leg-st-up::before       { color: rgba(38, 166, 154, 0.7); }
+  .leg-st-down::before     { color: rgba(239, 83, 80, 0.7); }
+  .leg-st-trail::before    { color: #26a69a; }
+  .leg-st1::before         { color: rgba(120, 170, 255, 0.7); }
+  .leg-st2::before         { color: rgba(255, 180, 120, 0.7); }
   .cred-form { display: flex; flex-direction: column; gap: 6px; }
   .cred-form input {
     width: 100%;
@@ -2474,7 +2480,8 @@
       </div>
     </div>
 
-    <div class="legend">
+    <!-- ICT(Origo) 범례 — 모델별로 app.js 가 토글 -->
+    <div class="legend legend-ict">
       <span class="leg-bull-fvg">Bullish FVG</span>
       <span class="leg-bear-fvg">Bearish FVG</span>
       <span class="leg-sweep">Liquidity Sweep</span>
@@ -2487,6 +2494,14 @@
       <span class="leg-sb">Silver Bullet</span>
       <span class="leg-setup-long">Long Setup</span>
       <span class="leg-setup-short">Short Setup</span>
+    </div>
+    <!-- Cursus(추세형) 범례 — SuperTrend. 기본 숨김, Cursus 모델일 때만 표시 -->
+    <div class="legend legend-cursus" style="display:none">
+      <span class="leg-st-up">상승 추세존</span>
+      <span class="leg-st-down">하락 추세존</span>
+      <span class="leg-st-trail">트레일 스탑 (ATR×6)</span>
+      <span class="leg-st1">SuperTrend1 (ATR×2)</span>
+      <span class="leg-st2">SuperTrend2 (ATR×3)</span>
     </div>
   </main>
 
