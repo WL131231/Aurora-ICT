@@ -442,6 +442,7 @@
           <thead>
             <tr style="color:var(--text-3);text-align:right">
               <th style="text-align:left;padding:4px 8px">코드</th>
+              <th style="text-align:left;padding:4px 8px">모델</th>
               <th style="text-align:left;padding:4px 8px">페어</th>
               <th style="text-align:left;padding:4px 8px">방향</th>
               <th style="padding:4px 8px">진입가</th>
@@ -1002,6 +1003,7 @@
         const dirUp = escapeHtml(String(r.direction || "?").toUpperCase());
         return `<tr style="${rowStyle};border-top:1px solid #222;text-align:right">`
           + `<td style="text-align:left;padding:4px 8px"><b>${ucode}</b>${warn}</td>`
+          + `<td style="text-align:left;padding:4px 8px;color:var(--text-3)">${escapeHtml(r.model || "—")}</td>`
           + `<td style="text-align:left;padding:4px 8px">${symEsc}</td>`
           + `<td style="text-align:left;padding:4px 8px;color:${dirC};font-weight:700">${dirUp}${pend}</td>`
           + `<td style="padding:4px 8px">${_fmtNum(r.entry)}</td>`
