@@ -206,7 +206,7 @@ class BotTrendInstance:
         # 거래소에 포지션이 있으면 _recover 가 복원. 미인식(active_pos=False) 방지.
         # 트레일 stop 은 복원 후 다음 step 부터 latest_trail_stop 으로 갱신된다.
         if self.active_position is None:
-            await self._recover_position_from_exchange()
+            await self._recover_position_from_exchange(record=False)
             # 입양 직후 거래소 SL 즉시 박기(무방비 방지) — _recover 가 SL 못 읽을 수(sl=0).
             _ap = self.active_position
             if _ap is not None and not _isnan(trail):
@@ -312,8 +312,12 @@ class BotTrendInstance:
             logger.info("Cursus 청산 감지 — 트레일 SL 체결 (%s)", self.symbol)
             self.active_position = None
 
-    async def _recover_position_from_exchange(self) -> None:
-        """봇 시작 시 거래소 활성 포지션 복원 — 재시작 중복 진입 방지."""
+    async def _recover_position_from_exchange(self, *, record: bool = True) -> None:
+        """봇 시작 시 거래소 활성 포지션 복원 — 재시작 중복 진입 방지.
+
+        record=False 면 RECOVERED 매매기록을 남기지 않는다(step 중 조용한 재입양용).
+        배포·재시작마다 step 입양이 RECOVERED 를 도배하던 문제 방지.
+        """
         try:
             ex = await self.client.fetch_position(self.symbol)
         except Exception as e:  # noqa: BLE001
@@ -330,10 +334,11 @@ class BotTrendInstance:
             direction=direction, entry=entry, qty=contracts,
             stop=sl if sl > 0 else entry, entry_ts_ms=int(time.time() * 1000),
         )
-        self._record_trade(
-            TradeEventType.RECOVERED, direction=direction, price=entry, qty=contracts,
-            reason="Cursus 봇 재시작 포지션 복원",
-        )
+        if record:
+            self._record_trade(
+                TradeEventType.RECOVERED, direction=direction, price=entry, qty=contracts,
+                reason="Cursus 봇 재시작 포지션 복원",
+            )
         logger.info(
             "Cursus 복원 — %s %s entry=%.4f qty=%.6f sl=%.4f",
             self.symbol, direction.value, entry, contracts, sl,
