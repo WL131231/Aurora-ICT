@@ -242,8 +242,10 @@ function _applyChartModel(model) {
   const isCursus = model === "Cursus 1.0";
   const legIct = document.querySelector(".legend-ict");
   const legCur = document.querySelector(".legend-cursus");
-  if (legIct) legIct.style.display = isCursus ? "none" : "";
-  if (legCur) legCur.style.display = isCursus ? "" : "none";
+  // 클래스 토글로 숨김 — 인라인 display 는 모바일 미디어쿼리(.legend{display:none})를
+  // 덮어 모델 전환 후 모바일 가로에서 범례가 차트를 가리던 문제 방지.
+  if (legIct) legIct.classList.toggle("legend-hidden", isCursus);
+  if (legCur) legCur.classList.toggle("legend-hidden", !isCursus);
   _chartModel = model;
   // 항목5: Cursus 차트 기본 TF = 1h (봇 운영 TF). 1회·사용자 수동변경 전에만.
   if (isCursus && !_modelTfApplied && !_userPickedTf
@@ -801,24 +803,31 @@ function _filterMarkersByFirstBar(payload, firstTsSec) {
 }
 
 function renderMarkers(payload) {
-  const m = payload.markers;
+  // Cursus 등 markers/count 없는(또는 구조 다른) 응답에 throw 로 차트 전체가 안
+  // 그려지던 것 방지 — null 가드. markers 없으면 ICT 마커 비우고 종료(빈 차트 방지).
+  const m = (payload && payload.markers) || null;
+  const count = (payload && payload.count) || {};
+  if (!m) {
+    candleSeries.setMarkers([]);
+    return;
+  }
   // 2026-05-29 v2: Marker Counts 섹션 제거 — null-safe 가드. DOM 없으면 skip.
   // (차트 위 시각화로 충분, 사이드바 군더더기 ↓.)
   const setText = (id, val) => {
     const el = $(id);
     if (el) el.textContent = val;
   };
-  setText("c-fvgs", payload.count.fvgs);
-  setText("c-sweeps", payload.count.sweeps);
-  setText("c-struct", payload.count.structure);
-  setText("c-swings", payload.count.swings);
-  setText("c-kz", payload.count.killzones);
-  setText("c-setups", payload.count.setups);
-  setText("c-obs", payload.count.order_blocks ?? 0);
-  setText("c-macros", payload.count.macros ?? 0);
-  setText("c-int-struct", payload.count.internal_structure ?? 0);
-  setText("c-lg-struct", payload.count.large_structure ?? 0);
-  setText("c-lg-swings", payload.count.large_swings ?? 0);
+  setText("c-fvgs", count.fvgs ?? 0);
+  setText("c-sweeps", count.sweeps ?? 0);
+  setText("c-struct", count.structure ?? 0);
+  setText("c-swings", count.swings ?? 0);
+  setText("c-kz", count.killzones ?? 0);
+  setText("c-setups", count.setups ?? 0);
+  setText("c-obs", count.order_blocks ?? 0);
+  setText("c-macros", count.macros ?? 0);
+  setText("c-int-struct", count.internal_structure ?? 0);
+  setText("c-lg-struct", count.large_structure ?? 0);
+  setText("c-lg-swings", count.large_swings ?? 0);
   if ($("c-trailing")) {
     const t = m.trailing;
     $("c-trailing").textContent = t

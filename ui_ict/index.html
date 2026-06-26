@@ -1554,6 +1554,8 @@
     content: "■ ";
     margin-right: 4px;
   }
+  /* 모델별 범례 토글 — 인라인 display 대신 클래스로(모바일 미디어쿼리 안 깨지게) */
+  .legend-hidden { display: none !important; }
   /* 차트 의미 색은 일관성 유지 (long=green / short=red / sweep=amber / structure=blue/violet) */
   .leg-bull-fvg::before    { color: rgba(52, 211, 153, 0.6); }
   .leg-bear-fvg::before    { color: rgba(251, 113, 133, 0.6); }
@@ -2496,7 +2498,7 @@
       <span class="leg-setup-short">Short Setup</span>
     </div>
     <!-- Cursus(추세형) 범례 — SuperTrend. 기본 숨김, Cursus 모델일 때만 표시 -->
-    <div class="legend legend-cursus" style="display:none">
+    <div class="legend legend-cursus legend-hidden">
       <span class="leg-st-up">상승 추세존</span>
       <span class="leg-st-down">하락 추세존</span>
       <span class="leg-st-trail">트레일 스탑 (ATR×6)</span>

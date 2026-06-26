@@ -175,6 +175,10 @@ async def _cursus_judgment_payload(bot: Any) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         return fallback
 
+    # ST 표본 부족 시 NaN — close>NaN 이 False 라 "숏 정렬"로 오표시되는 것 방지.
+    if st1 != st1 or st2 != st2 or close != close:  # NaN 검사
+        return fallback
+
     above1 = close > st1
     above2 = close > st2
     if above1 and above2:
