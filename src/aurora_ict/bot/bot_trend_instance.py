@@ -53,13 +53,16 @@ _NY_TZ = ZoneInfo("America/New_York")
 
 @dataclass(slots=True)
 class _TrendPosition:
-    """추세형 활성 포지션 — ST 트레일 스탑 기반(고정 TP 없음)."""
+    """추세형 활성 포지션 — ST 트레일 스탑 + (옵션) 4분할 TP."""
 
     direction: Direction
     entry: float
-    qty: float
+    qty: float            # 현재 잔량(부분 TP 청산되면 감소)
     stop: float           # 현재 트레일 SL (추세 방향으로만 갱신)
     entry_ts_ms: int
+    init_qty: float = 0.0  # 진입 시 전체 수량 — 부분 TP 청산 비중(0.25)의 기준
+    tp_prices: list[float] = field(default_factory=list)  # 4분할 TP 가격(롱 위/숏 아래)
+    tp_filled: list[bool] = field(default_factory=list)   # 각 TP 체결 여부
 
     # ICT UI(_build_position_payload) 호환 property — 추세형은 stop(트레일)만 쓰고
     # 고정 TP 없음. position API 가 stop_loss/take_profit/setup_ts_ms 를 읽어도 안전.
@@ -102,6 +105,11 @@ class BotTrendInstance:
     ohlcv_limit: int = 300
     heartbeat_interval_sec: int = 300
     daily_loss_limit_pct: float = 0.0
+    # 4분할 TP(파트너 6/27 복원 — 승률 우선). 진입가 ±tp_pcts(%) 도달 시 tp_frac 씩
+    # 부분 익절, 잔량은 트레일 SL. enable=False 면 트레일 단독(net 우월하나 승률↓).
+    enable_split_tp: bool = True
+    tp_pcts: tuple[float, ...] = (0.01, 0.02, 0.03, 0.04)
+    tp_frac: float = 0.25
     trades_data_dir: Path | None = None
     user_code: str | None = None
     run_mode: str = "live"
@@ -226,6 +234,12 @@ class BotTrendInstance:
 
         pos = self.active_position
         if pos is not None:
+            # 4분할 TP 부분 익절(트레일/REVERSE 전) — 전량 익절되면 active 해제.
+            if pos.tp_prices:
+                await self._check_split_tp(price)
+                if self.active_position is None:
+                    return
+                pos = self.active_position
             if not _isnan(trail):
                 # 트레일 돌파 청산 — 가격이 트레일 스탑을 넘었으면(롱: price<=trail /
                 # 숏: price>=trail) 추세 반전 = 청산 시점. SL 을 박아도 즉시청산가라
@@ -289,9 +303,11 @@ class BotTrendInstance:
             logger.error("[%s] Cursus 진입 주문 실패: %s", self.symbol, e)
             return
         capped = self._liq_capped_sl(trail, price, direction)
+        tp_prices = self._calc_tp_prices(price, direction)
         self.active_position = _TrendPosition(
             direction=direction, entry=price, qty=qty, stop=capped,
             entry_ts_ms=int(time.time() * 1000),
+            init_qty=qty, tp_prices=tp_prices, tp_filled=[False] * len(tp_prices),
         )
         self._sl_synced = False
         self._record_trade(
@@ -409,6 +425,77 @@ class BotTrendInstance:
             "Cursus 복원 — %s %s entry=%.4f qty=%.6f sl=%.4f",
             self.symbol, direction.value, entry, contracts, sl,
         )
+
+    # ---- 4분할 TP (파트너 6/27 복원 — 승률 우선) ----
+
+    def _calc_tp_prices(self, entry: float, direction: Direction) -> list[float]:
+        """진입가 기준 4분할 TP 가격 — 롱은 위(+%), 숏은 아래(-%). off 면 빈 리스트."""
+        if not self.enable_split_tp or entry <= 0:
+            return []
+        if direction is Direction.LONG:
+            return [entry * (1 + p) for p in self.tp_pcts]
+        return [entry * (1 - p) for p in self.tp_pcts]
+
+    async def _check_split_tp(self, price: float) -> None:
+        """현재가가 미체결 TP 도달 시 reduce_only 시장가로 init_qty×tp_frac 부분 익절.
+
+        SL 은 거래소 등록(트레일)이 보호하고, TP 만 봇이 모니터링(봇 다운 시 TP 미체결
+        가능하나 SL 은 보존). 전량(모든 TP 체결 or 잔량 0) 청산되면 active 해제.
+
+        Args:
+            price: 현재가(최근 봉 종가).
+        """
+        pos = self.active_position
+        if pos is None or not pos.tp_prices:
+            return
+        close_side = "sell" if pos.direction is Direction.LONG else "buy"
+        for k, tp_px in enumerate(pos.tp_prices):
+            if pos.tp_filled[k]:
+                continue
+            reached = (
+                (pos.direction is Direction.LONG and price >= tp_px)
+                or (pos.direction is Direction.SHORT and price <= tp_px)
+            )
+            if not reached:
+                continue
+            qty_part = min(pos.init_qty * self.tp_frac, pos.qty)
+            if hasattr(self.client, "round_amount"):
+                try:
+                    qty_part = float(self.client.round_amount(self.symbol, qty_part))
+                except Exception:  # noqa: BLE001
+                    pass
+            if qty_part <= 0:
+                # 최소 수량 미달(소액 포지션 25%) — 분할 포기, 트레일이 청산.
+                pos.tp_filled[k] = True
+                continue
+            try:
+                await self.client.place_order(
+                    symbol=self.symbol, side=close_side, qty=qty_part,
+                    price=None, reduce_only=True,
+                )
+            except Exception as e:  # noqa: BLE001
+                # 거부(최소수량 등)는 무한 재시도 도배 방지 위해 해당 TP 포기 —
+                # 트레일 SL 이 잔량을 청산하므로 손실 위험은 없음.
+                logger.error(
+                    "[%s] Cursus 분할 TP%d 청산 실패(포기): %s", self.symbol, k + 1, e,
+                )
+                pos.tp_filled[k] = True
+                continue
+            pos.tp_filled[k] = True
+            pos.qty = max(0.0, pos.qty - qty_part)
+            self._record_trade(
+                TradeEventType.TP_HIT, direction=pos.direction, price=tp_px,
+                qty=qty_part, entry_for_pnl=pos.entry,
+                reason=f"4분할 TP{k + 1}({self.tp_pcts[k] * 100:.0f}%)",
+            )
+            logger.info(
+                "Cursus 분할 TP%d 체결 — %s @ %.4f qty=%.6f 잔량=%.6f",
+                k + 1, self.symbol, tp_px, qty_part, pos.qty,
+            )
+        # 전량 익절(모든 TP 체결 or 잔량 소진)이면 포지션 종료.
+        if pos.qty <= 1e-9 or all(pos.tp_filled):
+            self.active_position = None
+            self._sl_synced = False
 
     # ---- SL 안전망 (고배율 청산 방지 최우선) ----
 
