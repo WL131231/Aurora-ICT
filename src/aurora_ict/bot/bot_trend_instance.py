@@ -233,6 +233,18 @@ class BotTrendInstance:
             # 입양 직후 거래소 SL 즉시 박기(무방비 방지) — _recover 가 SL 못 읽을 수(sl=0).
             _ap = self.active_position
             if _ap is not None and not _isnan(trail):
+                # 2026-07-01: 입양 시 트레일이 이미 침범(롱: price<=trail / 숏:
+                # price>=trail)이면 SL 을 박아도 즉시청산가라 거래소가 거부 →
+                # "SL 적용 실패" 비상청산으로 오분류·반복됐음(06-30 재입양 시 204건
+                # 폭발 원인). step 보유 경로(아래)와 동일하게 정상 트레일 청산으로
+                # 빠진다. Origo(%SL)와 달리 Cursus 는 트레일값 직접이라 침범 가능.
+                _breached = (
+                    (_ap.direction is Direction.LONG and price <= trail)
+                    or (_ap.direction is Direction.SHORT and price >= trail)
+                )
+                if _breached:
+                    await self._trail_exit(price)
+                    return
                 _ap.stop = self._liq_capped_sl(trail, _ap.entry, _ap.direction)
                 await self._apply_protective_sl(_ap.stop, price)
 
