@@ -32,7 +32,11 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from aurora_ict.bot.bot_ict_instance import BotState, ExchangeClientProtocol
+from aurora_ict.bot.bot_ict_instance import (
+    BotState,
+    ExchangeClientProtocol,
+    _log_alert_task_exc,
+)
 from aurora_ict.interfaces.trades_store import TradeEvent, TradeEventType, TradesStore
 from aurora_ict.strategy.dual_st import (
     DualSTConfig,
@@ -701,6 +705,20 @@ class BotTrendInstance:
             event.event_type.value.upper(), self.symbol, event.direction, price, qty,
             f"{pnl_usdt:+.2f}" if pnl_usdt is not None else "—",
         )
+        # 2026-07-01: 매매 알림 — 연동 사용자에게 텔레그램 발송(fire-and-forget).
+        # Origo(BotIctInstance._record_trade)와 동일 패턴이나 Cursus 는 이 호출이
+        # 통째로 누락돼 매매해도 알림이 안 갔음(파트너 보고). DB 기록은 위에서 이미
+        # 완료 — 알림 실패가 매매/기록을 막지 않게 fire-and-forget.
+        # RECOVERED(재시작 재인식)/SYNC_CLOSE(사후 동기화)는 배포·재시작마다 반복돼
+        # 소음이라 생략(Origo 와 동일). 기록은 유지.
+        if event_type in (TradeEventType.RECOVERED, TradeEventType.SYNC_CLOSE):
+            return
+        if self.alert_cb is not None and self.user_code:
+            try:
+                task = asyncio.create_task(self.alert_cb(self.user_code, event))
+                task.add_done_callback(_log_alert_task_exc)
+            except RuntimeError:
+                pass  # 실행 중 이벤트 루프 없음(동기 테스트) — skip
 
     # ---- ICT(Origo) UI/엔드포인트 호환 메서드 stub (#CURSUS hotfix 2026-06-25) ----
     # status/daily_loss_limit/pending 등 ICT 전용 API 가 봇 메서드를 호출해도 500 안
