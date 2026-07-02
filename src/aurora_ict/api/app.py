@@ -777,6 +777,10 @@ def _register_multi_user_routes(
         from aurora_ict.auth import users_db as _users_db
         from aurora_ict.config.settings import AVAILABLE_MODELS, DEFAULT_MODEL_NAME
         cur = _users_db.get_last_model(mu_manager.db_path, user_code) or DEFAULT_MODEL_NAME
+        # 구버전 저장값(예 "Origo 1.2") 은 목록에 없음 — 현행 Origo 로 정규화 표시.
+        # (multi_user 분기도 동일하게 미등록명→origo fallback 이라 표시·동작 정합.)
+        if cur not in AVAILABLE_MODELS:
+            cur = DEFAULT_MODEL_NAME
         return {"current": cur, "available": list(AVAILABLE_MODELS.keys())}
 
     @app.post("/ict/model")
@@ -1284,6 +1288,7 @@ def _register_multi_user_routes(
         ``sl_beyond_liq=True`` 경고 플래그.
         """
         from aurora_ict.api.trades_router import _check_admin_cookie_or_header
+        from aurora_ict.config.settings import CURSUS_MODEL_NAME, ORIGO_MODEL_NAME
         _check_admin_cookie_or_header(cookie_token, x_admin_token)
         rows: list[dict[str, Any]] = []
         # 2026-06-13 파트너 요청: SL/TP 는 봇 기억이 아니라 거래소 진실 표시 —
@@ -1384,7 +1389,8 @@ def _register_multi_user_routes(
                     "sl_beyond_liq": beyond,
                     "bot_state": bot.state.value,
                     # 2026-06-26: 봇 모델 — Cursus(DualSTConfig cfg 보유) vs Origo.
-                    "model": ("Cursus 1.0" if hasattr(bot, "cfg") else "Origo 1.2"),
+                    "model": (CURSUS_MODEL_NAME if hasattr(bot, "cfg")
+                              else ORIGO_MODEL_NAME),
                     "mark_price": mark,
                     "unrealized_pnl": unreal,
                     "roi_pct": roi,
