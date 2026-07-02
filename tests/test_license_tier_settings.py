@@ -82,14 +82,14 @@ def test_referral_respects_user_disable_time_filter_setting(monkeypatch):
 
 
 def test_subscription_enforces_edge_v2(monkeypatch):
-    """2026-06-17 #ORIGO-1: 구독제 = 등급4 + RR2.5 + SLx3 + 5분봉 + ttl 30분 강제."""
+    """2026-07-02 #ORIGO-1.3: 구독제 = 등급5 + RR2.5 + SLx4 + 5분봉 + ttl 30분 강제."""
     _clean_env(monkeypatch)
     monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "sub_90d")
     monkeypatch.setenv("AURORA_ICT_MIN_CONFLUENCE", "2")
     s = IctSettings(_env_file=None)
-    assert s.min_confluence == 4
+    assert s.min_confluence == 5  # #ORIGO-1.3 진입 엣지 (FST #1)
     assert s.min_rr == 2.5
-    assert s.sl_dist_mult == 3.0
+    assert s.sl_dist_mult == 4.0  # #ORIGO-1.3 스탑헌트 생존
     assert s.entry_limit_ttl_sec == 1800  # #ORIGO-1 30분 (BTC 만 manager 서 1h)
     assert s.timeframe == "5m"  # #ORIGO-1 베스트 TF 강제
     assert s.disable_time_filter is False  # 킬존 유지
@@ -99,14 +99,14 @@ def test_subscription_respects_more_conservative_values(monkeypatch):
     """구독제 min/rr/sl 강제는 '최소' 방향(보수 유지). 단 ttl 은 #ORIGO-1 이 30분 강제."""
     _clean_env(monkeypatch)
     monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "sub_90d")
-    monkeypatch.setenv("AURORA_ICT_MIN_CONFLUENCE", "5")
+    monkeypatch.setenv("AURORA_ICT_MIN_CONFLUENCE", "6")
     monkeypatch.setenv("AURORA_ICT_MIN_RR", "3.0")
-    monkeypatch.setenv("AURORA_ICT_SL_DIST_MULT", "4.0")
+    monkeypatch.setenv("AURORA_ICT_SL_DIST_MULT", "4.5")
     monkeypatch.setenv("AURORA_ICT_ENTRY_LIMIT_TTL_SEC", "10800")
     s = IctSettings(_env_file=None)
-    assert s.min_confluence == 5  # 보수 유지
+    assert s.min_confluence == 6  # 보수 유지 (바닥 5 초과)
     assert s.min_rr == 3.0
-    assert s.sl_dist_mult == 4.0
+    assert s.sl_dist_mult == 4.5  # 보수 유지 (바닥 4.0 초과)
     assert s.entry_limit_ttl_sec == 1800  # #ORIGO-1 ttl 강제 (사용자 10800 무시)
 
 

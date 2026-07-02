@@ -36,8 +36,11 @@ PAIR_TTL_OVERRIDES: dict[str, int] = {"BTCUSDT": 3600}
 # 2026-06-17 #ORIGO-MODEL: 현재 봇 모델명 — 매매 기록에 어느 모델로 매매됐는지 태그.
 # 버전 프리셋이 늘면 settings 필드로 전환. 일단 단일 모델 상수.
 # 2026-06-23 Origo 1.2 = 안정형 하이브리드(0.707 OTE + 횡보회피 게이트 + 분할익절
-# + 횡보임계 롤링분위). 1.1(cisd+po3+CT-SL+OTE) 위에 시드방어형 전환 적용.
-ORIGO_MODEL_NAME = "Origo 1.2"
+# + 횡보임계 롤링분위). 1.1(cisd+po3+OTE) 위에 시드방어형 전환 적용.
+# 2026-07-02 Origo 1.3 = 진입 엣지 상향 (FST #1 자율연구, 7페어 5년 백테스트):
+# min_confluence 4→5 + sl_dist_mult x3→x4 로 5년 net -139→+124 USDT 흑자 전환.
+# 진입을 엄격히 걸러 이기는 판만 남김 (빈도 0.70→0.24/일 trade-off 수용).
+ORIGO_MODEL_NAME = "Origo 1.3"
 # 2026-06-25 #CURSUS: 투트랙 2번째 봇 = Cursus(Dual SuperTrend 추세형, dual_st).
 # bot_trend_instance.CURSUS_MODEL_NAME 과 동일 문자열 유지(매매기록 model 태그 정합).
 CURSUS_MODEL_NAME = "Cursus 1.0"
@@ -373,12 +376,17 @@ class IctSettings(BaseSettings):
             # TF 로 바꿔놔도 무시 — 라이브가 15m 로 새어 백테스트 엣지가 깨지던 문제
             # 원천 차단 (버전당 베스트 TF 고정).
             self.timeframe = "5m"
-            if self.min_confluence < 4:
-                self.min_confluence = 4
+            # 2026-07-02 #ORIGO-1.3 진입 엣지 (FST #1 자율연구, 7페어 5년):
+            # conf 4→5 + SL x3→x4 조합이 net -139→+124 USDT 유일 흑자 전환.
+            # conf5 단독 +58, sl4 는 스탑헌트 생존으로 승률 방어. htf4 추가는
+            # 과최적화(빈도 급감 +81)라 기각. 빈도 0.70→0.24/일 trade-off 수용
+            # (FST 진단: net 병목은 빈도가 아니라 진입 엣지).
+            if self.min_confluence < 5:
+                self.min_confluence = 5
             if self.min_rr < 2.5:
                 self.min_rr = 2.5
-            if self.sl_dist_mult < 3.0:
-                self.sl_dist_mult = 3.0
+            if self.sl_dist_mult < 4.0:
+                self.sl_dist_mult = 4.0
             # #CT-SL: 역추세(되돌림) 진입은 x4 (robust). 순추세/횡보는 위 x3 유지.
             self.sl_dist_mult_ct = 4.0
             self.ct_trend_threshold = 0.0
