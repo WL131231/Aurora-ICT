@@ -175,6 +175,17 @@ _SMT_CORR_PAIRS: dict[str, str] = {
     "ETHUSDT": "BTCUSDT",
 }
 
+# 2026-07-02 #FLIP-REFINE (Origo 1.3, FST #2 실거래 반사실 검증):
+# flip target 최소 가중치 — 15m(weight=2) 존은 flip 청산 트리거에서 제외, 1h(4)+ 만.
+# 근거: flip 절단 122건을 실시세 72h 로 반사실 추적 — @15m 87건은 보유가 우월
+# (Δ+46R 승자 절단), @1h~1d 는 flip 이 우월(진짜 반전 방어). 진입 override 평가
+# (가중치 합 threshold)는 그대로 — target "선정"만 1h+ 존으로 제한.
+_FLIP_TARGET_MIN_WEIGHT = 4
+# flip 역진입(청산 후 반대 방향 신규 진입) 스위치 — 실측 113건 net -301 USDT,
+# 승률 19%, 전 TF·전 모델 적자(robust) → 기본 OFF. 청산(방어)만 하고 역진입 안 함.
+# 되돌리려면 True (레거시 경로 보존).
+_FLIP_REVERSE_ENABLED = False
+
 
 @dataclass(slots=True)
 class _ActivePosition:
@@ -3691,7 +3702,13 @@ class BotIctInstance:
         )
         if not cands:
             return None
-        return cands[0]
+        # #FLIP-REFINE: threshold(합산 가중치) 통과 후 target 은 1h+ 존만 —
+        # "가장 가까운 존"이 15m 이면 TP(2.5R) 한참 전(실측 ~0.4R)에서 승자를
+        # 자르던 설계 모순 해소. 1h+ 존이 없으면 flip target 미무장(TP/SL 만).
+        for c in cands:
+            if c.weight >= _FLIP_TARGET_MIN_WEIGHT:
+                return c
+        return None
 
     async def _apply_htf_supporting_boost(
         self,
@@ -3861,6 +3878,17 @@ class BotIctInstance:
             setup_ts_ms=pos.setup_ts_ms,
             reason=f"htf flip target hit @{target.tf} (weight={target.weight})",
         )
+
+        # #FLIP-REFINE (2026-07-02): 역진입 제거 — 청산(방어)까지만.
+        # 실측 flip_open 113건 net -301 USDT·승률 19%·전 TF 적자(robust).
+        # 반대 FVG 는 "내 포지션의 위험 신호"로는 유효하나 "반대 진입 근거"로는
+        # 낙제 → 청산 후 다음 정규 setup 탐색으로 복귀.
+        if not _FLIP_REVERSE_ENABLED:
+            self.active_position = None
+            logger.info(
+                "flip 청산 완료 — 역진입 생략(#FLIP-REFINE), 정규 setup 탐색 복귀",
+            )
+            return
 
         # 2) 신규 진입 — entry = trigger_price, SL = FVG 반대쪽 (정통 ICT 단순), TP = min_rr R.
         # Why: sl_buffer_ratio 제거(변형 4 정통화). FVG zone 자체 가장자리를 SL 로.
