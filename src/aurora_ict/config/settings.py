@@ -383,8 +383,12 @@ class IctSettings(BaseSettings):
             # (FST 진단: net 병목은 빈도가 아니라 진입 엣지).
             if self.min_confluence < 5:
                 self.min_confluence = 5
-            if self.min_rr < 2.5:
-                self.min_rr = 2.5
+            # 2026-07-02 #ORIGO-1.3(2) min_rr 바닥 2.5→2.0 정합: 2.5 는 옛 구성
+            # (conf4/SLx3, #EDGE-V2) 검증값. 새 구성(conf5/SLx4)에선 rr2.5 가
+            # 거래를 378→220 으로 깎아 net +124→+15 로 침식(7페어 5년 정합 스윕).
+            # rr2.0 복원 시 +124(고정tp)/+131(분할익절), 빈도 0.14→0.24/일.
+            if self.min_rr < 2.0:
+                self.min_rr = 2.0
             if self.sl_dist_mult < 4.0:
                 self.sl_dist_mult = 4.0
             # #CT-SL: 역추세(되돌림) 진입은 x4 (robust). 순추세/횡보는 위 x3 유지.
