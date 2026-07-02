@@ -82,13 +82,14 @@ def test_referral_respects_user_disable_time_filter_setting(monkeypatch):
 
 
 def test_subscription_enforces_edge_v2(monkeypatch):
-    """2026-07-02 #ORIGO-1.3: 구독제 = 등급5 + RR2.5 + SLx4 + 5분봉 + ttl 30분 강제."""
+    """2026-07-02 #ORIGO-1.3: 구독제 = 등급5 + RR2.0 + SLx4 + 5분봉 + ttl 30분 강제."""
     _clean_env(monkeypatch)
     monkeypatch.setenv("AURORA_ICT_LICENSE_TYPE", "sub_90d")
     monkeypatch.setenv("AURORA_ICT_MIN_CONFLUENCE", "2")
+    monkeypatch.setenv("AURORA_ICT_MIN_RR", "1.5")
     s = IctSettings(_env_file=None)
     assert s.min_confluence == 5  # #ORIGO-1.3 진입 엣지 (FST #1)
-    assert s.min_rr == 2.5
+    assert s.min_rr == 2.0  # #ORIGO-1.3(2) rr2.5 침식 정합 (FST #2)
     assert s.sl_dist_mult == 4.0  # #ORIGO-1.3 스탑헌트 생존
     assert s.entry_limit_ttl_sec == 1800  # #ORIGO-1 30분 (BTC 만 manager 서 1h)
     assert s.timeframe == "5m"  # #ORIGO-1 베스트 TF 강제
