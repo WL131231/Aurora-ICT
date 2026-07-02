@@ -40,7 +40,11 @@ PAIR_TTL_OVERRIDES: dict[str, int] = {"BTCUSDT": 3600}
 # 2026-07-02 Origo 1.3 = 진입 엣지 상향 (FST #1 자율연구, 7페어 5년 백테스트):
 # min_confluence 4→5 + sl_dist_mult x3→x4 로 5년 net -139→+124 USDT 흑자 전환.
 # 진입을 엄격히 걸러 이기는 판만 남김 (빈도 0.70→0.24/일 trade-off 수용).
-ORIGO_MODEL_NAME = "Origo 1.3"
+# + flip 정제(15m target 제외·역진입 제거, 실거래 반사실) + min_rr 2.0 정합.
+# 2026-07-02 Origo 1.4 = 1.3 + 거래소 네이티브 트레일링 (trigger 2.0R / dist 1.5R).
+# 정합 스윕: 고정tp +124 → trail +240 (RR 0.89→1.82), 빈도 동일 0.23/일.
+# Bybit trading-stop trailingStop+activePrice — 봇 사망/재시작 무관 tick 추적.
+ORIGO_MODEL_NAME = "Origo 1.4"
 # 2026-06-25 #CURSUS: 투트랙 2번째 봇 = Cursus(Dual SuperTrend 추세형, dual_st).
 # bot_trend_instance.CURSUS_MODEL_NAME 과 동일 문자열 유지(매매기록 model 태그 정합).
 CURSUS_MODEL_NAME = "Cursus 1.0"
@@ -249,6 +253,14 @@ class IctSettings(BaseSettings):
     # 넓힐수록 스탑헌트 생존으로 단조 개선. TP 는 원 RR 유지 비례 확장,
     # risk_based_sizing ON 이면 qty 가 줄어 건당 손실(R) 불변.
     sl_dist_mult: float = Field(default=1.0, ge=0.25, le=5.0)
+    # 2026-07-02 #TRAIL-EXCHANGE (Origo 1.4): 거래소 네이티브 트레일링 스탑.
+    # trigger_r: 이익이 이 R 배수 도달 시 트레일 활성(activePrice = entry ± r×R).
+    # dist_r: 추적 거리(R 배수, trailingStop = r×R 가격거리). 0 = off(고정 TP 모드).
+    # 정합 스윕(7페어 5년, conf5/SLx4/rr2.0): 고정tp +124 → trail 2.0/1.5 +240
+    # (RR 0.89→1.82). 트레일 무장 성공 시 TP 는 5R 원거리(러너 안전망)로 확장,
+    # 분할익절은 skip(순수 trail +240 > partial+trail +189).
+    origo_trail_trigger_r: float = Field(default=0.0, ge=0.0, le=10.0)
+    origo_trail_dist_r: float = Field(default=0.0, ge=0.0, le=10.0)
     # 2026-06-18 #CT-SL 국면별 동적 SL: 진입 시점 "방향 정합 추세"(signed_trend
     # = 진입직전 20봉 변화율 × 방향부호)가 ct_trend_threshold 미만 = 역추세(되돌림
     # 진입)이면 sl_dist_mult 대신 sl_dist_mult_ct 사용. 0=비활성(항상 sl_dist_mult).
@@ -391,6 +403,13 @@ class IctSettings(BaseSettings):
                 self.min_rr = 2.0
             if self.sl_dist_mult < 4.0:
                 self.sl_dist_mult = 4.0
+            # #TRAIL-EXCHANGE (Origo 1.4): 구독제 트레일 강제 — 백테 검증값
+            # (trigger 2.0R / dist 1.5R, +240/RR1.82). 사용자가 더 보수(큰 값)로
+            # 올린 건 유지, off(0)/미만은 검증값으로.
+            if self.origo_trail_trigger_r < 2.0:
+                self.origo_trail_trigger_r = 2.0
+            if self.origo_trail_dist_r < 1.5:
+                self.origo_trail_dist_r = 1.5
             # #CT-SL: 역추세(되돌림) 진입은 x4 (robust). 순추세/횡보는 위 x3 유지.
             self.sl_dist_mult_ct = 4.0
             self.ct_trend_threshold = 0.0

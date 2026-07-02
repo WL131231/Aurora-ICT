@@ -133,6 +133,10 @@ class ExchangeClientProtocol(Protocol):
         symbol: str,
         stop_loss: float | None = None,
         take_profit: float | None = None,
+        tp_size: float | None = None,
+        tpsl_mode: str = "Full",
+        trailing_stop: float | None = None,
+        active_price: float | None = None,
     ) -> dict[str, Any]: ...
 
     async def set_leverage(
@@ -215,6 +219,9 @@ class _ActivePosition:
     # 50%가 거래소 최소주문 미만이면 Partial TP 가 거부되므로, 등록 성공 시에만 True
     # 로 올려 폴링을 끈다(이중청산 방지). 소액 포지션 1차익절 구멍 방지.
     partial_on_exchange: bool = False
+    # #TRAIL-EXCHANGE (Origo 1.4): 거래소 트레일링 무장 성공 여부. True 면 TP=5R
+    # 원거리 + 분할익절 skip(폴링·거래소 둘 다), 미구분 거래소 청산은 trail_stop 분류.
+    trail_armed: bool = False
 
 
 @dataclass(slots=True)
@@ -345,6 +352,13 @@ class BotIctInstance:
     # 1.5R 채택 = RR 1.47·net+69(횡보회피포함)·체감승률 43%·연속손절 6.1. RR 더 보존.
     partial_tp_rr: float = 1.5
     partial_be: bool = True
+    # #TRAIL-EXCHANGE 2026-07-02 (Origo 1.4): 거래소 네이티브 트레일링.
+    # trigger_r×R 이익 도달 시 활성(activePrice), dist_r×R 거리로 tick 추적
+    # (Bybit trading-stop — 봇 사망/재시작 무관). 0 = off(고정 TP 모드).
+    # 정합 스윕(7페어 5년): 고정tp +124 → trail 2.0/1.5 +240 (RR 0.89→1.82).
+    # 무장 성공 시 TP 5R 확장 + 분할익절 skip. 무장 실패 시 고정 TP 모드 유지(무해).
+    trail_trigger_r: float = 0.0
+    trail_dist_r: float = 0.0
     # 2026-06-11 #EDGE-V2: SL 거리 배수 (1.0=원본). 백테스트 10국면 검증 —
     # 넓힐수록 스탑헌트 생존으로 단조 개선, x3.0 에서 BTC IN/OUT 흑자.
     # TP 는 원 RR 유지 비례 확장. risk sizing ON 이면 건당 손실(R) 불변.
@@ -708,6 +722,11 @@ class BotIctInstance:
         if sl <= 0:
             logger.warning("recover: SL 없는 포지션 — 보호 SL 적용 시도 %s", self.symbol)
             await self._ensure_protective_sl(tp if tp > 0 else None, 0.0)
+        # #TRAIL-EXCHANGE: 복구 포지션도 트레일 재무장. 거래소에 이미 동일 트레일이
+        # 걸려있으면 Bybit 34040(not modified) → alreadySet 처리로 무해. SL 이 본전
+        # 이동된 포지션은 risk(|entry-sl|)가 원 R 과 달라질 수 있으나 근사 수용.
+        if self.active_position is not None:
+            await self._arm_trailing()
 
     def _find_unclosed_entry_event(self, direction: Direction):
         """복구 보조 — 이 심볼·방향의 청산 기록이 없는 최신 ENTRY 이벤트.
@@ -1885,8 +1904,10 @@ class BotIctInstance:
         sl_applied = await self._ensure_protective_sl(
             setup.take_profit, abs(setup.entry - setup.stop_loss),
         )
+        # #TRAIL-EXCHANGE: SL 확보 후 트레일 무장 — 성공 시 분할익절 skip.
+        _trail_armed = sl_applied and await self._arm_trailing()
         # #PARTIAL-TP-ORDER: SL+swing(Entire) 박힌 후 1.5R 부분 TP(Partial) 추가 등록.
-        if sl_applied and self.partial_tp_exchange:
+        if sl_applied and self.partial_tp_exchange and not _trail_armed:
             await self._setup_partial_tps()
         if sl_applied and htf_flip_target is not None:
             logger.info(
@@ -1964,8 +1985,10 @@ class BotIctInstance:
                     "지정가 체결 — active_position 승격 entry=%.4f sl=%.4f tp=%.4f",
                     entry_px, self.active_position.stop_loss, pe.take_profit,
                 )
+                # #TRAIL-EXCHANGE: SL 확보 후 트레일 무장 — 성공 시 분할익절 skip.
+                _trail_armed = await self._arm_trailing()
                 # #PARTIAL-TP-ORDER: SL+swing(Entire) 박힌 후 1.5R 부분 TP(Partial) 추가.
-                if self.partial_tp_exchange:
+                if self.partial_tp_exchange and not _trail_armed:
                     await self._setup_partial_tps()
             self._pending_entry = None
             return False
@@ -2113,6 +2136,59 @@ class BotIctInstance:
             self.symbol, pos.direction.value,
         )
         await self._emergency_close()
+        return False
+
+    async def _arm_trailing(self) -> bool:
+        """#TRAIL-EXCHANGE (Origo 1.4): 거래소 네이티브 트레일링 무장.
+
+        보호 SL(+setup TP)이 이미 박힌 뒤 2차 호출로 [TP 5R 확장 + trailingStop
+        + activePrice] 를 한 번에 적용한다. 실패해도 포지션은 직전 SL+setup TP
+        상태 그대로 → 고정 TP 모드로 degrade (무해). 성공 시 분할익절 skip
+        (정합 스윕: 순수 trail +240 > partial+trail +189).
+
+        activePrice 는 현재가가 아직 활성가 앞일 때만 — 입양 등으로 이미
+        지났으면 생략(거래소가 즉시 활성).
+
+        Returns:
+            True = 무장 성공(pos.trail_armed 셋). False = off/실패(고정 TP 유지).
+        """
+        pos = self.active_position
+        if pos is None or self.trail_trigger_r <= 0 or self.trail_dist_r <= 0:
+            return False
+        risk = abs(pos.entry - pos.stop_loss)
+        if risk <= 0:
+            return False
+        is_long = pos.direction is Direction.LONG
+        sign = 1.0 if is_long else -1.0
+        far_tp = pos.entry + sign * risk * 5.0  # 러너 안전망 (백테 tp_rr_override=5)
+        act = pos.entry + sign * risk * self.trail_trigger_r
+        try:
+            cur = await self.client.fetch_ticker(self.symbol)
+        except Exception:  # noqa: BLE001
+            cur = None
+        # 현재가가 활성가를 이미 지났으면 activePrice 생략 → 즉시 활성.
+        act_param: float | None = act
+        if cur and cur > 0 and ((is_long and cur >= act) or (not is_long and cur <= act)):
+            act_param = None
+        resp = await self.client.set_position_tpsl(
+            self.symbol,
+            take_profit=far_tp,
+            trailing_stop=risk * self.trail_dist_r,
+            active_price=act_param,
+        )
+        if resp:
+            pos.take_profit = far_tp
+            pos.trail_armed = True
+            logger.info(
+                "트레일링 무장 — %s trigger=%.4f(%.1fR) dist=%.4f(%.1fR) tp→%.4f(5R)%s",
+                self.symbol, act, self.trail_trigger_r,
+                risk * self.trail_dist_r, self.trail_dist_r, far_tp,
+                " (즉시활성)" if act_param is None else "",
+            )
+            return True
+        logger.warning(
+            "트레일링 무장 실패 — 고정 TP 모드 유지 (%s, setup TP 그대로)", self.symbol,
+        )
         return False
 
     @staticmethod
@@ -2624,6 +2700,10 @@ class BotIctInstance:
         # (partial_on_exchange=False) 소액 포지션은 폴링이 1차 익절 담당 — fallback.
         _pos = self.active_position
         if self.partial_tp_exchange and _pos is not None and _pos.partial_on_exchange:
+            return
+        # #TRAIL-EXCHANGE: 트레일 무장 포지션은 분할익절 없음 — runner 전량 트레일
+        # (정합 스윕: 순수 trail +240 > partial+trail +189).
+        if _pos is not None and _pos.trail_armed:
             return
         pos = self.active_position
         if pos is None or pos.partial_done or pos.tp1_price <= 0:
@@ -3582,6 +3662,16 @@ class BotIctInstance:
                 last_known.direction, last_known.entry,
                 last_known.stop_loss, last_known.take_profit, close_px,
             )
+            # #TRAIL-EXCHANGE: 트레일 무장 포지션의 미구분 청산 = 트레일 스탑
+            # 체결(SL 원위치도 TP(5R)도 아닌 중간 가격). Cursus 전례처럼 SL_HIT
+            # 유형 + trail_stop 사유로 기록 — FST 는 reason 으로 구분.
+            if (
+                last_known.trail_armed
+                and evt_type is TradeEventType.SYNC_CLOSE
+                and close_px > 0
+            ):
+                evt_type = TradeEventType.SL_HIT
+                close_reason = "trail_stop (거래소 트레일링 청산)"
         logger.info(
             "position 종료 — entry=%.4f close=%.4f pnl=%.4f USDT (%s)",
             last_known.entry, close_px, pnl_usd, close_reason,
