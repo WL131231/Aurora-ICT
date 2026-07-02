@@ -380,6 +380,10 @@ class MultiUserBotManager:
             risk_per_trade_max=settings.risk_per_trade_max,
             min_rr=settings.min_rr,
             min_confluence=settings.min_confluence,
+            # #TRAIL-EXCHANGE (Origo 1.4): 거래소 트레일링 — 구독제 validator 가
+            # 2.0/1.5 강제, referral 은 0(off, 고정 TP 모드).
+            trail_trigger_r=settings.origo_trail_trigger_r,
+            trail_dist_r=settings.origo_trail_dist_r,
             high_rr_bypass_min_rr=settings.high_rr_bypass_min_rr,
             fvg_min_size_pct=settings.fvg_min_size_pct,
             smt_enabled=settings.smt_enabled,

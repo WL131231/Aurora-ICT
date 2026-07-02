@@ -659,6 +659,8 @@ class AuroraClientAdapter:
         take_profit: float | None = None,
         tp_size: float | None = None,
         tpsl_mode: str = "Full",
+        trailing_stop: float | None = None,
+        active_price: float | None = None,
     ) -> dict[str, Any]:
         """Bybit V5 set_trading_stop — 활성 포지션에 SL/TP conditional 동시 설정.
 
@@ -696,6 +698,14 @@ class AuroraClientAdapter:
         # 진입 시 1.5R(50%)·swing(50%) 두 TP 를 부분으로 박는 용도.
         if tpsl_mode == "Partial" and tp_size is not None:
             params["tpSize"] = str(tp_size)
+        # #TRAIL-EXCHANGE 2026-07-02 (Origo 1.4): Bybit 네이티브 트레일링 스탑.
+        # trailingStop = 추적 거리(가격 절대값), activePrice = 활성화 가격 —
+        # 가격이 activePrice 도달 후 거래소가 tick 단위로 스탑을 끌어올림(봇 무관).
+        # activePrice 생략 시 즉시 활성(입양 시 이미 활성가 지난 포지션용).
+        if trailing_stop is not None:
+            params["trailingStop"] = str(trailing_stop)
+            if active_price is not None:
+                params["activePrice"] = str(active_price)
         try:
             result = await ex.private_post_v5_position_trading_stop(params)
         except Exception as e:  # noqa: BLE001
