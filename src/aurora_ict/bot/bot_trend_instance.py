@@ -308,6 +308,22 @@ class BotTrendInstance:
 
     async def _open(self, direction: Direction, price: float, trail: float) -> None:
         """시장가 진입 + 초기 트레일 SL 설정 + ENTRY 기록."""
+        # #ENTRY-TRAIL-GUARD 2026-07-03 (7/2 LINK 반복진입 사고, 누적 372건):
+        # 진입 신호(ST1·ST2 정렬)가 떠도 트레일 ST(×6)는 아직 반대 상태(롱인데
+        # 라인이 가격 위)일 수 있다 — 그 SL 은 거래소가 거부 → 비상청산 → 다음
+        # step 재진입 루프로 왕복 수수료만 소진(7/2 실측 16분에 노셔널 -12%).
+        # #358 입양 경로와 동일한 침범 검사를 주문 "전에" — 트레일이 유효해질
+        # 때까지 진입 보류. _reverse 도 _open 을 타므로 역진입까지 함께 방어.
+        breached = (
+            (direction is Direction.LONG and trail >= price)
+            or (direction is Direction.SHORT and trail <= price)
+        )
+        if breached:
+            logger.info(
+                "[%s] Cursus 진입 보류 — 트레일(%.4f)이 가격(%.4f) 침범, SL 등록 불가",
+                self.symbol, trail, price,
+            )
+            return
         qty = await self._calc_qty(price)
         if qty <= 0:
             logger.warning("[%s] qty 0 — 진입 skip (잔고/가격 확인)", self.symbol)
