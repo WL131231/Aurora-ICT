@@ -222,6 +222,8 @@ class _ActivePosition:
     # #TRAIL-EXCHANGE (Origo 1.4): 거래소 트레일링 무장 성공 여부. True 면 TP=5R
     # 원거리 + 분할익절 skip(폴링·거래소 둘 다), 미구분 거래소 청산은 trail_stop 분류.
     trail_armed: bool = False
+    # #BE-LOCK (Origo 1.5): 본전 잠금 1회 실행 여부 (중복 이동 방지).
+    be_moved: bool = False
 
 
 @dataclass(slots=True)
@@ -359,6 +361,10 @@ class BotIctInstance:
     # 무장 성공 시 TP 5R 확장 + 분할익절 skip. 무장 실패 시 고정 TP 모드 유지(무해).
     trail_trigger_r: float = 0.0
     trail_dist_r: float = 0.0
+    # #BE-LOCK 2026-07-07 (Origo 1.5): 이익 r×R 도달 시 SL 본전 이동. 0=off.
+    # MFE 실측(1.2 손절 23%가 +20% ROI 이상 간 뒤 풀손절) 처방 — 트레일 활성(2R)
+    # 전 1R~2R 구간 보호. 백테 BE@1R+trail +278 (기준 +240)·DD 265→228·강건 확인.
+    be_trigger_r: float = 0.0
     # 2026-06-11 #EDGE-V2: SL 거리 배수 (1.0=원본). 백테스트 10국면 검증 —
     # 넓힐수록 스탑헌트 생존으로 단조 개선, x3.0 에서 BTC IN/OUT 흑자.
     # TP 는 원 RR 유지 비례 확장. risk sizing ON 이면 건당 손실(R) 불변.
@@ -940,6 +946,9 @@ class BotIctInstance:
 
         # 진입 중인 position이 있으면 신규 진입은 막고 상태만 동기화 + trail tick + flip.
         if self.active_position is not None:
+            # #BE-LOCK (Origo 1.5): 이익 1R 도달 시 SL 본전 — 분할/flip 보다 먼저
+            # (가장 싼 보호 동작, 이후 로직과 독립).
+            await self._maybe_be_lock(df)
             # #PARTIAL-TP: TP1(1R) 도달 시 50% 부분익절 + 본전SL — trail 보다 먼저
             # (본전 이동이 trail 기준선을 갱신하므로 순서 중요).
             await self._maybe_partial_exit(df)
@@ -2190,6 +2199,40 @@ class BotIctInstance:
             "트레일링 무장 실패 — 고정 TP 모드 유지 (%s, setup TP 그대로)", self.symbol,
         )
         return False
+
+    async def _maybe_be_lock(self, df: pd.DataFrame) -> None:
+        """#BE-LOCK (Origo 1.5): 이익 be_trigger_r×R 도달 시 SL 본전 이동 (1회).
+
+        최신 봉 high/low 로 도달 판정(분할익절과 동일 방식). 트레일 활성(2R) 전
+        1R~2R 구간에서 이익이 풀 손절로 반전되는 패턴(MFE 실측 23%)을 차단.
+        이동 실패는 로깅만 — 기존 SL 유지, 다음 step 재시도.
+        """
+        pos = self.active_position
+        if pos is None or pos.be_moved or self.be_trigger_r <= 0 or len(df) == 0:
+            return
+        risk = abs(pos.entry - pos.stop_loss)
+        if risk <= 0:
+            return
+        last = df.iloc[-1]
+        is_long = pos.direction is Direction.LONG
+        prof = (
+            float(last["high"]) - pos.entry if is_long
+            else pos.entry - float(last["low"])
+        )
+        if prof < risk * self.be_trigger_r:
+            return
+        resp = await self.client.set_position_tpsl(self.symbol, stop_loss=pos.entry)
+        if resp:
+            pos.stop_loss = pos.entry
+            pos.be_moved = True
+            logger.info(
+                "본전 잠금 — %s 이익 %.1fR 도달, SL→entry(%.4f)",
+                self.symbol, prof / risk, pos.entry,
+            )
+        else:
+            logger.warning(
+                "본전 잠금 실패 — 기존 SL 유지, 다음 step 재시도 (%s)", self.symbol,
+            )
 
     @staticmethod
     def _exchange_position_direction(pos: dict[str, Any]) -> Direction | None:
