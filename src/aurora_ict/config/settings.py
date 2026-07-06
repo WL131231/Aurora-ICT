@@ -44,7 +44,10 @@ PAIR_TTL_OVERRIDES: dict[str, int] = {"BTCUSDT": 3600}
 # 2026-07-02 Origo 1.4 = 1.3 + 거래소 네이티브 트레일링 (trigger 2.0R / dist 1.5R).
 # 정합 스윕: 고정tp +124 → trail +240 (RR 0.89→1.82), 빈도 동일 0.23/일.
 # Bybit trading-stop trailingStop+activePrice — 봇 사망/재시작 무관 tick 추적.
-ORIGO_MODEL_NAME = "Origo 1.4"
+# 2026-07-07 Origo 1.5 = 1.4 + 본전 잠금(BE@1R) — 이익 1R 도달 시 SL→본전.
+# MFE 실측(1.2 손절 23%가 +20% ROI 후 풀손절) 처방. 백테 +278/DD 228 (기준
+# +240/265), 1.0~1.25 고원 + walk-forward 통과. 트레일 활성(2R) 전 구간 보호.
+ORIGO_MODEL_NAME = "Origo 1.5"
 # 2026-06-25 #CURSUS: 투트랙 2번째 봇 = Cursus(Dual SuperTrend 추세형, dual_st).
 # bot_trend_instance.CURSUS_MODEL_NAME 과 동일 문자열 유지(매매기록 model 태그 정합).
 CURSUS_MODEL_NAME = "Cursus 1.0"
@@ -261,6 +264,11 @@ class IctSettings(BaseSettings):
     # 분할익절은 skip(순수 trail +240 > partial+trail +189).
     origo_trail_trigger_r: float = Field(default=0.0, ge=0.0, le=10.0)
     origo_trail_dist_r: float = Field(default=0.0, ge=0.0, le=10.0)
+    # 2026-07-07 #BE-LOCK (Origo 1.5): 이익 r×R 도달 시 SL 본전 이동. 0=off.
+    # 근거(MFE 실측): 1.2 손절의 23%가 +20% ROI 이상 갔다가 풀 손절 — 파트너
+    # 보고 패턴. 백테 BE@1R+trail = +278(기준 +240), DD 265→228, 이웃(1.0~1.25)
+    # 고원 + walk-forward 전/후반 모두 우월. 트레일 활성(2R) 전 1R~2R 구간 보호.
+    origo_be_trigger_r: float = Field(default=0.0, ge=0.0, le=10.0)
     # 2026-06-18 #CT-SL 국면별 동적 SL: 진입 시점 "방향 정합 추세"(signed_trend
     # = 진입직전 20봉 변화율 × 방향부호)가 ct_trend_threshold 미만 = 역추세(되돌림
     # 진입)이면 sl_dist_mult 대신 sl_dist_mult_ct 사용. 0=비활성(항상 sl_dist_mult).
@@ -410,6 +418,9 @@ class IctSettings(BaseSettings):
                 self.origo_trail_trigger_r = 2.0
             if self.origo_trail_dist_r < 1.5:
                 self.origo_trail_dist_r = 1.5
+            # #BE-LOCK (Origo 1.5): 구독제 본전 잠금 1R 강제 (백테 +278, 강건 확인).
+            if self.origo_be_trigger_r < 1.0:
+                self.origo_be_trigger_r = 1.0
             # #CT-SL: 역추세(되돌림) 진입은 x4 (robust). 순추세/횡보는 위 x3 유지.
             self.sl_dist_mult_ct = 4.0
             self.ct_trend_threshold = 0.0
