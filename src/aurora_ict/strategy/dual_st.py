@@ -6,13 +6,13 @@
     (``Aurora-ICT-research/scripts/dst_trend_bt.py``, 1h 7페어 5년 + walk-forward 검증)
     로 확정한 "우리 원칙" 버전이다.
 
-전략 요지:
+전략 요지 (2026-07-07 원본 정합 — 파트너 지시 "매매기법.py 그대로, 변형 금지"):
     - 진입: close 가 ST1(ATR14×2.0) & ST2(ATR14×3.0) **둘 다 위 = 롱 / 둘 다 아래 = 숏**.
-      정렬이 새로 발생한 봉(돌파)에서만 진입. 양방향.
-    - 청산: 별도 트레일 ST(기본 ×6, ``trail_mult``)를 추세 방향으로만 끌어올리다 가격이
-      깨면 청산. 반대 신호가 뜨면 REVERSE(청산 후 역진입). **고정 TP 없음** — ST 라인이
-      곧 트레일 스탑이라 손실=타이트 / 수익=추세 끝까지 → RR 비대칭.
-    - 원본의 4단계 분할TP(1~4%)는 백테에서 RR<1 적자라 **제거**. 트레일링 중심이 핵심.
+      정렬이 새로 발생한 봉(돌파)에서만 진입. 양방향. 마감봉 기준.
+    - 청산(원본 엔진): **고정 SL 2%** + **4분할 TP 1/2/3/4% ×25%** + **TP 래더 트레일**
+      (TP2 체결 후 SL→TP1, TP3 체결 후 SL→TP2, TP4 전량 종료). 반대 신호 REVERSE.
+    - (이력) 2026-06-25~07-07 은 트레일 ST(×6) 청산의 "우리원칙" 변형이 라이브에 있었음
+      — 2026-07-07 원본 파일 수령 후 원본 엔진으로 복원. ST×6 은 연구용으로만 보존.
 
 이 모듈은 **신호 계산만** 담당한다. 실제 진입/청산/트레일 스탑 갱신은 봇
 (``BotTrendInstance``)이 거래소 인프라와 함께 수행한다. 백테(dst_trend_bt.py)와
@@ -32,19 +32,26 @@ from aurora_ict.strategy.silver_bullet import Direction
 
 @dataclass(slots=True)
 class DualSTConfig:
-    """Dual SuperTrend 전략 설정.
+    """Dual SuperTrend 전략 설정 — 원본 ``매매기법.py`` 정합 (2026-07-07 파트너 지시).
 
     Attributes:
-        atr_period: ATR 기간 (ST1/ST2/트레일 공통). 표준 14.
-        st1_mult: 진입 판정용 ST1 ATR 배수. 표준 2.0 (타이트).
-        st2_mult: 진입 판정용 ST2 ATR 배수. 표준 3.0 (넓음). 둘 다 정렬 시 진입.
-        trail_mult: 청산 트레일 ST ATR 배수. 백테 균형점 6.0(보수) / 8.0(공격).
-            좁으면 휩쏘에 자주 잘려 RR↓, 넓으면 큰 추세 끝까지 먹어 RR↑.
+        atr_period: ATR 기간 (ST1/ST2 공통). 원본 14.
+        st1_mult: 진입 판정용 ST1 ATR 배수. 원본 2.0 (타이트).
+        st2_mult: 진입 판정용 ST2 ATR 배수. 원본 3.0 (넓음). 둘 다 정렬 시 진입.
+        sl_pct: 고정 SL — 진입가 대비 %. 원본 2%.
+        trail_trigger_target: TP 래더 트레일 시작 TP 번호. 원본 2 —
+            TP2 체결 후 SL→TP1, TP3 체결 후 SL→TP2 로 계단식 이동.
+        trail_enabled: 래더 트레일 on/off. 원본 True.
+        trail_mult: (deprecated — 라이브 미사용) 과거 우리원칙 버전의 트레일 ST
+            배수. 백테 연구 스크립트 호환용으로만 유지.
     """
 
     atr_period: int = 14
     st1_mult: float = 2.0
     st2_mult: float = 3.0
+    sl_pct: float = 0.02
+    trail_trigger_target: int = 2
+    trail_enabled: bool = True
     trail_mult: float = 6.0
 
 
