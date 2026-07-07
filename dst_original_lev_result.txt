@@ -1,0 +1,9 @@
+===== 원본 엔진 — 라이브 레버리지 보정 (BTC 10x / 알트 7x, size 0.9) =====
+BTCUSDT    net=   -20165  승률=44%  RR=1.01  n=1224
+ETHUSDT    net=   -12047  승률=47%  RR=0.96  n=1334
+SOLUSDT    net=   -12005  승률=48%  RR=0.91  n=1314
+XRPUSDT    net=    -5348  승률=50%  RR=0.91  n=1300
+DOGEUSDT   net=   -11275  승률=49%  RR=0.90  n=1304
+LINKUSDT   net=   -10091  승률=50%  RR=0.89  n=1398
+HYPEUSDT   net=    -3103  승률=48%  RR=0.90  n=277
+합계 -74034 USDT (시드1000/페어)
