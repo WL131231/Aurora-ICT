@@ -3,16 +3,15 @@
 투트랙 2번째 봇. Origo(``BotIctInstance``, ICT 되돌림 단타)와 별도 라인으로, 같은
 거래소 어댑터·매매기록(TradesStore)·복원 패턴을 재사용하되 전략은 ``dual_st``(Dual
 SuperTrend 트레일링 중심)를 쓴다. 백테(``dst_trend_bt.py``, 1h 7페어 5년 + walk-forward
-검증, 5대 의심 통과)로 확정한 우리원칙 버전.
+검증)를 거쳤던 우리원칙 변형을 2026-07-07 원본 엔진으로 복원했다.
 
-전략(step):
+전략(step) — 2026-07-07 원본(``매매기법.py``) 엔진 정합 (파트너 지시 "그대로, 변형 금지"):
     - 진입: 마감 1h 봉에서 ST1×2 & ST2×3 둘 다 정렬 돌파(``latest_signal``) → 시장가
-      진입, 초기 SL = 트레일 ST(``trail_mult``, 기본 ×6).
-    - 보유: 매 step 트레일 ST 를 추세 방향으로만 끌어(롱 max / 숏 min) 거래소 SL 갱신.
-      가격이 SL 을 깨면 거래소가 자동 청산 → 다음 ``_sync_position_state`` 에서 qty 0
-      감지 → 기록.
+      진입, 초기 SL = **고정 2%** (entry×(1∓sl_pct), 청산가 캡 안전망만 추가).
+    - 보유: 4분할 TP 1/2/3/4% ×25% 부분익절 + **TP 래더 트레일** — TP2 체결 후
+      SL→TP1, TP3 체결 후 SL→TP2, TP4 전량 종료 (원본 TrailingManager 정합).
     - REVERSE: 반대 신호가 뜨면 시장가 청산(reduce_only) 후 역진입.
-    - 고정 TP 없음 — ST 트레일이 손실=타이트/수익=추세 끝까지 → RR 비대칭.
+    - (이력) 6/25~7/7 은 트레일 ST(×6) 청산 변형이 라이브 — 원본 수령 후 복원.
 
 ``multi_user_manager`` 가 Origo 봇과 동일 인터페이스(start/stop/_run_loop/step)로 다룬다.
 사용자 모델 선택값이 Cursus 면 이 인스턴스를, Origo 면 ``BotIctInstance`` 를 생성.
@@ -41,7 +40,6 @@ from aurora_ict.interfaces.trades_store import TradeEvent, TradeEventType, Trade
 from aurora_ict.strategy.dual_st import (
     DualSTConfig,
     latest_signal,
-    latest_trail_stop,
 )
 from aurora_ict.strategy.silver_bullet import Direction
 
@@ -57,12 +55,12 @@ _NY_TZ = ZoneInfo("America/New_York")
 
 @dataclass(slots=True)
 class _TrendPosition:
-    """추세형 활성 포지션 — ST 트레일 스탑 + (옵션) 4분할 TP."""
+    """추세형 활성 포지션 — 고정 SL(래더 이동) + 4분할 TP (원본 엔진)."""
 
     direction: Direction
     entry: float
     qty: float            # 현재 잔량(부분 TP 청산되면 감소)
-    stop: float           # 현재 트레일 SL (추세 방향으로만 갱신)
+    stop: float           # 현재 SL (고정 2% → TP 래더로만 상향)
     entry_ts_ms: int
     init_qty: float = 0.0  # 진입 시 전체 수량 — 부분 TP 청산 비중(0.25)의 기준
     tp_prices: list[float] = field(default_factory=list)  # 4분할 TP 가격(롱 위/숏 아래)
@@ -93,7 +91,7 @@ class BotTrendInstance:
         timeframe: 신호 TF — 추세형은 1h(노이즈↓).
         leverage: 레버리지.
         size_pct: 진입 notional 사이즈(시드 대비, notional=equity×size_pct×leverage).
-        cfg: DualST 설정(ST1/ST2/trail_mult). 라이브 시작 trail_mult=6.0(보수).
+        cfg: DualST 설정(ST1/ST2/sl_pct/래더) — 원본 매매기법.py 기본값.
         step_interval_sec: step 폴링 간격. 1h 봉이라 잦게 돌아도 봉 미변경 시 무동작.
         ohlcv_limit: fetch 봉 수(ST/ATR 워밍업 위해 넉넉히).
         trades_data_dir / user_code / run_mode / alert_cb / notify_cb: 기록·알림(주입).
@@ -109,8 +107,8 @@ class BotTrendInstance:
     ohlcv_limit: int = 300
     heartbeat_interval_sec: int = 300
     daily_loss_limit_pct: float = 0.0
-    # 4분할 TP(파트너 6/27 복원 — 승률 우선). 진입가 ±tp_pcts(%) 도달 시 tp_frac 씩
-    # 부분 익절, 잔량은 트레일 SL. enable=False 면 트레일 단독(net 우월하나 승률↓).
+    # 4분할 TP (원본 tp_pcts/tp_alloc 정합 — 1~4% ×25%). 진입가 ±tp_pcts(%) 도달 시
+    # tp_frac 씩 부분 익절, TP4 전량 종료. 래더 트레일의 기준 가격이기도 하다.
     enable_split_tp: bool = True
     tp_pcts: tuple[float, ...] = (0.01, 0.02, 0.03, 0.04)
     tp_frac: float = 0.25
@@ -172,7 +170,10 @@ class BotTrendInstance:
                 logger.warning("startup 주문 청소 실패 (무시): %s", e)
         self.state = BotState.RUNNING
         self._task = asyncio.create_task(self._run_loop())
-        logger.info("BotTrendInstance(Cursus) %s 시작 (trail x%.1f)", self.symbol, self.cfg.trail_mult)
+        logger.info(
+            "BotTrendInstance(Cursus) %s 시작 (원본 엔진: SL %.0f%% + 4분할TP 래더)",
+            self.symbol, self.cfg.sl_pct * 100,
+        )
 
     async def stop(self) -> None:
         """봇 정지 — _run_loop task cancel."""
@@ -215,84 +216,82 @@ class BotTrendInstance:
     # ---- 핵심 step (DualST 트레일링) ----
 
     async def step(self) -> None:
-        """단일 step — 1h OHLCV fetch → 거래소 동기화 → 트레일 SL 갱신/REVERSE → 진입."""
+        """단일 step — 1h OHLCV fetch → 거래소 동기화 → 분할TP/래더SL/REVERSE → 진입.
+
+        원본(``매매기법.py``) 엔진: 고정 SL 2% + 4분할 TP 1~4%(25%씩) + TP 래더
+        트레일(TP2 체결 후 SL→TP1, TP3 후 SL→TP2, TP4 전량 종료) + REVERSE.
+        """
         df = await self._fetch_ohlcv()
         if df is None or len(df) < self.cfg.atr_period * 3:
             return
         price = float(df["close"].iloc[-1])
         sig = latest_signal(df, self.cfg)         # Direction | None
-        trail = latest_trail_stop(df, self.cfg)   # float (NaN 가능)
 
-        # 거래소 동기화 — active 인데 거래소 qty 0 이면 트레일 SL 체결로 청산됨.
+        # 거래소 동기화 — active 인데 거래소 qty 0 이면 SL 체결로 청산됨.
         await self._sync_position_state(price)
         # 봇 모르는 거래소 포지션(재시작 사이·수동·force 진입) 입양 — active None 인데
-        # 거래소에 포지션이 있으면 _recover 가 복원. 미인식(active_pos=False) 방지.
-        # 트레일 stop 은 복원 후 다음 step 부터 latest_trail_stop 으로 갱신된다.
+        # 거래소에 포지션이 있으면 _recover 가 복원(고정 2% SL + entry 기준 TP 그리드).
         if self.active_position is None:
             await self._recover_position_from_exchange(record=False)
-            # 입양 직후 거래소 SL 즉시 박기(무방비 방지) — _recover 가 SL 못 읽을 수(sl=0).
             _ap = self.active_position
-            if _ap is not None and not _isnan(trail):
-                # 2026-07-01: 입양 시 트레일이 이미 침범(롱: price<=trail / 숏:
-                # price>=trail)이면 SL 을 박아도 즉시청산가라 거래소가 거부 →
-                # "SL 적용 실패" 비상청산으로 오분류·반복됐음(06-30 재입양 시 204건
-                # 폭발 원인). step 보유 경로(아래)와 동일하게 정상 트레일 청산으로
-                # 빠진다. Origo(%SL)와 달리 Cursus 는 트레일값 직접이라 침범 가능.
+            if _ap is not None and not self._sl_synced:
+                # 입양 직후 SL 즉시 박기(무방비 방지). 고정 2% SL 이 이미 침범이면
+                # (깊은 손실 상태 입양) 보호 불가 → 직접 정상청산 (#358 계열 방어).
                 _breached = (
-                    (_ap.direction is Direction.LONG and price <= trail)
-                    or (_ap.direction is Direction.SHORT and price >= trail)
+                    (_ap.direction is Direction.LONG and price <= _ap.stop)
+                    or (_ap.direction is Direction.SHORT and price >= _ap.stop)
                 )
                 if _breached:
-                    await self._trail_exit(price)
+                    await self._stop_exit(price, reason="입양 시 SL 침범 — 정상청산")
                     return
-                _ap.stop = self._liq_capped_sl(trail, _ap.entry, _ap.direction)
                 await self._apply_protective_sl(_ap.stop, price)
 
         pos = self.active_position
         if pos is not None:
-            # 4분할 TP 부분 익절(트레일/REVERSE 전) — 전량 익절되면 active 해제.
+            # 4분할 TP 부분 익절 — 전량 익절(TP4)되면 active 해제 (원본 hits>=4 종료).
             if pos.tp_prices:
                 await self._check_split_tp(price)
                 if self.active_position is None:
                     return
                 pos = self.active_position
-            if not _isnan(trail):
-                # 트레일 돌파 청산 — 가격이 트레일 스탑을 넘었으면(롱: price<=trail /
-                # 숏: price>=trail) 추세 반전 = 청산 시점. SL 을 박아도 즉시청산가라
-                # 거래소가 거부하므로 봇이 직접 reduce_only 청산(정상 트레일 청산 기록).
-                breached = (
-                    (pos.direction is Direction.LONG and price <= trail)
-                    or (pos.direction is Direction.SHORT and price >= trail)
-                )
-                if breached:
-                    await self._trail_exit(price)
-                    return
-                # 트레일 SL 갱신 — 추세 방향으로만(롱 max / 숏 min).
-                new_stop = max(pos.stop, trail) if pos.direction is Direction.LONG \
-                    else min(pos.stop, trail)
-                new_stop = self._liq_capped_sl(new_stop, pos.entry, pos.direction)
-                if not self._sl_synced:
-                    # 복원/재시작 직후 SL 미확정(무방비 가능) — 검증+비상청산 경로로 확실히.
-                    pos.stop = new_stop
-                    await self._apply_protective_sl(new_stop, price)
-                elif new_stop != pos.stop:
-                    # 이미 SL 있음 — 갱신만(실패해도 기존 SL 유지, 다음 step 재시도).
-                    pos.stop = new_stop
-                    if not await self._set_sl_once(new_stop):
-                        self._sl_synced = False  # 다음 step 강제 재적용
-                        logger.warning(
-                            "[%s] Cursus 트레일 SL 갱신 실패 — 다음 step 재적용", self.symbol,
-                        )
+            # TP 래더 트레일 (원본 TrailingManager): 체결 TP 수가 trail_trigger_target
+            # 이상이면 SL 을 tps[hits-2] 로 계단 이동 (TP2→SL=TP1, TP3→SL=TP2).
+            # 방향상 유리(롱: 위 / 숏: 아래)할 때만 이동 — 원본 new_stop 비교와 동일.
+            if self.cfg.trail_enabled and pos.tp_prices:
+                hits = sum(1 for f in pos.tp_filled if f)
+                if hits >= self.cfg.trail_trigger_target and hits >= 2:
+                    ladder = pos.tp_prices[hits - 2]
+                    better = (
+                        ladder > pos.stop if pos.direction is Direction.LONG
+                        else ladder < pos.stop
+                    )
+                    if better:
+                        new_stop = self._liq_capped_sl(ladder, pos.entry, pos.direction)
+                        pos.stop = new_stop
+                        if not await self._set_sl_once(new_stop):
+                            self._sl_synced = False  # 다음 step 강제 재적용
+                            logger.warning(
+                                "[%s] Cursus 래더 SL 이동 실패 — 다음 step 재시도",
+                                self.symbol,
+                            )
+                        else:
+                            logger.info(
+                                "Cursus 래더 SL 이동 — %s TP%d 체결 후 SL→%.4f",
+                                self.symbol, hits, new_stop,
+                            )
+            if not self._sl_synced:
+                # 복원/재시작 직후 SL 미확정(무방비 가능) — 검증+비상청산 경로로 확실히.
+                await self._apply_protective_sl(pos.stop, price)
             # 비상청산으로 포지션이 닫혔으면 이후 로직 skip.
             if self.active_position is None:
                 return
             # REVERSE — 반대 신호.
-            if sig is not None and sig is not pos.direction and not _isnan(trail):
-                await self._reverse(sig, price, trail)
+            if sig is not None and sig is not pos.direction:
+                await self._reverse(sig, price)
             return
 
         # 무포지션 — 진입 신호.
-        if sig is not None and not _isnan(trail):
+        if sig is not None:
             # 일일 손실 한도 — 도달 시 신규 진입 차단(기존 포지션 트레일/청산은 유지).
             equity = await self._fetch_equity()
             self._maybe_reset_daily_pnl(equity)
@@ -304,26 +303,21 @@ class BotTrendInstance:
                     )
                     self._daily_limit_hit = True
                 return
-            await self._open(sig, price, trail)
+            await self._open(sig, price)
 
-    async def _open(self, direction: Direction, price: float, trail: float) -> None:
-        """시장가 진입 + 초기 트레일 SL 설정 + ENTRY 기록."""
-        # #ENTRY-TRAIL-GUARD 2026-07-03 (7/2 LINK 반복진입 사고, 누적 372건):
-        # 진입 신호(ST1·ST2 정렬)가 떠도 트레일 ST(×6)는 아직 반대 상태(롱인데
-        # 라인이 가격 위)일 수 있다 — 그 SL 은 거래소가 거부 → 비상청산 → 다음
-        # step 재진입 루프로 왕복 수수료만 소진(7/2 실측 16분에 노셔널 -12%).
-        # #358 입양 경로와 동일한 침범 검사를 주문 "전에" — 트레일이 유효해질
-        # 때까지 진입 보류. _reverse 도 _open 을 타므로 역진입까지 함께 방어.
-        breached = (
-            (direction is Direction.LONG and trail >= price)
-            or (direction is Direction.SHORT and trail <= price)
-        )
-        if breached:
-            logger.info(
-                "[%s] Cursus 진입 보류 — 트레일(%.4f)이 가격(%.4f) 침범, SL 등록 불가",
-                self.symbol, trail, price,
-            )
-            return
+    def _fixed_sl(self, entry: float, direction: Direction) -> float:
+        """원본 고정 SL — entry ∓ sl_pct(2%). 청산가 캡(안전망)만 추가 적용."""
+        sign = 1.0 if direction is Direction.LONG else -1.0
+        raw = entry * (1 - sign * self.cfg.sl_pct)
+        return self._liq_capped_sl(raw, entry, direction)
+
+    async def _open(self, direction: Direction, price: float) -> None:
+        """시장가 진입 + 고정 SL(2%) + 4분할 TP 그리드 + ENTRY 기록 (원본 엔진).
+
+        원본 build_order_plan 정합: stop = entry×(1∓sl_pct), tps = entry×(1±1~4%).
+        고정 %SL 은 정의상 보호 측이라 (구)트레일 침범 가드는 불필요해졌다
+        (#363 가드는 ST×6 SL 시절 산물 — 원본 복원으로 원인 자체 소멸).
+        """
         qty = await self._calc_qty(price)
         if qty <= 0:
             logger.warning("[%s] qty 0 — 진입 skip (잔고/가격 확인)", self.symbol)
@@ -334,7 +328,7 @@ class BotTrendInstance:
         except Exception as e:  # noqa: BLE001
             logger.error("[%s] Cursus 진입 주문 실패: %s", self.symbol, e)
             return
-        capped = self._liq_capped_sl(trail, price, direction)
+        capped = self._fixed_sl(price, direction)
         tp_prices = self._calc_tp_prices(price, direction)
         self.active_position = _TrendPosition(
             direction=direction, entry=price, qty=qty, stop=capped,
@@ -344,16 +338,16 @@ class BotTrendInstance:
         self._sl_synced = False
         self._record_trade(
             TradeEventType.ENTRY, direction=direction, price=price, qty=qty,
-            reason=f"DualST 진입 trail={trail:.4f}",
+            reason=f"DualST 진입 sl={capped:.4f}(-{self.cfg.sl_pct * 100:.0f}%)",
         )
         # SL 등록을 검증 — 실패 시 재시도→비상청산(무SL 청산 직행 방지).
         await self._apply_protective_sl(capped, price)
         logger.info(
             "Cursus 진입 — %s %s price=%.4f qty=%.6f SL=%.4f",
-            self.symbol, side, price, qty, trail,
+            self.symbol, side, price, qty, capped,
         )
 
-    async def _reverse(self, new_dir: Direction, price: float, trail: float) -> None:
+    async def _reverse(self, new_dir: Direction, price: float) -> None:
         """반대 신호 — 현재 포지션 시장가 청산(reduce_only) 후 역진입."""
         pos = self.active_position
         if pos is None:
@@ -386,7 +380,7 @@ class BotTrendInstance:
                 "[%s] Cursus REVERSE 후 잔량 확인 실패 — 역진입 보류: %s", self.symbol, e,
             )
             return
-        await self._open(new_dir, price, trail)
+        await self._open(new_dir, price)
 
     async def _sync_position_state(self, price: float) -> None:
         """거래소 포지션 동기화 — active 인데 qty 0 이면 트레일 SL 체결(거래소 자동청산) 인지."""
@@ -406,9 +400,9 @@ class BotTrendInstance:
             pos = self.active_position
             self._record_trade(
                 TradeEventType.SL_HIT, direction=pos.direction, price=price, qty=pos.qty,
-                entry_for_pnl=pos.entry, reason="트레일 SL 체결(거래소 자동청산)",
+                entry_for_pnl=pos.entry, reason="SL 체결(거래소 자동청산)",
             )
-            logger.info("Cursus 청산 감지 — 트레일 SL 체결 (%s)", self.symbol)
+            logger.info("Cursus 청산 감지 — SL 체결 (%s)", self.symbol)
             self.active_position = None
             self._sl_synced = False
             return
@@ -442,9 +436,15 @@ class BotTrendInstance:
         direction = Direction.LONG if side_raw in ("long", "buy") else Direction.SHORT
         entry = float((ex or {}).get("entryPrice") or (ex or {}).get("entry_price") or 0)
         sl = float((ex or {}).get("stopLossPrice") or (ex or {}).get("stop_loss") or 0)
+        # 원본 엔진 복원: SL 은 거래소 값 우선, 없으면 고정 2%(entry 기준). TP 그리드도
+        # entry 기준 재구성 — 래더 트레일·분할익절이 복원 포지션에도 작동하게.
+        # (이미 지난 TP 는 다음 step 의 _check_split_tp 가 현재가 체결로 처리.)
+        _stop = sl if sl > 0 else (self._fixed_sl(entry, direction) if entry > 0 else 0.0)
+        _tps = self._calc_tp_prices(entry, direction) if entry > 0 else []
         self.active_position = _TrendPosition(
             direction=direction, entry=entry, qty=contracts,
-            stop=sl if sl > 0 else entry, entry_ts_ms=int(time.time() * 1000),
+            stop=_stop if _stop > 0 else entry, entry_ts_ms=int(time.time() * 1000),
+            init_qty=contracts, tp_prices=_tps, tp_filled=[False] * len(_tps),
         )
         # 거래소에 SL 이 이미 있으면(sl>0) 확정, 없으면 무방비 → 다음 step 강제 적용.
         self._sl_synced = sl > 0
@@ -603,15 +603,15 @@ class BotTrendInstance:
         self.active_position = None
         self._sl_synced = False
 
-    async def _trail_exit(self, price: float) -> None:
-        """가격이 트레일 스탑을 깬 정상 청산 — reduce_only 시장가 + SL_HIT 기록.
+    async def _stop_exit(self, price: float, *, reason: str = "SL 침범 정상청산") -> None:
+        """SL 을 거래소에 박을 수 없는 상태(이미 침범)의 정상 청산 — reduce_only + SL_HIT.
 
-        SuperTrend 트레일이 가격 반대편으로 넘어간 상태(추세 반전)는 청산 시점이다.
-        이때 거래소에 SL 을 박으면 즉시청산가라 거부(retCode 10001)되므로, 봇이
-        직접 reduce_only 로 청산한다. 비상청산과 달리 정상 트레일 청산으로 기록.
+        입양 시 가격이 고정 SL 을 이미 지난 포지션 등은 SL 등록이 즉시청산가라
+        거부(retCode 10001)되므로 봇이 직접 청산한다. 비상청산과 달리 정상 기록.
 
         Args:
             price: 현재가(청산가 추정·PnL 기록용).
+            reason: 매매 기록 사유.
         """
         pos = self.active_position
         if pos is None:
@@ -623,13 +623,13 @@ class BotTrendInstance:
                 price=None, reduce_only=True,
             )
         except Exception as e:  # noqa: BLE001
-            logger.error("[%s] Cursus 트레일 청산 실패: %s", self.symbol, e)
+            logger.error("[%s] Cursus SL 침범 청산 실패: %s", self.symbol, e)
             return
         self._record_trade(
             TradeEventType.SL_HIT, direction=pos.direction, price=price, qty=pos.qty,
-            entry_for_pnl=pos.entry, reason="트레일 스탑 돌파 청산",
+            entry_for_pnl=pos.entry, reason=reason,
         )
-        logger.info("Cursus 트레일 청산 — %s price=%.4f", self.symbol, price)
+        logger.info("Cursus SL 침범 청산 — %s price=%.4f", self.symbol, price)
         self.active_position = None
         self._sl_synced = False
 
@@ -841,6 +841,3 @@ class BotTrendInstance:
             return []
 
 
-def _isnan(x: float) -> bool:
-    """NaN 안전 체크 (float('nan') != 자기자신)."""
-    return x != x

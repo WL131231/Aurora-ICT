@@ -462,7 +462,7 @@ class MultiUserBotManager:
                 # base 자산 정확매칭(startswith 는 BTCDOM 등 BTC-prefix 토큰 오인).
                 leverage=(10 if settings.symbol.split("/")[0] == "BTC" else 7),
                 size_pct=0.9,
-                cfg=DualSTConfig(trail_mult=6.0),
+                cfg=DualSTConfig(),  # 원본 매매기법.py 기본값 (SL2%+4분할TP 래더)
                 # 일일 손실 한도 — Origo 와 동일하게 주입(시드 방어). 0 이면 비활성.
                 daily_loss_limit_pct=settings.daily_loss_limit_pct,
                 trades_data_dir=self._user_data_dir(user_code),
@@ -475,7 +475,7 @@ class MultiUserBotManager:
                     self.alerter.send_user_text if self.alerter is not None else None
                 ),
             )
-            logger.info("Cursus(추세형) 봇 생성 — %s %s (trail x6.0)", user_code, symbol)
+            logger.info("Cursus(추세형) 봇 생성 — %s %s (원본 엔진)", user_code, symbol)
         self._slots[key] = _UserBotSlot(
             symbol=symbol, settings=settings, bot=bot, client=client,
         )
