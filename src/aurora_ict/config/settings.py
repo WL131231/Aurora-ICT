@@ -47,7 +47,11 @@ PAIR_TTL_OVERRIDES: dict[str, int] = {"BTCUSDT": 3600}
 # 2026-07-07 Origo 1.5 = 1.4 + 본전 잠금(BE@1R) — 이익 1R 도달 시 SL→본전.
 # MFE 실측(1.2 손절 23%가 +20% ROI 후 풀손절) 처방. 백테 +278/DD 228 (기준
 # +240/265), 1.0~1.25 고원 + walk-forward 통과. 트레일 활성(2R) 전 구간 보호.
-ORIGO_MODEL_NAME = "Origo 1.5"
+# + 스윕-반전 게이트(2일 역방향 차단, +253/DD-25%).
+# 2026-07-08 Origo 1.6 = 1.5 + 유동성 타깃 TP (#LIQ-TP, 파트너 결정 "TP 정통으로").
+# 트레일 무장 시 5R 원거리 확장 제거 — setup TP(다음 미스윕 BSL/SSL) 유지.
+# 정합 백테: 유동성TP+trail+BE = +282/DD 218 (5R 확장 +278/228 동률 이상).
+ORIGO_MODEL_NAME = "Origo 1.6"
 # 2026-06-25 #CURSUS: 투트랙 2번째 봇 = Cursus(Dual SuperTrend 추세형, dual_st).
 # bot_trend_instance.CURSUS_MODEL_NAME 과 동일 문자열 유지(매매기록 model 태그 정합).
 CURSUS_MODEL_NAME = "Cursus 1.0"

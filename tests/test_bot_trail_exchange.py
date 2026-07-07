@@ -33,8 +33,8 @@ def _bot(client: AsyncMock, trigger: float = 2.0, dist: float = 1.5) -> BotIctIn
 
 
 @pytest.mark.asyncio
-async def test_arm_trailing_sets_far_tp_and_trailing_params() -> None:
-    """무장 성공: TP 5R 확장 + trailingStop=1.5R 거리 + activePrice=2R."""
+async def test_arm_trailing_keeps_setup_tp_and_sets_trailing() -> None:
+    """#LIQ-TP (1.6): setup TP(유동성 타깃) 유지 — TP 재전송 없음 + 트레일만 추가."""
     client = _client(cur_price=100.0)
     bot = _bot(client)
 
@@ -42,11 +42,26 @@ async def test_arm_trailing_sets_far_tp_and_trailing_params() -> None:
 
     assert ok is True
     assert bot.active_position.trail_armed is True
-    assert bot.active_position.take_profit == pytest.approx(120.0)  # 100 + 5×4
+    assert bot.active_position.take_profit == pytest.approx(108.0)  # setup TP 유지
     kw = client.set_position_tpsl.await_args_list[-1].kwargs
-    assert kw["take_profit"] == pytest.approx(120.0)
+    assert kw["take_profit"] is None                   # TP 안 건드림
     assert kw["trailing_stop"] == pytest.approx(6.0)   # 1.5R = 6
     assert kw["active_price"] == pytest.approx(108.0)  # 2.0R 활성가
+
+
+@pytest.mark.asyncio
+async def test_arm_trailing_far_tp_only_when_tp_unknown() -> None:
+    """#LIQ-TP: 복원 등으로 TP=0 이면 5R 안전망을 대신 등록."""
+    client = _client(cur_price=100.0)
+    bot = _bot(client)
+    bot.active_position.take_profit = 0.0
+
+    ok = await bot._arm_trailing()
+
+    assert ok is True
+    kw = client.set_position_tpsl.await_args_list[-1].kwargs
+    assert kw["take_profit"] == pytest.approx(120.0)   # 100 + 5×4 안전망
+    assert bot.active_position.take_profit == pytest.approx(120.0)
 
 
 @pytest.mark.asyncio
@@ -74,7 +89,7 @@ async def test_arm_trailing_failure_keeps_fixed_tp_mode() -> None:
 
     assert ok is False
     assert bot.active_position.trail_armed is False
-    assert bot.active_position.take_profit == pytest.approx(108.0)  # setup TP 유지
+    assert bot.active_position.take_profit == pytest.approx(108.0)  # setup TP 그대로
 
 
 @pytest.mark.asyncio

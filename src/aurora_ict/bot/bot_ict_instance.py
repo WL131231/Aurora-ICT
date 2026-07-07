@@ -2165,15 +2165,18 @@ class BotIctInstance:
         return False
 
     async def _arm_trailing(self) -> bool:
-        """#TRAIL-EXCHANGE (Origo 1.4): 거래소 네이티브 트레일링 무장.
+        """#TRAIL-EXCHANGE (1.4) + #LIQ-TP (Origo 1.6): 거래소 트레일링 무장.
 
-        보호 SL(+setup TP)이 이미 박힌 뒤 2차 호출로 [TP 5R 확장 + trailingStop
-        + activePrice] 를 한 번에 적용한다. 실패해도 포지션은 직전 SL+setup TP
-        상태 그대로 → 고정 TP 모드로 degrade (무해). 성공 시 분할익절 skip
-        (정합 스윕: 순수 trail +240 > partial+trail +189).
+        보호 SL+setup TP(=다음 미스윕 유동성, ICT 정통)가 박힌 뒤 2차 호출로
+        trailingStop+activePrice 만 추가한다. **TP 는 건드리지 않음** — 2026-07-08
+        파트너 결정("TP 를 정통으로"): 1.4~1.5 의 5R 원거리 확장이 "닿을 수 없는
+        TP" 체감을 만들었고, 정합 백테에서 [유동성TP+trail+BE] 하이브리드가
+        +282/DD 218 로 5R 확장(+278/228)과 동률 이상 — 유동성 풀 도달 시 전량
+        익절, 못 미치면 트레일이 걷는다. TP 미상(복원 tp=0)일 때만 5R 안전망.
 
-        activePrice 는 현재가가 아직 활성가 앞일 때만 — 입양 등으로 이미
-        지났으면 생략(거래소가 즉시 활성).
+        실패해도 포지션은 SL+setup TP 그대로 → 고정 TP 모드 degrade (무해).
+        무장 성공 시 분할익절 skip. activePrice 는 현재가가 활성가 앞일 때만
+        (지났으면 생략 = 즉시 활성).
 
         Returns:
             True = 무장 성공(pos.trail_armed 셋). False = off/실패(고정 TP 유지).
@@ -2186,7 +2189,10 @@ class BotIctInstance:
             return False
         is_long = pos.direction is Direction.LONG
         sign = 1.0 if is_long else -1.0
-        far_tp = pos.entry + sign * risk * 5.0  # 러너 안전망 (백테 tp_rr_override=5)
+        # #LIQ-TP: setup TP(유동성 타깃) 유지 — TP 미상일 때만 5R 안전망 등록.
+        tp_param: float | None = None
+        if pos.take_profit <= 0:
+            tp_param = pos.entry + sign * risk * 5.0
         act = pos.entry + sign * risk * self.trail_trigger_r
         try:
             cur = await self.client.fetch_ticker(self.symbol)
@@ -2198,17 +2204,18 @@ class BotIctInstance:
             act_param = None
         resp = await self.client.set_position_tpsl(
             self.symbol,
-            take_profit=far_tp,
+            take_profit=tp_param,
             trailing_stop=risk * self.trail_dist_r,
             active_price=act_param,
         )
         if resp:
-            pos.take_profit = far_tp
+            if tp_param is not None:
+                pos.take_profit = tp_param
             pos.trail_armed = True
             logger.info(
-                "트레일링 무장 — %s trigger=%.4f(%.1fR) dist=%.4f(%.1fR) tp→%.4f(5R)%s",
+                "트레일링 무장 — %s trigger=%.4f(%.1fR) dist=%.4f(%.1fR) tp=%.4f(유동성)%s",
                 self.symbol, act, self.trail_trigger_r,
-                risk * self.trail_dist_r, self.trail_dist_r, far_tp,
+                risk * self.trail_dist_r, self.trail_dist_r, pos.take_profit,
                 " (즉시활성)" if act_param is None else "",
             )
             return True
