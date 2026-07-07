@@ -365,6 +365,12 @@ class BotIctInstance:
     # MFE 실측(1.2 손절 23%가 +20% ROI 이상 간 뒤 풀손절) 처방 — 트레일 활성(2R)
     # 전 1R~2R 구간 보호. 백테 BE@1R+trail +278 (기준 +240)·DD 265→228·강건 확인.
     be_trigger_r: float = 0.0
+    # #SWEEP-GATE 2026-07-07 (Origo 1.5): 일봉 스윕-반전 후 K일 역방향 진입 차단.
+    # 0=off. ICT 정통 "유동성 사건 = bias 즉시 전환"의 기계화 — EMA align 이
+    # 3~5일 지연해 7/4 숏 전멸(-165) 낸 패턴 방어. 백테 K=2: +253·DD -25%.
+    sweep_gate_days: int = 0
+    # 스윕 게이트 일일 캐시 (day_key, block_short, block_long) — 일봉은 하루 단위.
+    _sweep_gate_state: tuple | None = None
     # 2026-06-11 #EDGE-V2: SL 거리 배수 (1.0=원본). 백테스트 10국면 검증 —
     # 넓힐수록 스탑헌트 생존으로 단조 개선, x3.0 에서 BTC IN/OUT 흑자.
     # TP 는 원 RR 유지 비례 확장. risk sizing ON 이면 건당 손실(R) 불변.
@@ -1135,6 +1141,17 @@ class BotIctInstance:
                     )
                     self._remember_setup(signal.setup)
                     return signal
+
+        # #SWEEP-GATE (Origo 1.5, 파트너 "3번 판단" 기계화 2026-07-07): 일봉
+        # 스윕-반전 후 K일 역방향 차단 — EMA align 지연(7/4 숏 전멸 -165) 방어.
+        if await self._sweep_gate_blocked(signal.setup.direction):
+            logger.info(
+                "스윕-반전 게이트 skip — %s 진입 차단 (최근 %d일 내 반대 스윕-반전)",
+                signal.setup.direction.value, self.sweep_gate_days,
+            )
+            self._record_shadow(signal.setup, "sweep_gate_skip")
+            self._remember_setup(signal.setup)
+            return signal
 
         self._record_shadow(signal.setup, "taken")
         await self._execute_setup(signal.setup, htf_flip_target=htf_target)
@@ -2233,6 +2250,50 @@ class BotIctInstance:
             logger.warning(
                 "본전 잠금 실패 — 기존 SL 유지, 다음 step 재시도 (%s)", self.symbol,
             )
+
+    async def _sweep_gate_blocked(self, direction: Direction) -> bool:
+        """#SWEEP-GATE (Origo 1.5): 일봉 스윕-반전 후 K일 역방향 차단 판정.
+
+        SSL 스윕-반전일 = 저점이 직전 10일 최저 하회 && 종가가 봉 상반부 마감
+        → 이후 K일 SHORT 차단. BSL(고점 스윕-반락)은 대칭으로 LONG 차단.
+        백테 검증(`sweep_bias_gate.py`)과 동일 규칙. 일봉은 하루 단위로만
+        바뀌므로 일일 캐시. 1d fetch 실패 시 차단 없음(기존 동작 보수 유지).
+
+        Args:
+            direction: 진입하려는 setup 방향.
+        Returns:
+            True = 차단 (최근 K일 내 반대 방향 스윕-반전 존재).
+        """
+        if self.sweep_gate_days <= 0:
+            return False
+        day_key = time.strftime("%Y-%m-%d", time.gmtime())
+        st = self._sweep_gate_state
+        if st is None or st[0] != day_key:
+            block_s = block_l = False
+            d = None
+            try:
+                d = await self._fetch_ohlcv_tf("1d", 10 + self.sweep_gate_days + 2)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("스윕 게이트 1d fetch 실패 — 게이트 미적용: %s", e)
+            if d is not None and len(d) >= 12:
+                dd = d.iloc[:-1]  # 마지막 = 오늘 미완성 봉 제외 (마감일만 판정)
+                lows = dd["low"].astype(float)
+                highs = dd["high"].astype(float)
+                closes = dd["close"].astype(float)
+                for j in range(1, self.sweep_gate_days + 1):
+                    i = len(dd) - j
+                    if i < 10:
+                        break
+                    mid = (float(lows.iloc[i]) + float(highs.iloc[i])) / 2.0
+                    if (float(lows.iloc[i]) < float(lows.iloc[i - 10:i].min())
+                            and float(closes.iloc[i]) > mid):
+                        block_s = True
+                    if (float(highs.iloc[i]) > float(highs.iloc[i - 10:i].max())
+                            and float(closes.iloc[i]) < mid):
+                        block_l = True
+            self._sweep_gate_state = (day_key, block_s, block_l)
+            st = self._sweep_gate_state
+        return st[1] if direction is Direction.SHORT else st[2]
 
     @staticmethod
     def _exchange_position_direction(pos: dict[str, Any]) -> Direction | None:

@@ -269,6 +269,11 @@ class IctSettings(BaseSettings):
     # 보고 패턴. 백테 BE@1R+trail = +278(기준 +240), DD 265→228, 이웃(1.0~1.25)
     # 고원 + walk-forward 전/후반 모두 우월. 트레일 활성(2R) 전 1R~2R 구간 보호.
     origo_be_trigger_r: float = Field(default=0.0, ge=0.0, le=10.0)
+    # 2026-07-07 #SWEEP-GATE (Origo 1.5, 파트너 "3번 판단" 기계화): 일봉이 직전
+    # 10일 저점을 스윕하고 상반부 마감(SSL 스윕-반전)하면 이후 K일 SHORT 차단,
+    # 고점 스윕-반락이면 LONG 차단. 0=off. 근거: 7/1 BTC 스윕-반전 후 봇이 EMA
+    # 지연으로 7/4 까지 숏 → -165 전멸. 백테 K=2: +240→+253, DD -25%, 빈도 -22%.
+    origo_sweep_gate_days: int = Field(default=0, ge=0, le=10)
     # 2026-06-18 #CT-SL 국면별 동적 SL: 진입 시점 "방향 정합 추세"(signed_trend
     # = 진입직전 20봉 변화율 × 방향부호)가 ct_trend_threshold 미만 = 역추세(되돌림
     # 진입)이면 sl_dist_mult 대신 sl_dist_mult_ct 사용. 0=비활성(항상 sl_dist_mult).
@@ -421,6 +426,10 @@ class IctSettings(BaseSettings):
             # #BE-LOCK (Origo 1.5): 구독제 본전 잠금 1R 강제 (백테 +278, 강건 확인).
             if self.origo_be_trigger_r < 1.0:
                 self.origo_be_trigger_r = 1.0
+            # #SWEEP-GATE (Origo 1.5): 스윕-반전 후 2일 역방향 차단 (백테 K=2 최적,
+            # K=3/5 과차단). 파트너 승인 2026-07-07 ("3번 판단 그런식으로 적용").
+            if self.origo_sweep_gate_days < 2:
+                self.origo_sweep_gate_days = 2
             # #CT-SL: 역추세(되돌림) 진입은 x4 (robust). 순추세/횡보는 위 x3 유지.
             self.sl_dist_mult_ct = 4.0
             self.ct_trend_threshold = 0.0
