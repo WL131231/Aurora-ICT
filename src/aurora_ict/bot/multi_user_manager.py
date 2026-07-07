@@ -386,6 +386,8 @@ class MultiUserBotManager:
             trail_dist_r=settings.origo_trail_dist_r,
             # #BE-LOCK (Origo 1.5): 본전 잠금 — 구독제 1R 강제, referral 0(off).
             be_trigger_r=settings.origo_be_trigger_r,
+            # #SWEEP-GATE (Origo 1.5): 스윕-반전 K일 역방향 차단 — 구독제 2일 강제.
+            sweep_gate_days=settings.origo_sweep_gate_days,
             high_rr_bypass_min_rr=settings.high_rr_bypass_min_rr,
             fvg_min_size_pct=settings.fvg_min_size_pct,
             smt_enabled=settings.smt_enabled,
