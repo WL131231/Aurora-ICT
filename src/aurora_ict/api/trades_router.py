@@ -310,6 +310,12 @@ async def _resolve_seed(seed_provider: Any, user_code: str) -> float | None:
         return None
 
 
+class _PinResetRequest(BaseModel):
+    """PIN 초기화 요청 — admin 만 (2026-07-10, PIN 분실 복구)."""
+
+    code: str = Field(min_length=4, max_length=64)
+
+
 class _LicenseUpdateRequest(BaseModel):
     """라이선스 정보 정정 요청 — admin 만 호출 가능 (2026-05-29)."""
 
@@ -657,6 +663,26 @@ def create_trades_router(
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e)) from e
             return {"ok": True, **result}
+
+        @router.post("/admin/user/reset-pin")
+        async def admin_reset_pin(
+            req: _PinResetRequest,
+            x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+            cookie_token: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
+        ) -> dict[str, Any]:
+            """PIN 초기화 (admin) — 사용자 PIN 분실 복구 (2026-07-10 파트너 보고).
+
+            PIN 은 pbkdf2 해시 저장이라 원문 확인이 불가능 — 초기화 후 사용자가
+            /auth/setup-pin (UI 첫 화면) 으로 재설정하는 것이 유일한 복구 경로.
+            기존 로그인 세션은 유지됨 (재설정 즉시 새 PIN 으로 로그인 가능).
+            """
+            _check_admin_cookie_or_header(cookie_token, x_admin_token)
+            from aurora_ict.auth import users_db
+            ok = users_db.clear_pin(auth_db_path, req.code.strip().upper())
+            if not ok:
+                raise HTTPException(status_code=404, detail="없는 사용자 코드")
+            return {"ok": True, "code": req.code.strip().upper(),
+                    "message": "PIN 초기화 완료 — 사용자가 첫 화면에서 PIN 재설정"}
 
     return router
 

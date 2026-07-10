@@ -473,6 +473,30 @@ def get_user_by_code(db_path: Path | str, code: str) -> dict[str, Any] | None:
         return dict(row)
 
 
+def clear_pin(db_path: Path | str, code: str) -> bool:
+    """PIN 초기화 — pin_hash 를 NULL 로 (admin 재설정 flow, 2026-07-10).
+
+    사용자가 PIN 분실 시 admin 이 초기화 → 사용자가 /auth/setup-pin 으로
+    재설정 (pin_hash 가 비어야 setup-pin 이 통과). PIN 은 pbkdf2 해시라
+    원문 복구가 불가능 — 초기화가 유일한 복구 경로.
+
+    Args:
+        db_path: users.db 경로.
+        code: 대상 사용자 라이선스 코드.
+
+    Returns:
+        True 면 초기화 성공, False 면 해당 code 존재 X.
+    """
+    now = _utcnow_iso()
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE users SET pin_hash = NULL, updated_at = ? WHERE code = ?",
+            (now, code),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def set_pin(db_path: Path | str, code: str, pin_hash: str) -> bool:
     """첫 PIN 설정 또는 변경 — ``pin_hash`` 는 ``aurora_ict.auth.pin.hash_pin`` 결과.
 
