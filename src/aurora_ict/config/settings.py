@@ -51,7 +51,10 @@ PAIR_TTL_OVERRIDES: dict[str, int] = {"BTCUSDT": 3600}
 # 2026-07-08 Origo 1.6 = 1.5 + 유동성 타깃 TP (#LIQ-TP, 파트너 결정 "TP 정통으로").
 # 트레일 무장 시 5R 원거리 확장 제거 — setup TP(다음 미스윕 BSL/SSL) 유지.
 # 정합 백테: 유동성TP+trail+BE = +282/DD 218 (5R 확장 +278/228 동률 이상).
-ORIGO_MODEL_NAME = "Origo 1.6"
+# 2026-07-10 Origo 1.7 = 1.6 + 국면 적응 OTE (#REGIME-OTE): 상승 국면(일봉 20일
+# z>0.75)만 OTE 0.786 — 국면 랩 3차 검증 (상승 버킷 -96→+94%, 전/후반 동시 개선,
+# 타국면 불변, 합계 +6.7%). 상승장 얕은 되돌림 롱 역선택의 처방.
+ORIGO_MODEL_NAME = "Origo 1.7"
 # 2026-06-25 #CURSUS: 투트랙 2번째 봇 = Cursus(Dual SuperTrend 추세형, dual_st).
 # bot_trend_instance.CURSUS_MODEL_NAME 과 동일 문자열 유지(매매기록 model 태그 정합).
 CURSUS_MODEL_NAME = "Cursus 1.0"
@@ -278,6 +281,10 @@ class IctSettings(BaseSettings):
     # 고점 스윕-반락이면 LONG 차단. 0=off. 근거: 7/1 BTC 스윕-반전 후 봇이 EMA
     # 지연으로 7/4 까지 숏 → -165 전멸. 백테 K=2: +240→+253, DD -25%, 빈도 -22%.
     origo_sweep_gate_days: int = Field(default=0, ge=0, le=10)
+    # 2026-07-10 #REGIME-OTE (Origo 1.7): 상승 국면(일봉 20일 z>0.75) 전용 OTE 깊이.
+    # 0=off(항상 ote_level). 국면 랩: 상승 국면은 얕은 되돌림 롱이 역선택(-96%),
+    # 0.786 깊이만 전/후반 동시 개선·흑자 전환(+94%). 조건부 적용 합계 +2816→+3006%.
+    origo_ote_up_level: float = Field(default=0.0, ge=0.0, le=0.95)
     # 2026-06-18 #CT-SL 국면별 동적 SL: 진입 시점 "방향 정합 추세"(signed_trend
     # = 진입직전 20봉 변화율 × 방향부호)가 ct_trend_threshold 미만 = 역추세(되돌림
     # 진입)이면 sl_dist_mult 대신 sl_dist_mult_ct 사용. 0=비활성(항상 sl_dist_mult).
@@ -434,6 +441,9 @@ class IctSettings(BaseSettings):
             # K=3/5 과차단). 파트너 승인 2026-07-07 ("3번 판단 그런식으로 적용").
             if self.origo_sweep_gate_days < 2:
                 self.origo_sweep_gate_days = 2
+            # #REGIME-OTE (Origo 1.7): 상승 국면 OTE 0.786 강제.
+            if self.origo_ote_up_level <= 0:
+                self.origo_ote_up_level = 0.786
             # #CT-SL: 역추세(되돌림) 진입은 x4 (robust). 순추세/횡보는 위 x3 유지.
             self.sl_dist_mult_ct = 4.0
             self.ct_trend_threshold = 0.0

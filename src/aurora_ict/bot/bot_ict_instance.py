@@ -371,6 +371,12 @@ class BotIctInstance:
     sweep_gate_days: int = 0
     # 스윕 게이트 일일 캐시 (day_key, block_short, block_long) — 일봉은 하루 단위.
     _sweep_gate_state: tuple | None = None
+    # #REGIME-OTE 2026-07-10 (Origo 1.7): 상승 국면(일봉 20일 z>0.75) 전용 OTE.
+    # 0=off. 국면 랩 검증 — 상승장 얕은 되돌림 롱은 역선택(-96%), 0.786 깊이만
+    # 전/후반 동시 개선(+94%). 조건부 적용 시 타국면 불변, 합계 +6.7%.
+    ote_up_level: float = 0.0
+    # 국면 일일 캐시 (day_key, is_up) — 일봉은 하루 단위로만 바뀜.
+    _regime_state: tuple | None = None
     # 2026-06-11 #EDGE-V2: SL 거리 배수 (1.0=원본). 백테스트 10국면 검증 —
     # 넓힐수록 스탑헌트 생존으로 단조 개선, x3.0 에서 BTC IN/OUT 흑자.
     # TP 는 원 RR 유지 비례 확장. risk sizing ON 이면 건당 손실(R) 불변.
@@ -944,7 +950,7 @@ class BotIctInstance:
             disable_time_filter=self.disable_time_filter,
             min_sl_distance_pct=self.min_sl_distance_pct,
             prefer_direction=ema_dir,
-            ote_level=self.ote_level,
+            ote_level=await self._effective_ote(),  # #REGIME-OTE 상승 국면 0.786
         )
 
         # 추세 평가 캐시 갱신 (현재는 로깅용, 향후 가중치 확장 여지).
@@ -2257,6 +2263,38 @@ class BotIctInstance:
             logger.warning(
                 "본전 잠금 실패 — 기존 SL 유지, 다음 step 재시도 (%s)", self.symbol,
             )
+
+    async def _regime_is_up(self) -> bool:
+        """#REGIME-OTE: 상승 국면 여부 — 일봉 20일 수익률 z > 0.75 (마감일 기준).
+
+        z = r20 / (일간수익률 20일 표준편차 × √20). 어제까지의 마감 일봉만 사용
+        (연구 분류기와 동일 — 후행 전용, lookahead 없음). 일일 캐시.
+        fetch/계산 실패 시 False (기본 OTE 유지, 보수).
+        """
+        day_key = time.strftime("%Y-%m-%d", time.gmtime())
+        st = self._regime_state
+        if st is not None and st[0] == day_key:
+            return st[1]
+        is_up = False
+        try:
+            d = await self._fetch_ohlcv_tf("1d", 30)
+            if d is not None and len(d) >= 23:
+                closes = d["close"].astype(float).iloc[:-1]  # 미완성 오늘 제외
+                ret = closes.pct_change()
+                sig = float(ret.iloc[-20:].std())
+                r20 = float(closes.iloc[-1] / closes.iloc[-21] - 1.0)
+                if sig > 0:
+                    is_up = (r20 / (sig * (20 ** 0.5))) > 0.75
+        except Exception as e:  # noqa: BLE001
+            logger.warning("국면 판정 1d 실패 — 기본 OTE 유지: %s", e)
+        self._regime_state = (day_key, is_up)
+        return is_up
+
+    async def _effective_ote(self) -> float:
+        """현재 국면에 맞는 OTE 깊이 — 상승 국면 & ote_up_level 설정 시 심화."""
+        if self.ote_up_level > 0 and await self._regime_is_up():
+            return self.ote_up_level
+        return self.ote_level
 
     async def _sweep_gate_blocked(self, direction: Direction) -> bool:
         """#SWEEP-GATE (Origo 1.5): 일봉 스윕-반전 후 K일 역방향 차단 판정.
