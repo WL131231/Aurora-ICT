@@ -54,7 +54,10 @@ PAIR_TTL_OVERRIDES: dict[str, int] = {"BTCUSDT": 3600}
 # 2026-07-10 Origo 1.7 = 1.6 + 국면 적응 OTE (#REGIME-OTE): 상승 국면(일봉 20일
 # z>0.75)만 OTE 0.786 — 국면 랩 3차 검증 (상승 버킷 -96→+94%, 전/후반 동시 개선,
 # 타국면 불변, 합계 +6.7%). 상승장 얕은 되돌림 롱 역선택의 처방.
-ORIGO_MODEL_NAME = "Origo 1.7"
+# 2026-07-10 Origo 1.8 = 1.7 + 리스크 레이어 (#RISK-LAYER): 일일 서킷브레이커
+# -15%(계정 실현손익, 당일 신규진입 중단) + DD 스로틀(낙폭>25% 시 리스크 x0.7).
+# 포트폴리오 복리 시뮬: 29.2x/MDD 80%/최악일 -30% (기준 23.9x/90%/-46%).
+ORIGO_MODEL_NAME = "Origo 1.8"
 # 2026-06-25 #CURSUS: 투트랙 2번째 봇 = Cursus(Dual SuperTrend 추세형, dual_st).
 # bot_trend_instance.CURSUS_MODEL_NAME 과 동일 문자열 유지(매매기록 model 태그 정합).
 CURSUS_MODEL_NAME = "Cursus 1.0"
@@ -285,6 +288,11 @@ class IctSettings(BaseSettings):
     # 0=off(항상 ote_level). 국면 랩: 상승 국면은 얕은 되돌림 롱이 역선택(-96%),
     # 0.786 깊이만 전/후반 동시 개선·흑자 전환(+94%). 조건부 적용 합계 +2816→+3006%.
     origo_ote_up_level: float = Field(default=0.0, ge=0.0, le=0.95)
+    # 2026-07-10 #DD-THROTTLE (Origo 1.8): 계좌 낙폭 > pct% 면 신규 진입 리스크
+    # ×factor. 포트폴리오 복리 시뮬 — 일일스탑15%와 조합 29.2x/MDD80%/최악일-30%
+    # (기준 23.9x/90%/-46%). 0=off.
+    origo_dd_throttle_pct: float = Field(default=0.0, ge=0.0, le=90.0)
+    origo_dd_throttle_factor: float = Field(default=0.7, gt=0.0, le=1.0)
     # 2026-06-18 #CT-SL 국면별 동적 SL: 진입 시점 "방향 정합 추세"(signed_trend
     # = 진입직전 20봉 변화율 × 방향부호)가 ct_trend_threshold 미만 = 역추세(되돌림
     # 진입)이면 sl_dist_mult 대신 sl_dist_mult_ct 사용. 0=비활성(항상 sl_dist_mult).
@@ -444,6 +452,13 @@ class IctSettings(BaseSettings):
             # #REGIME-OTE (Origo 1.7): 상승 국면 OTE 0.786 강제.
             if self.origo_ote_up_level <= 0:
                 self.origo_ote_up_level = 0.786
+            # #RISK-LAYER (Origo 1.8, 2026-07-10): 일일 서킷브레이커 + DD 스로틀.
+            # 일일 -15% 도달 시 당일 신규 진입 중단 (기존 #SAFETY-1 인프라 —
+            # 계정 전체 실현손익 기준. 사용자가 더 타이트(1~15)면 유지).
+            if self.daily_loss_limit_pct <= 0 or self.daily_loss_limit_pct > 15:
+                self.daily_loss_limit_pct = 15
+            if self.origo_dd_throttle_pct <= 0:
+                self.origo_dd_throttle_pct = 25.0
             # #CT-SL: 역추세(되돌림) 진입은 x4 (robust). 순추세/횡보는 위 x3 유지.
             self.sl_dist_mult_ct = 4.0
             self.ct_trend_threshold = 0.0

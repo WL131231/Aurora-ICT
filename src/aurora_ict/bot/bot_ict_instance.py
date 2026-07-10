@@ -377,6 +377,13 @@ class BotIctInstance:
     ote_up_level: float = 0.0
     # 국면 일일 캐시 (day_key, is_up) — 일봉은 하루 단위로만 바뀜.
     _regime_state: tuple | None = None
+    # #DD-THROTTLE 2026-07-10 (Origo 1.8): 계좌 낙폭 > pct% 면 신규 진입 리스크에
+    # factor 곱(anti-martingale). 0=off. 포트폴리오 복리 시뮬 — 일일스탑15%와
+    # 조합 시 29.2x/MDD 80%/최악일 -30% (기준 23.9x/90%/-46%). peak equity 는
+    # 사용자 데이터 폴더 json 으로 영속(재시작 생존). 입출금 시 왜곡 가능(보수 측).
+    dd_throttle_pct: float = 0.0
+    dd_throttle_factor: float = 0.7
+    _peak_equity: float = 0.0
     # 2026-06-11 #EDGE-V2: SL 거리 배수 (1.0=원본). 백테스트 10국면 검증 —
     # 넓힐수록 스탑헌트 생존으로 단조 개선, x3.0 에서 BTC IN/OUT 흑자.
     # TP 는 원 RR 유지 비례 확장. risk sizing ON 이면 건당 손실(R) 불변.
@@ -2264,6 +2271,43 @@ class BotIctInstance:
                 "본전 잠금 실패 — 기존 SL 유지, 다음 step 재시도 (%s)", self.symbol,
             )
 
+    def _peak_equity_path(self):
+        """peak equity 영속 파일 — 사용자 데이터 폴더 (심볼 공유, monotonic max)."""
+        if self.trades_data_dir is None:
+            return None
+        return Path(self.trades_data_dir) / "peak_equity.json"
+
+    def _dd_throttle_scale(self, equity: float) -> float:
+        """#DD-THROTTLE: 현재 낙폭이 임계 초과면 factor, 아니면 1.0.
+
+        peak 는 파일 영속(전 심볼 공유, 최대값만 갱신) — 재시작 생존. 파일 IO
+        실패는 메모리 peak 로 계속(보수). equity<=0 이면 스로틀 없음.
+        """
+        if self.dd_throttle_pct <= 0 or equity <= 0:
+            return 1.0
+        path = self._peak_equity_path()
+        if self._peak_equity <= 0 and path is not None and path.exists():
+            try:
+                self._peak_equity = float(
+                    json.loads(path.read_text(encoding="utf-8")).get("peak", 0.0))
+            except Exception:  # noqa: BLE001
+                pass
+        if equity > self._peak_equity:
+            self._peak_equity = equity
+            if path is not None:
+                try:
+                    path.write_text(json.dumps({"peak": equity}), encoding="utf-8")
+                except Exception:  # noqa: BLE001
+                    pass
+        dd = 1.0 - equity / self._peak_equity if self._peak_equity > 0 else 0.0
+        if dd > self.dd_throttle_pct / 100.0:
+            logger.info(
+                "DD 스로틀 발동 — 낙폭 %.1f%% > %.0f%%, 리스크 x%.1f (%s)",
+                dd * 100, self.dd_throttle_pct, self.dd_throttle_factor, self.symbol,
+            )
+            return self.dd_throttle_factor
+        return 1.0
+
     async def _regime_is_up(self) -> bool:
         """#REGIME-OTE: 상승 국면 여부 — 일봉 20일 수익률 z > 0.75 (마감일 기준).
 
@@ -3072,6 +3116,8 @@ class BotIctInstance:
             self.risk_per_trade_max,
         )
         risk_amount = equity * (risk_pct / 100.0)
+        # #DD-THROTTLE: 낙폭 구간 리스크 축소 (변동성 드래그 방어).
+        risk_amount *= self._dd_throttle_scale(equity)
         qty = risk_amount / sl_dist
         # over-leverage 상한 — 필요 notional 이 가용 마진×레버리지 한도를 못 넘게.
         max_notional = equity * self.leverage * (self.position_pct_max / 100.0)
