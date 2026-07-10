@@ -23,10 +23,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "LINKUSDT", "HYPEUSDT"]
 BT_NOTIONAL = 18.0  # 재생 net 기준 노셔널 (0.9×20)
-MULTS = [("시드90%×20배 (요청안, m=18)", 18.0),
-         ("시드45%×20배 (m=9)", 9.0),
-         ("현행 리스크6% 근사 (m≈3.6)", 3.6),
-         ("보수 (m=1.8)", 1.8)]
+MULTS = [("리스크 3% 근사 (m=1.8)", 1.8),
+         ("현행 리스크 6% 근사 (m=3.6)", 3.6),
+         ("리스크 8% 근사 (m=4.8)", 4.8),
+         ("리스크 10% 근사 (m=6.0)", 6.0),
+         ("리스크 12% 근사 (m=7.2)", 7.2)]
 BASE = dict(
     htf_ema_bias="align", htf_align_threshold=2, sl_liq_cap=True,
     min_confluence=5, sl_dist_mult=4.0, setup_stale_bars=3,
