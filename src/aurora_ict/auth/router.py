@@ -141,15 +141,18 @@ def create_auth_router(
 
     @router.post("/setup-pin")
     async def setup_pin(req: SetupPinRequest, response: Response) -> dict[str, object]:
-        """첫 PIN 설정 — code 없으면 referral 로 자동 생성, 있으면 PIN 채움.
+        """첫 PIN 설정 — **사전 등록된 코드만** PIN 을 채운다.
 
-        Why 자동 생성:
-            referral 모델은 "코드 받자마자 PIN 등록" 흐름 — 사전 DB 등록 없음.
-            sub_* 라이선스는 별도 발급 시 사전 row 생성됨 (이 path 로 PIN 만 채움).
+        #SEC 2026-07-13 (상용화 보안): 이전엔 미등록 코드도 referral 로 자동
+        생성했는데, 이 경우 아무나 임의 코드를 setup-pin 하여 (a) 정당 구매자의
+        코드를 선점·잠금 (b) 무한 referral 계정 생성(봇 슬롯 남용)이 가능했다.
+        파트너 정책(2026-07-13): 코드는 수작업 개별 발급 — 라이선스 봇이
+        ``/admin/user/license`` 로 사전 등록(pin_hash NULL)한 코드만 허용한다.
 
         실패 조건:
             - PIN ≠ pin_confirm → 400
             - PIN 강도 미달 → 400
+            - **등록되지 않은 코드 → 403** (자동 생성 안 함)
             - 이미 pin_hash 있는 사용자 → 400 (재설정 별도 flow 필요)
         """
         if req.pin != req.pin_confirm:
@@ -166,18 +169,12 @@ def create_auth_router(
 
         user = users_db.get_user_by_code(db_path, req.code)
         if user is None:
-            # 신규 사용자 — referral 기본 발급. sub_* 는 별도 관리 도구로 사전 등록.
-            try:
-                users_db.create_user(db_path, req.code, license_type="referral")
-            except sqlite3.IntegrityError as e:
-                # 거의 발생 X (위에서 None 확인) — race condition 방어.
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="이미 등록된 코드입니다.",
-                ) from e
-            user = users_db.get_user_by_code(db_path, req.code)
-            assert user is not None  # 방금 생성 → None 불가
-        elif user.get("pin_hash"):
+            # #SEC: 미등록 코드는 거부 — 자동 생성 금지 (라이선스 선점·계정 남용 차단).
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="등록되지 않았거나 사용할 수 없는 코드입니다.",
+            )
+        if user.get("pin_hash"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="이미 PIN 이 설정된 코드입니다 — 재설정은 별도 절차가 필요합니다.",

@@ -50,6 +50,17 @@ def _reset_sessions() -> Iterator[None]:
     pin.revoke_all_sessions()
 
 
+@pytest.fixture(autouse=True)
+def _prereg_codes(db_path) -> None:
+    """#SEC 2026-07-13: setup-pin 이 사전 등록 코드만 허용 — 레이트리밋 테스트가
+    쓰는 코드를 admin 발급 상태로 미리 심어 첫 호출이 200(생성) 되게 한다.
+    """
+    for _code in ("AICT-RATE-RATE-RATE", "AICT-PATH-PATH-PATH",
+                  "AICT-0Q8B-D1YU-VFRN"):
+        users_db.set_license(db_path, code=_code, license_type="sub_30d",
+                             expires_at=None)
+
+
 @pytest.fixture
 def mu(db_path, master_key) -> MultiUserBotManager:
     async def factory(_settings: IctSettings) -> Any:
