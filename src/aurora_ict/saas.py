@@ -292,7 +292,15 @@ def main() -> int:
     host = os.environ.get("AURORA_ICT_HOST", "0.0.0.0")  # noqa: S104 — 컨테이너 바인드 의도
     port = int(os.environ.get("AURORA_ICT_PORT", "8765"))
     logger.info("uvicorn 시작 — http://%s:%d", host, port)
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    # #DOS 2026-07-13: 인바운드 하드닝. keep-alive 짧게(slowloris 유휴 연결 회수),
+    # 동시 연결 상한(Fly hard_limit 200 보다 낮게 앱측에서도 방어 — 초과는 503),
+    # 헤더 읽기 타임아웃(느린 헤더 공격 차단). 환경변수로 조정 가능.
+    uvicorn.run(
+        app, host=host, port=port, log_level="info",
+        timeout_keep_alive=int(os.environ.get("AURORA_ICT_KEEPALIVE", "10")),
+        limit_concurrency=int(os.environ.get("AURORA_ICT_MAX_CONN", "180")),
+        timeout_graceful_shutdown=20,
+    )
     return 0
 
 

@@ -59,6 +59,9 @@ from aurora_ict.config.settings import (
 #   - 알트(BTC/ETH 외)는 변동성 커서 레버리지 15배 고정.
 MAX_PAIRS_PER_USER = 10
 MAX_CHOICE_PAIRS = 3  # 고정 7 외 사용자 자유 선택 상한
+# #DOS 2026-07-13: 단일 Fly 머신(8x/8GB) 전역 봇 슬롯 상한. 유저당 7~10봇이라
+# ~40 이면 4~5명 동시 풀가동. 상용화 확장 시 환경변수/머신 증설로 상향.
+MAX_TOTAL_BOTS = int(os.environ.get("AURORA_ICT_MAX_TOTAL_BOTS", "80"))
 _ALT_LEVERAGE = 15
 
 logger = logging.getLogger(__name__)
@@ -328,6 +331,18 @@ class MultiUserBotManager:
             if symbol in EXCLUDED_PAIRS:
                 raise ValueError(
                     f"'{symbol}' 는 수익성 검증에서 탈락해 제외된 페어입니다.",
+                )
+            # #DOS 2026-07-13: 전역 봇 슬롯 상한 — 단일 머신에서 총 봇 수가
+            # 이벤트루프/메모리를 굶기지 않게 admission control. per-user 상한만으론
+            # 사용자 수 × 10 이 무제한 → OOM. 초과 시 신규 슬롯 거부(기존은 유지).
+            if len(self._slots) >= MAX_TOTAL_BOTS:
+                logger.warning(
+                    "전역 봇 상한 %d 도달 — %s %s 신규 슬롯 거부",
+                    MAX_TOTAL_BOTS, user_code, symbol,
+                )
+                raise ValueError(
+                    "서버 전체 동시 가동 한도에 도달했습니다. "
+                    "잠시 후 다시 시도해 주세요.",
                 )
             if len(existing) >= MAX_PAIRS_PER_USER:
                 raise ValueError(
