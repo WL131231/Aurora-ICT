@@ -401,6 +401,12 @@ _RATE_LIMITED_PATHS = frozenset({"/auth/login", "/auth/setup-pin", "/admin/login
 _AUTH_RATE_MAX = 5
 _AUTH_RATE_WINDOW = 60.0
 
+# #DOS 2026-07-13: 차트 봉 요청 상한 — 무제한 limit 로 이벤트루프/메모리 고갈 방지.
+# UI 최대 표시량(수백~2천봉) 이상은 의미 없음. Query(le=)로 강제.
+_MAX_CHART_LIMIT = 2000
+# 요청 본문 최대 크기 — 매매 API 바디는 수백 byte. 대용량 POST 로 RAM 고갈 차단.
+_MAX_BODY_BYTES = 256 * 1024  # 256KB
+
 
 def _client_ip(request: Request) -> str:
     """rate limit 키용 클라이언트 IP — **스푸핑 불가능한 소스만** 신뢰.
@@ -482,6 +488,29 @@ def _register_multi_user_routes(
     from aurora_ict.auth.ratelimit import RateLimiter
 
     _auth_limiter = RateLimiter(max_hits=_AUTH_RATE_MAX, window_sec=_AUTH_RATE_WINDOW)
+
+    @app.middleware("http")
+    async def _body_size_limit_mw(request: Request, call_next):  # type: ignore[no-untyped-def]
+        """#DOS 2026-07-13: 요청 본문 상한 — 대용량 POST 로 RAM 고갈 차단.
+
+        매매 API 바디는 수백 byte 라 256KB 면 충분. Content-Length 선언 시 즉시
+        413 으로 거절(바디 읽기 전 차단). 헤더 없는 chunked 는 uvicorn 자체
+        한계에 맡긴다(드묾).
+        """
+        cl = request.headers.get("content-length")
+        if cl is not None:
+            try:
+                if int(cl) > _MAX_BODY_BYTES:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"detail": "요청 본문이 너무 큽니다."},
+                    )
+            except ValueError:
+                return JSONResponse(
+                    status_code=400,
+                    content={"detail": "잘못된 Content-Length."},
+                )
+        return await call_next(request)
 
     @app.middleware("http")
     async def _rate_limit_mw(request: Request, call_next):  # type: ignore[no-untyped-def]
@@ -2000,7 +2029,7 @@ def _register_multi_user_routes(
     async def get_markers_mu(
         symbol: str | None = None,
         timeframe: str | None = None,
-        limit: int = 1500,
+        limit: int = Query(1500, ge=1, le=_MAX_CHART_LIMIT),  # #DOS 상한
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
         """OHLCV 기반 chart markers — multi-user 사용자별.
@@ -2036,7 +2065,11 @@ def _register_multi_user_routes(
         df.index = pd.DatetimeIndex(pd.to_datetime(df["ts_ms"], unit="ms", utc=True))
         df = df[["open", "high", "low", "close", "volume"]]
         settings = _user_settings(user_code)
-        markers = to_chart_markers(
+        # #DOS 2026-07-13: 마커 계산(swing/FVG/OB/sweep, pandas)은 CPU 바운드 —
+        # 이벤트루프에서 직접 돌리면 다른 사용자 요청·봇 루프가 굶는다. ohlcv 와
+        # 동일하게 to_thread 로 분리.
+        markers = await asyncio.to_thread(
+            to_chart_markers,
             df,
             min_rr=settings.min_rr,
             fvg_min_size_pct=settings.fvg_min_size_pct,
@@ -2067,7 +2100,7 @@ def _register_multi_user_routes(
     async def get_ohlcv_mu(
         symbol: str | None = None,
         timeframe: str | None = None,
-        limit: int = 1500,
+        limit: int = Query(1500, ge=1, le=_MAX_CHART_LIMIT),  # #DOS 상한
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
         """OHLCV 봉 — multi-user 사용자별 (bot prefetch cache 활용).
