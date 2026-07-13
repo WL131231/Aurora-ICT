@@ -52,6 +52,23 @@ def _reset_sessions() -> Iterator[None]:
     pin.revoke_all_sessions()
 
 
+@pytest.fixture(autouse=True)
+def _prereg_codes(db_path) -> None:
+    """#SEC 2026-07-13: setup-pin 이 사전 등록 코드만 허용 — happy-path 테스트
+    코드를 admin 발급 상태로 미리 심는다. GHOST(미등록 거부 테스트)는 제외.
+    """
+    for _code in (
+        "AICT-AUTH-AUTH-AUTH", "AICT-DUPE-DUPE-DUPE", "AICT-HTTP-ONLY-XXXX",
+        "AICT-KEYS-KEYS-KEYS", "AICT-LOGN-LOGN-LOGN", "AICT-LOUT-LOUT-LOUT",
+        "AICT-MISM-MISM-MISM", "AICT-NEW1-NEW1-NEW1", "AICT-NONE-NONE-NONE",
+        "AICT-OTHR-OTHR-OTHR", "AICT-REFR-REFR-REFR",
+        "AICT-USR1-USR1-USR1", "AICT-USR2-USR2-USR2", "AICT-VRSN-VRSN-VRSN",
+        "AICT-WEAK-WEAK-WEAK", "AICT-WRNG-WRNG-WRNG",
+    ):
+        users_db.set_license(db_path, code=_code, license_type="referral",
+                             expires_at=None)
+
+
 @pytest.fixture
 def app(db_path, master_key) -> FastAPI:
     """auth router 만 포함한 최소 FastAPI app."""
@@ -72,8 +89,11 @@ def client(app) -> TestClient:
 # ============================================================
 
 
-def test_setup_pin_creates_user_and_session(client: TestClient, db_path) -> None:
-    """setup-pin — 새 코드면 자동 생성 + PIN 해시 저장 + 세션 cookie 발급."""
+def test_setup_pin_prereg_code_sets_pin_and_session(client: TestClient, db_path) -> None:
+    """setup-pin — #SEC: 사전 등록된 코드만 PIN 설정 + 세션 cookie 발급."""
+    # admin 이 라이선스 봇으로 사전 등록한 상태 재현 (pin_hash NULL).
+    users_db.set_license(db_path, code="AICT-NEW1-NEW1-NEW1",
+                         license_type="sub_30d", expires_at=None)
     resp = client.post(
         "/auth/setup-pin",
         json={
@@ -86,7 +106,6 @@ def test_setup_pin_creates_user_and_session(client: TestClient, db_path) -> None
     body = resp.json()
     assert body["ok"] is True
     assert body["code"] == "AICT-NEW1-NEW1-NEW1"
-    assert body["license_type"] == "referral"
 
     # 세션 cookie 박힘 확인 (TestClient 가 자동 보관).
     assert SESSION_COOKIE_NAME in client.cookies
@@ -97,6 +116,21 @@ def test_setup_pin_creates_user_and_session(client: TestClient, db_path) -> None
     assert user["pin_hash"] is not None
     assert user["pin_hash"].startswith("pbkdf2_sha256$")
     assert "Aa1!aaaa" not in user["pin_hash"]  # 평문 절대 저장 X
+
+
+def test_setup_pin_unregistered_code_403(client: TestClient, db_path) -> None:
+    """setup-pin — #SEC: 미등록 코드는 거부(403), 자동 생성 안 함(라이선스 선점 차단)."""
+    resp = client.post(
+        "/auth/setup-pin",
+        json={
+            "code": "AICT-GHOST-GHOST-X",
+            "pin": "Aa1!aaaa",
+            "pin_confirm": "Aa1!aaaa",
+        },
+    )
+    assert resp.status_code == 403
+    # DB 에 아무 row 도 생성되지 않음.
+    assert users_db.get_user_by_code(db_path, "AICT-GHOST-GHOST-X") is None
 
 
 def test_setup_pin_mismatch_confirm_400(client: TestClient) -> None:
@@ -129,8 +163,10 @@ def test_setup_pin_weak_pin_400(client: TestClient) -> None:
     assert detail["code"] in ("no_digit", "no_special")
 
 
-def test_setup_pin_existing_pin_rejects(client: TestClient) -> None:
+def test_setup_pin_existing_pin_rejects(client: TestClient, db_path) -> None:
     """setup-pin — 이미 PIN 있는 코드는 재설정 거부 (별도 flow)."""
+    users_db.set_license(db_path, code="AICT-DUPE-DUPE-DUPE",
+                         license_type="sub_30d", expires_at=None)
     client.post(
         "/auth/setup-pin",
         json={

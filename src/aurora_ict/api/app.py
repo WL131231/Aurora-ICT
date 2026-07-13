@@ -403,17 +403,18 @@ _AUTH_RATE_WINDOW = 60.0
 
 
 def _client_ip(request: Request) -> str:
-    """프록시(Fly) 뒤 실제 클라이언트 IP 추출 — rate limit 키 용도.
+    """rate limit 키용 클라이언트 IP — **스푸핑 불가능한 소스만** 신뢰.
 
-    Fly.io 는 ``Fly-Client-IP`` 헤더로 원 IP 를 전달한다. 없으면
-    ``X-Forwarded-For`` 첫 항목, 그것도 없으면 소켓 peer 로 폴백한다.
+    #SEC 2026-07-13 (상용화 보안): 이전엔 ``X-Forwarded-For`` 첫 항목을
+    폴백으로 신뢰했는데, XFF 첫 홉은 클라이언트가 임의 삽입 가능하다 —
+    공격자가 헤더를 매 요청 회전시켜 로그인/PIN 레이트리밋을 무한 우회했다.
+    Fly.io 프록시는 ``Fly-Client-IP`` 를 엣지 관측 IP 로 **덮어쓰므로**
+    (클라이언트 값 무시) 신뢰 가능하다. 그 외엔 소켓 peer 로만 폴백하고
+    XFF 는 rate limit 키로 쓰지 않는다.
     """
     fly_ip = request.headers.get("fly-client-ip")
     if fly_ip:
         return fly_ip.strip()
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
 

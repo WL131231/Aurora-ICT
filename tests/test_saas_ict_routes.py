@@ -154,6 +154,22 @@ def _reset_sessions() -> Iterator[None]:
     pin.revoke_all_sessions()
 
 
+@pytest.fixture(autouse=True)
+def _prereg_codes(db_path) -> None:
+    """#SEC 2026-07-13: setup-pin 이 사전 등록 코드만 허용하므로, 이 모듈이
+    쓰는 테스트 코드들을 admin 발급(set_license) 상태로 미리 심는다.
+    (라이선스 봇의 /admin/user/license pre-insert 재현.)
+    """
+    for _code in (
+        "AICT-SAAS-SAAS-SAAS", "AICT-POLL-POLL-POLL", "AICT-MULT-MULT-MULT",
+        "AICT-ALLS-ALLS-ALLS", "AICT-APOS-APOS-APOS", "AICT-CLOS-CLOS-CLOS",
+        "AICT-BKFL-BKFL-BKFL", "AICT-RDCO-RDCO-RDCO", "AICT-FLAT-FLAT-FLAT",
+        "AICT-MU01-MU01-MU01", "AICT-MU02-MU02-MU02",
+    ):
+        users_db.set_license(db_path, code=_code, license_type="referral",
+                             expires_at=None)
+
+
 @pytest.fixture
 def created_clients() -> list[FakeExchangeClient]:
     return []
