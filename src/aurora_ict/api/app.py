@@ -402,8 +402,12 @@ _AUTH_RATE_MAX = 5
 _AUTH_RATE_WINDOW = 60.0
 
 # #DOS 2026-07-13: 차트 봉 요청 상한 — 무제한 limit 로 이벤트루프/메모리 고갈 방지.
-# UI 최대 표시량(수백~2천봉) 이상은 의미 없음. Query(le=)로 강제.
-_MAX_CHART_LIMIT = 2000
+# 2026-07-13 hotfix: 두 엔드포인트 성격이 달라 캡 분리.
+#  - markers: 지표계산(swing/FVG/OB, CPU 바운드) — UI 요청 2000, 여유 5000.
+#  - ohlcv: 캔들 표시(가벼운 변환, to_thread) — UI 가 60000봉 요청 → 100000 캡.
+# 둘 다 백만봉급 공격(limit=1000000)은 차단하면서 실 UI 는 통과.
+_MAX_MARKERS_LIMIT = 5000
+_MAX_OHLCV_LIMIT = 100000
 # 요청 본문 최대 크기 — 매매 API 바디는 수백 byte. 대용량 POST 로 RAM 고갈 차단.
 _MAX_BODY_BYTES = 256 * 1024  # 256KB
 
@@ -2029,7 +2033,7 @@ def _register_multi_user_routes(
     async def get_markers_mu(
         symbol: str | None = None,
         timeframe: str | None = None,
-        limit: int = Query(1500, ge=1, le=_MAX_CHART_LIMIT),  # #DOS 상한
+        limit: int = Query(1500, ge=1, le=_MAX_MARKERS_LIMIT),  # #DOS 상한
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
         """OHLCV 기반 chart markers — multi-user 사용자별.
@@ -2100,7 +2104,7 @@ def _register_multi_user_routes(
     async def get_ohlcv_mu(
         symbol: str | None = None,
         timeframe: str | None = None,
-        limit: int = Query(1500, ge=1, le=_MAX_CHART_LIMIT),  # #DOS 상한
+        limit: int = Query(1500, ge=1, le=_MAX_OHLCV_LIMIT),  # #DOS 상한
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
         """OHLCV 봉 — multi-user 사용자별 (bot prefetch cache 활용).

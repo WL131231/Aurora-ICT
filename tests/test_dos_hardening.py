@@ -90,13 +90,16 @@ def test_normal_body_passes(client: TestClient) -> None:
 
 
 def test_chart_limit_capped_422(client: TestClient) -> None:
-    """차트 limit 이 상한 초과면 422 (Query le 검증)."""
-    # 인증 없이도 Query 검증이 먼저 걸리는지 — require_auth 이전에 422 일 수도,
-    # 401 일 수도 있으나 200(무제한 처리)은 절대 아니어야 한다.
-    resp = client.get("/ict/ohlcv?limit=1000000")
-    assert resp.status_code in (401, 422)
-    resp2 = client.get("/ict/markers?limit=999999")
-    assert resp2.status_code in (401, 422)
+    """차트 limit 이 상한 초과면 422 — 백만봉급 공격은 차단, 실 UI 값은 통과.
+
+    ohlcv 캡 100000(UI 60000봉 요청 수용), markers 캡 5000(지표계산 CPU).
+    """
+    # 백만봉급(공격)은 422.
+    assert client.get("/ict/ohlcv?limit=1000000").status_code in (401, 422)
+    assert client.get("/ict/markers?limit=999999").status_code in (401, 422)
+    # 실 UI 요청값(ohlcv 60000, markers 2000)은 422 아님(미인증이라 401 은 가능).
+    assert client.get("/ict/ohlcv?limit=60000").status_code != 422
+    assert client.get("/ict/markers?limit=2000").status_code != 422
 
 
 @pytest.mark.asyncio
