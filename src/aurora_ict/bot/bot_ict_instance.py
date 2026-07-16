@@ -68,7 +68,11 @@ from aurora_ict.strategy.multi_tf_bias import (
 )
 from aurora_ict.strategy.silver_bullet import Direction, SilverBulletSetup
 from aurora_ict.strategy.trend_state import TrendState, evaluate_trend
-from aurora_ict.timing.killzone import classify_killzone, in_trade_window_sub
+from aurora_ict.timing.killzone import (
+    KillzoneName,
+    classify_killzone,
+    in_trade_window_sub,
+)
 from aurora_ict.timing.power_of_3 import AmdPhase, amd_phase
 
 logger = logging.getLogger(__name__)
@@ -299,6 +303,12 @@ class BotIctInstance:
     expand_to_killzone: bool = True
     # 24h 매매 — True 면 SB / Killzone 시간 필터 완전 skip. expand_to_killzone 보다 우선.
     disable_time_filter: bool = True
+    # #NYPM-GATE 2026-07-16 (FST#5): NY_PM(NY 13:30-16:00 = 02-05 KST) 진입 차단.
+    # 근거=삼중검증: 라이브 진입기준 승률 10%/-29(1.8 손실 81%), 5년 백테 7/7페어
+    # 음수(제외 시 +4.3%→+17.7%), 6/24 킬존연구 NY_PM 최악. NY_PM 은 정통 ICT 상
+    # reversal 구간이라 추세추종형 Origo 와 상충. disable_time_filter(24h)·구독
+    # 두 티어 모두 적용 (24h 라도 NY_PM 만은 예외 차단).
+    exclude_nypm: bool = True
 
     # Multi-TF 모드 — True 면 HTF (Trade TF 위 모든 단계) setup 추적 + LTF (Trade TF)
     # 에서 retrace + structure shift + FVG confirm 시 진입. ICT 정통 multi-TF framework.
@@ -996,6 +1006,22 @@ class BotIctInstance:
             else str(signal.setup.source),
             signal.setup.window,
         )
+
+        # #NYPM-GATE 2026-07-16 (FST#5): NY_PM(NY 13:30-16:00 = 02-05 KST) 진입 차단.
+        # 위 killzone 게이트와 달리 disable_time_filter(24h)·구독 두 티어 모두 적용.
+        # NY_PM 은 정통 ICT reversal 구간 — 추세추종 Origo 는 여기서 삼중검증 음수
+        # (라이브 승률 10%/-29·5년 백테 7/7 페어 음수·6/24 킬존연구 최악). 진입 '시점'
+        # 기준(진입이 NY_PM 에 걸릴 때만 차단, 셋업 생성 시점 무관).
+        if self.exclude_nypm:
+            last_ts_ms = int(df.index[-1].value // 10**6)
+            if classify_killzone(last_ts_ms) is KillzoneName.PM:
+                logger.info(
+                    "진입 skip — NY_PM 차단 (#NYPM-GATE, setup window=%s)",
+                    signal.setup.window,
+                )
+                self._record_shadow(signal.setup, "nypm_skip")
+                self._remember_setup(signal.setup)
+                return signal
 
         # #KZ-ENTRY 2026-06-06 (파트너 신고): 진입 '시점' 킬존 게이트 — sub_*
         # (disable_time_filter=False) 한정. silver_bullet 의 시간 필터는 FVG '생성

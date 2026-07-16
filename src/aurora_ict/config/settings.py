@@ -57,7 +57,11 @@ PAIR_TTL_OVERRIDES: dict[str, int] = {"BTCUSDT": 3600}
 # 2026-07-10 Origo 1.8 = 1.7 + 리스크 레이어 (#RISK-LAYER): 일일 서킷브레이커
 # -15%(계정 실현손익, 당일 신규진입 중단) + DD 스로틀(낙폭>25% 시 리스크 x0.7).
 # 포트폴리오 복리 시뮬: 29.2x/MDD 80%/최악일 -30% (기준 23.9x/90%/-46%).
-ORIGO_MODEL_NAME = "Origo 1.8"
+# 2026-07-16 Origo 1.9 = 1.8 + NY_PM 진입 차단 (#NYPM-GATE, FST#5). NY_PM
+# (NY 13:30-16:00 = 02-05 KST)은 삼중검증 최악: 라이브 진입기준 승률 10%/-29
+# (1.8 손실 81%), 5년 백테 7/7 페어 음수(제외 시 +4.3%→+17.7%), 6/24 킬존연구
+# 최악. 정통 ICT reversal 구간이라 추세추종 Origo 와 상충. 두 티어 모두 적용.
+ORIGO_MODEL_NAME = "Origo 1.9"
 # 2026-06-25 #CURSUS: 투트랙 2번째 봇 = Cursus(Dual SuperTrend 추세형, dual_st).
 # bot_trend_instance.CURSUS_MODEL_NAME 과 동일 문자열 유지(매매기록 model 태그 정합).
 CURSUS_MODEL_NAME = "Cursus 1.0"
