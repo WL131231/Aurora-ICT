@@ -347,6 +347,11 @@ class BotIctInstance:
     # regime_rolling_enabled: 횡보 floor 를 롤링 33분위로(표본>=REGIME_ROLLING_MIN).
     # False 면 페어별 q33 하드코딩 고정. 표본 부족(초기)이면 자동 하드코딩 fallback.
     regime_rolling_enabled: bool = True
+    # #COND-ALIGN 2026-07-17 (Origo 2.0): 조건부 방향정합 게이트. 약/중추세에선
+    # 진입방향이 20봉 추세와 정합일 때만, 강추세(|trend|>=q70)면 반전도 허용.
+    # regime_filter(q33 크기 회피)와 직교(방향 규율). 극톱질 역추세진입(-1.0) 제거,
+    # 5년 net +17.7→+21.3, walk-forward robust. STRONG_TREND_FLOOR fallback.
+    cond_align_enabled: bool = True
     # partial_tp_exchange: 진입 시 거래소에 TP 2개(1.5R 50%+swing 50%) Partial 등록 →
     # 봇 폴링(_maybe_partial_exit) 대체. ⚠️ Bybit Partial SL/TP 모드·tpSize 동작 소액
     # 실측 전엔 OFF(미배포). True 면 _setup_partial_tps 사용 + 폴링 분할 skip.
@@ -356,6 +361,12 @@ class BotIctInstance:
     REGIME_TREND_FLOOR: ClassVar[dict[str, float]] = {
         "BTCUSDT": 0.230, "ETHUSDT": 0.268, "SOLUSDT": 0.396, "XRPUSDT": 0.271,
         "DOGEUSDT": 0.275, "LINKUSDT": 0.315, "HYPEUSDT": 0.527,
+    }
+    # STRONG_TREND_FLOOR: 페어별 |진입추세%| 상위30%(q70) — 이상이면 강추세로 보고
+    # cond_align 에서 반전(역추세) 진입 허용. 2026-07-17 백테 7페어 q70 값(NY_PM 제외).
+    STRONG_TREND_FLOOR: ClassVar[dict[str, float]] = {
+        "BTCUSDT": 0.401, "ETHUSDT": 0.365, "SOLUSDT": 0.598, "XRPUSDT": 0.381,
+        "DOGEUSDT": 0.721, "LINKUSDT": 1.036, "HYPEUSDT": 0.924,
     }
     # partial_tp_rr: 분할익절 — TP1(이익 partial_tp_rr×R) 도달 시 50% reduce_only 청산.
     # 0=off. partial_be=True 면 부분익절 후 나머지 50% SL 을 본전으로(무손실 보호).
@@ -1109,6 +1120,29 @@ class BotIctInstance:
                     signal.setup.direction.value, signal.setup.window,
                 )
                 self._record_shadow(signal.setup, "regime_skip")
+                self._remember_setup(signal.setup)
+                return signal
+
+        # #COND-ALIGN 2026-07-17 (Origo 2.0, FST#6): 조건부 방향정합 게이트.
+        # 약/중추세(|trend| < 강추세 floor q70)에선 진입이 20봉 추세와 정합(같은
+        # 방향)일 때만 허용. 강추세(|trend| >= q70)면 반전(터틀수프)도 허용 — 진짜
+        # 추세선 역추세 진입이 흑자(+1.5)라 살림. 근거: 극톱질서 역추세 진입만 -1.0,
+        # cond_align 이 5년 net +17.7→+21.3(라이브게이트 위 +15.8→+19.0), walk-forward
+        # 양반기 robust, 거래 ~22%↓. regime_filter(q33 크기) 와 직교(방향 축).
+        if self.cond_align_enabled:
+            sign = 1.0 if signal.setup.direction is Direction.LONG else -1.0
+            signed_trend = signal.setup.entry_trend_pct * sign
+            strong = self._strong_trend_floor()  # 롤링 q70 or 하드코딩 fallback
+            mag = abs(signal.setup.entry_trend_pct)
+            # signed<0 만 역추세로 차단. signed==0(무추세/데이터부족)은 순추세 취급
+            # (기존 #CT-SL 과 일관) → 통과. 연속 백테선 measure-0 이라 결과 불변.
+            if strong > 0 and mag < strong and signed_trend < 0:
+                logger.info(
+                    "역추세 촙 skip — |trend|=%.3f<강추세%.3f & 역추세 (%s %s)",
+                    mag, strong,
+                    signal.setup.direction.value, signal.setup.window,
+                )
+                self._record_shadow(signal.setup, "cond_align_skip")
                 self._remember_setup(signal.setup)
                 return signal
         # B+ 등급 게이트 (#1/#8) — HTF boost 까지 반영된 최종 score 가 기준 미만이면 skip.
@@ -2753,6 +2787,18 @@ class BotIctInstance:
             vals = sorted(self._trend_history)
             return vals[len(vals) // 3]  # 하위 33분위 (백테 q33 동일 방식)
         return self.REGIME_TREND_FLOOR.get(self.symbol, 0.0)
+
+    def _strong_trend_floor(self) -> float:
+        """cond_align 강추세 임계 — 롤링 70분위 또는 페어별 q70 하드코딩 fallback.
+
+        _regime_floor 와 같은 _trend_history 재사용(추가 계산 0). 표본 충분하면
+        실시간 70분위(페어 변동성 자동 적응), 부족하면 STRONG_TREND_FLOOR 하드코딩.
+        미등록 페어는 0 → cond_align 게이트 off(강추세 판정 불가 시 안전).
+        """
+        if self.regime_rolling_enabled and len(self._trend_history) >= REGIME_ROLLING_MIN:
+            vals = sorted(self._trend_history)
+            return vals[int(len(vals) * 0.7)]  # 상위30% 경계 (백테 q70 동일)
+        return self.STRONG_TREND_FLOOR.get(self.symbol, 0.0)
 
     def _calc_tp1(self, entry: float, stop_loss: float, direction: Direction) -> float:
         """분할익절 TP1(partial_tp_rr×R) 가격 — 진입 시점 risk 기준(이후 trail 무관).
