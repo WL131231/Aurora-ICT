@@ -75,6 +75,7 @@ class SetupSource(StrEnum):
     MITIGATION_BLOCK = "mitigation_block"   # mitigated OB 의 2차 retest
     IMPLIED_FVG = "implied_fvg"     # body gap (wick overlap)
     REJECTION_BLOCK = "rejection_block"     # wick 정밀 진입 zone
+    MMBM = "mmbm"                   # #FST7 마켓메이커 매수/매도 모델 — HTF정합 반전 셋업
 
 
 @dataclass(slots=True)
