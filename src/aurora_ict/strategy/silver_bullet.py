@@ -118,6 +118,10 @@ class SilverBulletSetup:
     # 2026-06-18 #CT-SL: 진입 직전 20봉 방향정합 추세(%). bot 이 진입 시 채워 넣고,
     # 역추세(<ct_trend_threshold)면 SL 거리 배수를 sl_dist_mult_ct(x4)로 전환.
     entry_trend_pct: float = 0.0
+    # 2026-07-20 #SMART-SIZE: 품질(볼륨+NW중심선+RSI 정합, 0~3) 기반 사이즈 배수.
+    # bot 이 진입 시 채워 넣고 _calc_qty 가 risk_amount 에 곱한다. 좋은 품질=자금↑.
+    # 기본 1.0(중립). 백테 walk-forward robust(net/MDD +10%, 양 반기 개선).
+    smart_size_scale: float = 1.0
     # LuxAlgo Silver Bullet "Strict" mode — FVG 가 mean threshold 까지 retrace 됐는지.
     # entry limit 가 FVG mean 인데, 가격이 그 raw 까지 실제로 닿았는지 확인.
     # True → active setup (entry 가능). False → retrace 미발생 (대기 또는 skip).

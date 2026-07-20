@@ -67,7 +67,11 @@ PAIR_TTL_OVERRIDES: dict[str, int] = {"BTCUSDT": 3600}
 # 미터 전 조합 base 못이김 — 유일 검증개선이 cond_align(역추세 촙진입만 제거).
 # 5년 net +17.7→+21.3(라이브게이트 위 +15.8→+19.0), walk-forward 양반기 robust,
 # 거래 ~22%↓·승률↑. regime_filter(q33 크기)와 직교(방향 규율).
-ORIGO_MODEL_NAME = "Origo 2.0"
+# 2026-07-20 Origo 2.1 = 2.0 + 품질 기반 자금배분 (#SMART-SIZE, FST#7). 진입 시
+# 볼륨·Nadaraya-Watson 중심선·RSI 3신호 정합점수(0~3)로 사이즈 배수 clip(0.7+q*0.2,
+# 0.4,1.4). LuxAlgo 지표계열 대입 결과 유일 walk-forward robust(net/MDD 4.24→4.68,
+# 양반기 개선). 거래 필터 아닌 배분이라 빈도 불변. 변동성타겟팅은 인과조건 비robust 제외.
+ORIGO_MODEL_NAME = "Origo 2.1"
 # 2026-06-25 #CURSUS: 투트랙 2번째 봇 = Cursus(Dual SuperTrend 추세형, dual_st).
 # bot_trend_instance.CURSUS_MODEL_NAME 과 동일 문자열 유지(매매기록 model 태그 정합).
 CURSUS_MODEL_NAME = "Cursus 1.0"
