@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Protocol
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 from ccxt.base.errors import AuthenticationError
 
@@ -309,6 +310,12 @@ class BotIctInstance:
     # reversal 구간이라 추세추종형 Origo 와 상충. disable_time_filter(24h)·구독
     # 두 티어 모두 적용 (24h 라도 NY_PM 만은 예외 차단).
     exclude_nypm: bool = True
+    # #SMART-SIZE 2026-07-20 (FST#7): 품질 기반 자금배분. 진입 시 볼륨(20봉평균↑)·
+    # Nadaraya-Watson 중심선 정합·RSI 방향정합 3신호로 품질점수(0~3) → 사이즈 배수
+    # clip(0.7+q*0.2, 0.4, 1.4). 좋은 품질=자금↑, 나쁨=자금↓. LuxAlgo 신호계열 대입
+    # 결과 유일 walk-forward robust(net/MDD 4.24→4.68, 양반기 개선). 변동성타겟팅은
+    # 인과조건서 비robust라 제외. 거래 필터 아닌 배분이라 빈도 불변.
+    smart_size_enabled: bool = True
 
     # Multi-TF 모드 — True 면 HTF (Trade TF 위 모든 단계) setup 추적 + LTF (Trade TF)
     # 에서 retrace + structure shift + FVG confirm 시 진입. ICT 정통 multi-TF framework.
@@ -1105,6 +1112,7 @@ class BotIctInstance:
         # #CT-SL 2026-06-18: 진입 직전 20봉 방향정합 추세 기록 → _execute_setup 이
         # 역추세면 SL 배수를 sl_dist_mult_ct(x4)로 전환 (confluence·게이트엔 영향 0).
         self._set_entry_trend(signal.setup, df)
+        self._set_smart_size(signal.setup, df)  # #SMART-SIZE 품질 기반 자금배분
         # #REGIME 2026-06-23: 횡보 국면 회피 게이트 — 진입 직전 추세(|entry_trend_pct|)가
         # 페어별 floor(q33) 미만이면 진입 skip. 안정형 하이브리드 연구: 횡보 국면은 모든
         # TP 가 적자라 "대처 아닌 회피"가 답(회피가 net 흑자의 필수조건). _set_entry_trend
@@ -3051,6 +3059,52 @@ class BotIctInstance:
             if past > 0:
                 setup.entry_trend_pct = (float(closes.iloc[-1]) - past) / past * 100.0
 
+    def _set_smart_size(self, setup: SilverBulletSetup, df: pd.DataFrame) -> None:
+        """#SMART-SIZE 2026-07-20 (FST#7): 품질 기반 사이즈 배수 계산·기록.
+
+        LuxAlgo 신호계열 대입 결과 유일 walk-forward robust 한 처방. 진입 품질을
+        3신호로 점수화(0~3) 후 사이즈 배수로 변환 — _calc_qty 가 risk_amount 에 곱함.
+        거래를 거르는 게 아니라(빈도 불변) 좋은 진입에 자금을 더 배분한다.
+
+        품질 신호 (진입 방향과 정합 시 +1):
+            - 볼륨: 진입봉 거래량 >= 최근 20봉 평균 (거래 관심 확인)
+            - Nadaraya-Watson 중심선: 가우시안 커널 회귀 중심 대비 가격 위치 정합
+              (롱=중심 위 / 숏=중심 아래 — 추세 방향 확인)
+            - RSI(14): 방향 정합 (롱=RSI>50 / 숏=RSI<50 — 모멘텀 확인)
+        배수 = clip(0.7 + q*0.2, 0.4, 1.4). q 평균 1.5 면 배수 ~1.0(중립).
+
+        Args:
+            setup: 대상 setup. smart_size_scale 를 in-place 기록.
+            df: 5m OHLCV. 데이터 부족(<50봉)이면 1.0 유지(중립).
+        """
+        if not self.smart_size_enabled or len(df) < 50:
+            return
+        c = df["close"].to_numpy()
+        v = df["volume"].to_numpy()
+        is_long = setup.direction is Direction.LONG
+
+        # 1) 볼륨 정합 — 진입봉 vs 최근 20봉 평균.
+        vol_ma = float(v[-20:].mean())
+        vol_ok = vol_ma > 0 and float(v[-1]) >= vol_ma
+
+        # 2) Nadaraya-Watson 중심선(가우시안 커널, bw=8, 최근 50봉) 대비 위치.
+        win = min(50, len(c))
+        seg = c[-win:]
+        idx = np.arange(win)
+        w = np.exp(-((win - 1 - idx) ** 2) / (2 * 8.0 ** 2))  # 최신봉 기준 가중
+        nw_center = float(np.sum(seg * w) / np.sum(w))
+        nw_ok = (float(c[-1]) > nw_center) == is_long
+
+        # 3) RSI(14) 방향 정합.
+        d = np.diff(c[-15:])
+        up = float(np.sum(np.where(d > 0, d, 0.0)))
+        dn = float(np.sum(np.where(d < 0, -d, 0.0)))
+        rsi = 100.0 - 100.0 / (1.0 + up / (dn + 1e-9))
+        rsi_ok = (rsi > 50) == is_long
+
+        q = int(vol_ok) + int(nw_ok) + int(rsi_ok)
+        setup.smart_size_scale = float(np.clip(0.7 + q * 0.2, 0.4, 1.4))
+
     def _apply_cisd_boost(self, setup: SilverBulletSetup, df: pd.DataFrame) -> None:
         """CISD(Change in State of Delivery) 순응 시 confluence +1 (#CISD 2026-06-06).
 
@@ -3190,6 +3244,11 @@ class BotIctInstance:
         risk_amount = equity * (risk_pct / 100.0)
         # #DD-THROTTLE: 낙폭 구간 리스크 축소 (변동성 드래그 방어).
         risk_amount *= self._dd_throttle_scale(equity)
+        # #SMART-SIZE: 진입 품질(볼륨·NW·RSI) 배수 — 좋은 진입 자금↑ (기본 1.0 중립).
+        # 실수일 때만 적용 (테스트 mock setup 방어 — round_amount 와 동일 패턴).
+        _ss = getattr(setup, "smart_size_scale", 1.0)
+        if isinstance(_ss, (int, float)) and not isinstance(_ss, bool):
+            risk_amount *= _ss
         qty = risk_amount / sl_dist
         # over-leverage 상한 — 필요 notional 이 가용 마진×레버리지 한도를 못 넘게.
         max_notional = equity * self.leverage * (self.position_pct_max / 100.0)
@@ -3216,6 +3275,9 @@ class BotIctInstance:
                 self.position_pct_max,
             )
             margin = equity * (pct / 100.0)
+            _ss = getattr(setup, "smart_size_scale", 1.0)  # #SMART-SIZE (mock 방어)
+            if isinstance(_ss, (int, float)) and not isinstance(_ss, bool):
+                margin *= _ss
             notional = margin * self.leverage
             qty = notional / setup.entry
         # 페어 확장 — 거래소 lot step 에 맞춰 qty 정렬(심볼별 precision). 미지원
