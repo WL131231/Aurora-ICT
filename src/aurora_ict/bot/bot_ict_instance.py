@@ -62,12 +62,17 @@ from aurora_ict.strategy.ltf_entry_confirmer import (
     ConfirmedEntry,
     confirm_ltf_entry,
 )
+from aurora_ict.strategy.mmbm import detect_mmbm_setup
 from aurora_ict.strategy.multi_tf_bias import (
     combine_bias,
     compute_bias_from_df,
     htf_pair,
 )
-from aurora_ict.strategy.silver_bullet import Direction, SilverBulletSetup
+from aurora_ict.strategy.silver_bullet import (
+    Direction,
+    SetupSource,
+    SilverBulletSetup,
+)
 from aurora_ict.strategy.trend_state import TrendState, evaluate_trend
 from aurora_ict.timing.killzone import (
     KillzoneName,
@@ -316,6 +321,12 @@ class BotIctInstance:
     # 결과 유일 walk-forward robust(net/MDD 4.24→4.68, 양반기 개선). 변동성타겟팅은
     # 인과조건서 비robust라 제외. 거래 필터 아닌 배분이라 빈도 불변.
     smart_size_enabled: bool = True
+    # #MMBM 2026-07-21 (FST#7): 마켓메이커 반전 모델을 2번째 진입으로 병렬 가동.
+    # SB(Silver Bullet) 셋업 없을 때만 시도 — HTF정합 방향 discount/premium 반전
+    # (CHoCH). 자체 조건으로 검증돼 SB 게이트는 우회하되 _execute_setup 의 리스크
+    # 레이어(서킷브레이커·일일한도·사이징·DD스로틀·maker 지정가) 는 공유. 매매기록
+    # model 태그로 SB 와 분리 실측. ⚠️ maker(지정가) 전제·횡보장 약세 — 실측 관찰용.
+    mmbm_enabled: bool = True
 
     # Multi-TF 모드 — True 면 HTF (Trade TF 위 모든 단계) setup 추적 + LTF (Trade TF)
     # 에서 retrace + structure shift + FVG confirm 시 진입. ICT 정통 multi-TF framework.
@@ -491,6 +502,9 @@ class BotIctInstance:
 
     state: BotState = field(default=BotState.STOPPED)
     active_position: _ActivePosition | None = field(default=None)
+    # #MMBM 2026-07-21: 직전 실행된 셋업의 모델 태그 (_execute_setup 진입 시 setup.source
+    # 로 갱신). 매매기록(_record_trade)에서 SB(Origo) 와 MMBM 을 분리하기 위함.
+    _active_model: str = field(default=ORIGO_MODEL_NAME)
     # #LIVE-1 fix: marketable limit entry 미체결 대기 상태 (체결되면 active_position 으로 승격).
     _pending_entry: _PendingEntry | None = field(default=None)
     _task: asyncio.Task[None] | None = field(default=None)
@@ -1006,6 +1020,37 @@ class BotIctInstance:
             return signal
 
         if not signal.is_actionable or signal.setup is None:
+            # #MMBM 2026-07-21: SB 셋업 없을 때 2번째 모델(마켓메이커 반전) 시도.
+            # 여기 도달 = active_position None(위에서 return) + SB 무셋업. MMBM 은 자체
+            # 조건(HTF정합·discount/premium·신선 CHoCH+FVG)으로 검증돼 SB 게이트는
+            # 우회하되, _execute_setup 의 리스크레이어(#SAFETY-1 일일한도·서킷브레이커·
+            # 사이징·DD스로틀·maker 지정가)는 공유. recovery_failed 게이트가 아래 SB
+            # 경로에만 있어 여기서 직접 확인. _pending_entry 있으면 중복진입 방지 skip.
+            if (
+                self.mmbm_enabled
+                and not self._recovery_failed
+                and self._pending_entry is None
+            ):
+                mmbm_setup = detect_mmbm_setup(
+                    df,
+                    self._mmbm_htf_bias_sign(df),
+                    min_rr=self.min_rr,
+                    fvg_min_size_pct=self.fvg_min_size_pct,
+                )
+                dup = mmbm_setup is not None and (
+                    mmbm_setup.ts_ms == self._last_setup_ts_ms
+                    and mmbm_setup.direction == self._last_setup_direction
+                )
+                if mmbm_setup is not None and not dup:
+                    logger.info(
+                        "MMBM setup | dir=%s entry=%.4f sl=%.4f tp=%.4f rr=%.2f",
+                        mmbm_setup.direction.value, mmbm_setup.entry,
+                        mmbm_setup.stop_loss, mmbm_setup.take_profit,
+                        mmbm_setup.risk_reward,
+                    )
+                    await self._execute_setup(mmbm_setup)
+                    self._remember_setup(mmbm_setup)
+                    return signal
             # 2026-05-28: setup 미발견 / 조건 불충족 — signal.reason 에 사유 박혀있음.
             # reason 비면 "no setup" 으로 통일. 너무 빈도 높지 않게 — 매 step 1줄 (다른 분기).
             logger.info(
@@ -1713,6 +1758,33 @@ class BotIctInstance:
             self._htf_cache[tf] = (last_ts, df)
         return compute_bias_from_df(df)
 
+    def _mmbm_htf_bias_sign(self, df: pd.DataFrame, lookback: int = 20) -> float:
+        """MMBM 용 상위TF(1h) 추세 부호 (+상승/-하락/0중립·데이터부족).
+
+        Trade TF(5m) df 를 1h 로 리샘플해 최근 lookback(20)봉 종가 변화의 부호.
+        MMBM 은 HTF 추세 정합이 엣지 필수조건(백테 검증 — 역정합이면 적자)이라
+        이 부호로 진입 방향을 게이트한다.
+
+        Args:
+            df: Trade TF OHLCV (index=DatetimeIndex).
+            lookback: 1h 봉 기준 추세 측정 구간 (기본 20 = 20시간).
+
+        Returns:
+            +1.0(상승) / -1.0(하락) / 0.0(중립·데이터부족).
+        """
+        try:
+            h1 = df["close"].resample("1h").last().dropna()
+        except (TypeError, ValueError):
+            return 0.0
+        if len(h1) < lookback + 1:
+            return 0.0
+        delta = float(h1.iloc[-1] - h1.iloc[-1 - lookback])
+        if delta > 0:
+            return 1.0
+        if delta < 0:
+            return -1.0
+        return 0.0
+
     async def _execute_setup(
         self,
         setup: SilverBulletSetup,
@@ -1728,6 +1800,15 @@ class BotIctInstance:
         - use_market_entry=True 면 레거시 즉시 시장가 (slippage 발생, 비권장).
         """
         side = "buy" if setup.direction is Direction.LONG else "sell"
+
+        # #MMBM 2026-07-21: 이번 실행 셋업의 모델 태그 갱신 (매매기록 분리 실측용).
+        # SB(Silver Bullet)=Origo, MMBM=별도 태그. 진입~청산 사이 단일 포지션 유지
+        # 규약이라 다음 진입 전까지 이 태그가 유효.
+        self._active_model = (
+            f"{ORIGO_MODEL_NAME} MMBM"
+            if setup.source is SetupSource.MMBM
+            else ORIGO_MODEL_NAME
+        )
 
         # #SAFETY-1: 일일 손실 한도 도달 시 새 진입 차단 (active position 은 유지).
         # equity fetch 실패(None) 시 baseline reset 을 보류 — 폴백값으로 하루
@@ -3629,7 +3710,9 @@ class BotIctInstance:
             # 2026-05-29: DEMO/LIVE 구분 — UI 가 "유형" 옆 컬럼에 표시.
             mode=self.run_mode,
             # 2026-06-17: 봇 모델 태그 — 매매 기록 [모델] 컬럼 (어느 모델로 매매됐는지).
-            model=ORIGO_MODEL_NAME,
+            # #MMBM 2026-07-21: _execute_setup 이 setup.source 로 갱신한 태그 사용
+            # (SB=Origo, MMBM=별도) → 실측 시 두 모델 성과 분리.
+            model=self._active_model,
         )
         # 2026-06-09: 매매 이벤트를 fly 로그에도 남긴다 — 진입은 "Execute setup"
         # 으로만 찍히고 청산(SL/TP)은 DB 만 기록돼 로그 모니터링에서 누락됐다.
