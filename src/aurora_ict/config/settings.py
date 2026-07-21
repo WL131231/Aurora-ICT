@@ -71,7 +71,13 @@ PAIR_TTL_OVERRIDES: dict[str, int] = {"BTCUSDT": 3600}
 # 볼륨·Nadaraya-Watson 중심선·RSI 3신호 정합점수(0~3)로 사이즈 배수 clip(0.7+q*0.2,
 # 0.4,1.4). LuxAlgo 지표계열 대입 결과 유일 walk-forward robust(net/MDD 4.24→4.68,
 # 양반기 개선). 거래 필터 아닌 배분이라 빈도 불변. 변동성타겟팅은 인과조건 비robust 제외.
-ORIGO_MODEL_NAME = "Origo 2.1"
+# 2026-07-21 Origo 2.2 = 2.1 + MMBM 2번째 진입모델 활성화 (#MMBM, FST#7). SB(Silver
+# Bullet) 무셋업일 때만 마켓메이커 반전(HTF정합 방향 discount/premium 신선 CHoCH+FVG
+# 지정가)을 병렬 시도 — SB 게이트 우회·자체 조건, 리스크레이어(일일한도·서킷·사이징·
+# maker)는 공유. 매매기록 model 태그로 분리("Origo 2.2"=SB, "Origo 2.2 MMBM"=MMBM).
+# ⚠️ 백테: maker 체결 전제 5/6년 흑자·SB 와 dedup 0(새 빈도)·단 횡보장(2025) 약세.
+# 파트너 판단: "지금도 횡보에 맞고 있으니 더 좋은 모델로 맞으며 데이터 쌓자" → 활성 실측.
+ORIGO_MODEL_NAME = "Origo 2.2"
 # 2026-06-25 #CURSUS: 투트랙 2번째 봇 = Cursus(Dual SuperTrend 추세형, dual_st).
 # bot_trend_instance.CURSUS_MODEL_NAME 과 동일 문자열 유지(매매기록 model 태그 정합).
 CURSUS_MODEL_NAME = "Cursus 1.0"
