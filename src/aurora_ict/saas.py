@@ -82,7 +82,9 @@ async def auto_resume_running_bots(
     # base_settings.run_mode (DEMO 기본) 때문에 DEMO 키 미등록 ValueError 로
     # 봇 죽던 버그 해소. last_run_mode 미설정 (구식 사용자) 은 base 그대로.
     from aurora_ict.config.settings import RunMode
-    for code, sym in bots:
+
+    async def _resume_one(code: str, sym: str) -> bool:
+        """단일 슬롯 재가동 — 성공 True. 예외는 내부 처리(다음 슬롯 영향 X)."""
         try:
             last_mode_str = users_db.get_last_run_mode(db_path, code)
         except Exception as e:  # noqa: BLE001
@@ -95,14 +97,13 @@ async def auto_resume_running_bots(
             force_mode = RunMode.DEMO
         try:
             await mu.start(code, sym, force_run_mode=force_mode)
-            stats["succeeded"] += 1
             logger.info(
                 "bot 자동 재가동 — %s/%s ✓ (run_mode=%s)",
                 code, sym,
                 force_mode.value if force_mode else "base_default",
             )
+            return True
         except ValueError as e:
-            stats["failed"] += 1
             # 2026-06-12 리뷰 #4: 검증 탈락(EXCLUDED) 페어를 돌리던 사용자는
             # 매 배포마다 같은 ValueError 가 반복된다 — 영속 플래그를 정리해
             # 재시도 루프를 끊는다 (정책 거부는 재시도해도 영원히 실패).
@@ -118,15 +119,26 @@ async def auto_resume_running_bots(
                         "제외 페어 플래그 정리 실패 — %s/%s: %s", code, sym, e2,
                     )
             else:
-                logger.warning(
-                    "bot 자동 재가동 실패 — %s/%s: %s", code, sym, e,
-                )
+                logger.warning("bot 자동 재가동 실패 — %s/%s: %s", code, sym, e)
+            return False
         except Exception as e:  # noqa: BLE001
-            stats["failed"] += 1
             # API 키 미등록 / 만료 / 거래소 응답 실패 등 — 다음 슬롯에 영향 X.
-            logger.warning(
-                "bot 자동 재가동 실패 — %s/%s: %s", code, sym, e,
-            )
+            logger.warning("bot 자동 재가동 실패 — %s/%s: %s", code, sym, e)
+            return False
+
+    # 2026-07-22 청크 병렬 재가동: 순차(봇당 ~2-3s × N)면 부팅이 수분 걸려 이벤트
+    # 루프가 막혀 fly 헬스체크가 일시 실패했다(80+봇). 청크 단위로 동시 가동해 총
+    # 소요를 단축하고, gather 의 각 await 에서 이벤트루프가 HTTP(헬스체크)도 처리하게
+    # 한다. 청크 크기는 거래소 API 부하·메모리 스파이크 방지용(전량 동시 X). 심볼
+    # 공유캐시 prefetch 는 (symbol,tf) 락으로 직렬화돼 동시 가동에도 안전.
+    chunk_n = max(1, int(os.environ.get("AURORA_ICT_RESUME_CHUNK", "6")))
+    for i in range(0, len(bots), chunk_n):
+        chunk = bots[i:i + chunk_n]
+        results = await asyncio.gather(
+            *(_resume_one(code, sym) for code, sym in chunk),
+        )
+        stats["succeeded"] += sum(1 for ok in results if ok)
+        stats["failed"] += sum(1 for ok in results if not ok)
     return stats
 
 
