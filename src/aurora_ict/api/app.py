@@ -2147,6 +2147,14 @@ def _register_multi_user_routes(
             )
         return result
 
+    # 2026-07-22: 루트(/) → UI(/ui/) 리다이렉트. 사용자가 도메인만 치면 UI 는 /ui
+    # 마운트라 루트엔 라우트가 없어 {"detail":"Not Found"} 가 떴음 → 대시보드로 보냄.
+    from starlette.responses import RedirectResponse
+
+    @app.get("/", include_in_schema=False)
+    async def _root_redirect_saas() -> RedirectResponse:
+        return RedirectResponse(url="/ui/")
+
     # Static UI mount — SaaS 도 ui_ict 그대로 서빙 (브라우저 → cookie 세션 흐름).
     # single-user 분기와 동일 패턴 (frozen 케이스는 SaaS 에서 없음 — dev / Docker layout 만).
     candidates = []
@@ -3018,6 +3026,13 @@ def create_app(
                 _rows_to_st_overlay, rows, bot.cfg,
             )
         return result
+
+    # 2026-07-22: 루트(/) → UI(/ui/) 리다이렉트 (도메인만 쳐도 대시보드로).
+    from starlette.responses import RedirectResponse
+
+    @app.get("/", include_in_schema=False)
+    async def _root_redirect_single() -> RedirectResponse:
+        return RedirectResponse(url="/ui/")
 
     # Static UI mount — frozen (PyInstaller) 환경 대응:
     # - dev: <repo_root>/ui_ict/
