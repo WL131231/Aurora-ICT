@@ -766,21 +766,41 @@ async def test_cancel_bot_orders_only_cancels_tagged() -> None:
 
 @pytest.mark.asyncio
 async def test_position_opened_by_bot_matches_tag_and_entry() -> None:
-    """position_opened_by_bot: 봇 태그 + 방향 + entry 1% 이내 진입주문이면 True."""
+    """position_opened_by_bot: 봇 태그 + 체결 + 방향 + entry 1% + qty 근사면 True."""
     from aurora.exchange.ccxt_client import _gen_bot_order_link_id
 
     client = _make_client()
     client._mock_ex.fetch_open_orders = AsyncMock(return_value=[])  # type: ignore[attr-defined]
     client._mock_ex.fetch_closed_orders = AsyncMock(return_value=[  # type: ignore[attr-defined]
         {"id": "e1", "clientOrderId": _gen_bot_order_link_id(),
-         "side": "buy", "price": 80000.0, "average": 80000.0, "info": {}},
+         "side": "buy", "price": 80000.0, "average": 80000.0,
+         "filled": 0.05, "info": {}},
     ])
-    # 매칭(long, entry 80000) → True
+    # 매칭(long, entry 80000, qty 0.05) → True
+    assert await client.position_opened_by_bot("BTC/USDT:USDT", "long", 80000.0, 0.05) is True
+    # qty 생략(0) → 여전히 True (qty 미검사)
     assert await client.position_opened_by_bot("BTC/USDT:USDT", "long", 80000.0) is True
     # 방향 불일치(short) → False
-    assert await client.position_opened_by_bot("BTC/USDT:USDT", "short", 80000.0) is False
+    assert await client.position_opened_by_bot("BTC/USDT:USDT", "short", 80000.0, 0.05) is False
     # entry 1% 초과 → False
-    assert await client.position_opened_by_bot("BTC/USDT:USDT", "long", 90000.0) is False
+    assert await client.position_opened_by_bot("BTC/USDT:USDT", "long", 90000.0, 0.05) is False
+    # qty 불일치(0.5 vs 0.05) → False (예전 라운드 다른 수량 오탐 억제)
+    assert await client.position_opened_by_bot("BTC/USDT:USDT", "long", 80000.0, 0.5) is False
+
+
+@pytest.mark.asyncio
+async def test_position_opened_by_bot_ignores_cancelled_unfilled() -> None:
+    """취소된(미체결 filled=0) 봇 주문은 오탐 안 냄 → False (리뷰 오탐 fix)."""
+    from aurora.exchange.ccxt_client import _gen_bot_order_link_id
+
+    client = _make_client()
+    client._mock_ex.fetch_open_orders = AsyncMock(return_value=[])  # type: ignore[attr-defined]
+    client._mock_ex.fetch_closed_orders = AsyncMock(return_value=[  # type: ignore[attr-defined]
+        {"id": "c1", "clientOrderId": _gen_bot_order_link_id(),
+         "side": "buy", "price": 80000.0, "average": 80000.0,
+         "filled": 0.0, "status": "canceled", "info": {}},
+    ])
+    assert await client.position_opened_by_bot("BTC/USDT:USDT", "long", 80000.0, 0.05) is False
 
 
 @pytest.mark.asyncio

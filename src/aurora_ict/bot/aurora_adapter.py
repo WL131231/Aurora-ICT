@@ -521,7 +521,7 @@ class AuroraClientAdapter:
             return 0
 
     async def position_opened_by_bot(
-        self, symbol: str, side: str, entry_price: float,
+        self, symbol: str, side: str, entry_price: float, qty: float = 0.0,
     ) -> bool:
         """고아 포지션이 봇 것인지 판정 (주문 이력의 봇 태그 대조) — client 위임.
 
@@ -529,7 +529,7 @@ class AuroraClientAdapter:
         """
         try:
             return await self._client.position_opened_by_bot(
-                symbol, side, entry_price,
+                symbol, side, entry_price, qty,
             )
         except AttributeError:
             return False
