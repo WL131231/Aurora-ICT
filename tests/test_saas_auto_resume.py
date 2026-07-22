@@ -273,3 +273,32 @@ async def test_auto_resume_isolates_failures(
     assert bot.state is BotState.RUNNING
 
     await mu.stop("AICT-GOOD-GOOD-GOOD")
+
+
+# ============================================================
+# 시나리오 5 — 청크 병렬 (2026-07-22): 청크 초과 다수 슬롯 전량 재가동
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_chunked_parallel_starts_all(
+    db_path, base_settings, master_key,
+) -> None:
+    """기본 청크(6) 초과 14슬롯도 병렬 청크로 전량 재가동(경계 커버)."""
+    codes = [f"AICT-C{i:03d}-C{i:03d}-C{i:03d}" for i in range(14)]
+    for c in codes:
+        _register_user_with_keys(db_path, c, master_key)
+        users_db.set_bot_running(db_path, c, True)
+
+    clients: list[FakeExchangeClient] = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,
+        master_key=master_key,
+    )
+    stats = await auto_resume_running_bots(mu, db_path)
+    assert stats == {"attempted": 14, "succeeded": 14, "failed": 0}
+    assert sorted(mu.list_users()) == sorted(codes)
+    for c in codes:
+        await mu.stop(c)
