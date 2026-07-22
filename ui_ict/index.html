@@ -2356,14 +2356,9 @@
            2026-06-06: 버튼 → 모달 페어 선택기(가격/24H%/거래량+검색). -->
       <button type="button" id="chart-pair-btn" class="pair-select-btn">BTC ▾</button>
       <div class="tf-toggle" id="tf-toggle">
-        <button data-tf="1m">1m</button>
-        <button data-tf="5m">5m</button>
+        <!-- 2026-07-22 파트너 지시: 차트 TF 15m·1h 만 (메모리 절감 — 봇당 캐시 ~9배↓). -->
         <button data-tf="15m">15m</button>
         <button data-tf="1h" class="active">1h</button>
-        <button data-tf="2h">2h</button>
-        <button data-tf="4h">4h</button>
-        <button data-tf="1d">1d</button>
-        <button data-tf="1w">1w</button>
       </div>
       <div class="viz-toggle" id="viz-toggle">
         <button data-viz="bos">BOS</button>
