@@ -8,7 +8,10 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<!-- 2026-07-22: CDN(unpkg) 자체호스팅 전환. 삼성 인터넷 등 모바일 브라우저가
+     서드파티 CDN 을 트래커로 차단 → LightweightCharts undefined → app.js line 90
+     createChart 에서 통째로 throw(차트·전 UI 죽음). 로컬 서빙(/ui/)으로 외부의존 제거. -->
+<script src="lightweight-charts.standalone.production.js"></script>
 <style>
   /* AURORA · ICT — Monochrome (사이트 팔레트와 동일)
      #141316 base · #1C1C1C bg-2 · #201F1F surface · #DBDBDE text/accent */
