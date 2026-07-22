@@ -1135,8 +1135,9 @@ async def test_recover_restores_tp_from_records(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_recover_tp_stays_zero_without_matching_record(tmp_path) -> None:
-    """TP=0 복구 — 매칭 기록 없으면 TP 0 유지 (지어내지 않음)."""
+async def test_recover_ignores_untracked_position_saas(tmp_path) -> None:
+    """#MANUAL-POS-RESPECT 2026-07-22: SaaS 에서 봇 ENTRY 기록 없는 거래소 포지션
+    (=유저 수동 진입)은 채택·SL/TP 미설정 — 봇이 절대 안 건드림 (TDAF 유저 컴플레인)."""
     client = _mock_client([[1, 100, 101, 99, 100, 10]])
     client.fetch_position = AsyncMock(return_value={
         "contracts": 0.05, "side": "short", "entryPrice": 80000.0,
@@ -1147,8 +1148,8 @@ async def test_recover_tp_stays_zero_without_matching_record(tmp_path) -> None:
         client=client, step_interval_sec=3600, trades_data_dir=tmp_path,
     )
     await bot.start()
-    assert bot.active_position is not None
-    assert bot.active_position.take_profit == 0.0
+    assert bot.active_position is None            # 유저 수동 포지션 — 미채택
+    client.set_position_tpsl.assert_not_awaited()  # SL/TP 안 건드림
     await bot.stop()
 
 
