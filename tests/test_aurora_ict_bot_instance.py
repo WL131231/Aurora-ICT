@@ -71,6 +71,9 @@ def _mock_client(ohlcv_rows: list[list[Any]]) -> AsyncMock:
     client.fetch_position = AsyncMock(return_value=None)
     client.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0}})
     client.cancel_all_orders = AsyncMock(return_value=None)
+    # 2026-07-22 주문 태그: 선별 취소 0건 / 소유권 판정 기본 False(보수적).
+    client.cancel_bot_orders = AsyncMock(return_value=0)
+    client.position_opened_by_bot = AsyncMock(return_value=False)
     client.fetch_closed_positions = AsyncMock(return_value=[])
     client.set_position_tpsl = AsyncMock(return_value={"retCode": 0})
     return client
@@ -827,7 +830,7 @@ async def test_pending_entry_promoted_on_fill() -> None:
 
 @pytest.mark.asyncio
 async def test_pending_entry_cancelled_on_ttl() -> None:
-    """pending TTL 만료 (미체결) → cancel_all_orders 호출, pending 해제."""
+    """pending TTL 만료 (미체결) → cancel_bot_orders 호출, pending 해제."""
     from aurora_ict.bot.bot_ict_instance import _PendingEntry
 
     client = _mock_client([[1, 100, 101, 99, 100, 10]])
@@ -841,7 +844,7 @@ async def test_pending_entry_cancelled_on_ttl() -> None:
     assert still_pending is False
     assert bot._pending_entry is None
     assert bot.active_position is None
-    client.cancel_all_orders.assert_awaited_once()
+    client.cancel_bot_orders.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -861,7 +864,7 @@ async def test_pending_entry_waits_within_ttl() -> None:
     still_pending = await bot._check_pending_entry()
     assert still_pending is True
     assert bot._pending_entry is not None
-    client.cancel_all_orders.assert_not_awaited()
+    client.cancel_bot_orders.assert_not_awaited()
 
 
 # ============================================================
@@ -1153,6 +1156,25 @@ async def test_recover_ignores_untracked_position_saas(tmp_path) -> None:
     await bot.stop()
 
 
+@pytest.mark.asyncio
+async def test_recover_adopts_untracked_when_bot_tagged(tmp_path) -> None:
+    """#MANUAL-POS-RESPECT: 봇 ENTRY 기록 없어도 거래소 주문 태그로 봇 것 판정되면
+    채택 (고아 체결·DB 유실 대비 — '우리만 아는 표시' 마커 인식)."""
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client.fetch_position = AsyncMock(return_value={
+        "contracts": 0.05, "side": "short", "entryPrice": 80000.0,
+        "stopLossPrice": 80500.0, "takeProfitPrice": 0.0,
+    })
+    client.set_position_tpsl = AsyncMock(return_value=True)
+    client.position_opened_by_bot = AsyncMock(return_value=True)  # 거래소 태그 매칭
+    bot = BotIctInstance(
+        client=client, step_interval_sec=3600, trades_data_dir=tmp_path,
+    )
+    await bot.start()
+    assert bot.active_position is not None         # 봇 태그 → 채택
+    await bot.stop()
+
+
 def test_daily_pair_loss_limit_logic() -> None:
     """페어별 일일 손실 한도 (2026-06-12) — R 배수 판정 + 비활성 조건."""
     client = _mock_client([[1, 100, 101, 99, 100, 10]])
@@ -1188,17 +1210,17 @@ def test_daily_pair_limit_resets_on_new_day() -> None:
 
 @pytest.mark.asyncio
 async def test_startup_cancel_skipped_when_position_recovered() -> None:
-    """#TPSL-STRIP 회귀: 활성 포지션 복구 시 startup cancel_all 금지 (SL/TP 보존)."""
+    """#TPSL-STRIP 회귀: 활성 포지션 복구 시 startup 주문청소 금지 (SL/TP 보존)."""
     client = _mock_client([[1, 100, 101, 99, 100, 10]])
     client.fetch_position = AsyncMock(return_value={
         "contracts": 1.0, "side": "short", "entryPrice": 100.0,
         "stopLossPrice": 103.0, "takeProfitPrice": 95.0,
     })
-    client.cancel_all_orders = AsyncMock()
+    client.cancel_bot_orders = AsyncMock(return_value=0)
     bot = BotIctInstance(client=client, step_interval_sec=3600)
     await bot.start()
     assert bot.active_position is not None
-    client.cancel_all_orders.assert_not_awaited()  # 보호장치 벗기면 안 됨
+    client.cancel_bot_orders.assert_not_awaited()  # 보호장치 벗기면 안 됨
     await bot.stop()
 
 

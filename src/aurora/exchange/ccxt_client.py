@@ -37,6 +37,26 @@ logger = logging.getLogger(__name__)
 # Bybit V5 /v5/market/kline limit max — fetch_ohlcv 페이지네이션 분할 단위.
 _OHLCV_MAX_PER_CALL = 1000
 
+# 2026-07-22: 봇이 낸 주문 식별 태그(orderLinkId prefix). "우리만 아는 표시" —
+# 재부팅 후 고아 포지션이 봇 것인지 인식(주문 이력 대조, DB 없어도 거래소에 남음) +
+# 유저 수동 주문 보존(선별 취소). Bybit orderLinkId 한도 36자: AUR + uuid hex(32)=35.
+BOT_ORDER_TAG = "AUR"
+
+
+def _gen_bot_order_link_id() -> str:
+    """봇 주문용 고유 orderLinkId — BOT_ORDER_TAG prefix + uuid hex (35자, <36 한도)."""
+    import uuid
+
+    return f"{BOT_ORDER_TAG}{uuid.uuid4().hex}"
+
+
+def _is_bot_order(o: dict[str, Any]) -> bool:
+    """ccxt order dict 의 clientOrderId/orderLinkId 가 봇 태그로 시작하는지."""
+    cid = o.get("clientOrderId") or ""
+    if not cid:
+        cid = (o.get("info") or {}).get("orderLinkId") or ""
+    return isinstance(cid, str) and cid.startswith(BOT_ORDER_TAG)
+
 
 # tenacity retry — DESIGN.md §3.3 / E-12. PR-2 #31 _fetch_page 와 동일 정책.
 # 일시 네트워크/거래소 장애만 재시도. AuthError 등은 즉시 raise (재시도 무의미).
@@ -381,6 +401,9 @@ class CcxtClient:
         await self._ensure_init()
         order_type = "market" if price is None else "limit"
         params: dict[str, Any] = {}
+        # 2026-07-22: 봇 주문 식별 태그(orderLinkId). 재부팅 후 소유권 인식 +
+        # 유저 수동 주문 보존(선별 취소)용. 모든 봇 주문에 부착.
+        params["orderLinkId"] = _gen_bot_order_link_id()
         if reduce_only:
             params["reduceOnly"] = True
         if stop_loss is not None:
@@ -513,6 +536,75 @@ class CcxtClient:
             return
         await self._ensure_init()
         await self._ex.cancel_all_orders(symbol)
+
+    async def cancel_bot_orders(self, symbol: str) -> int:
+        """봇이 낸 주문(orderLinkId=BOT_ORDER_TAG*)만 취소 — 유저 수동 주문 보존.
+
+        cancel_all(전체 취소)과 달리 미체결 주문을 조회해 봇 태그가 붙은 것만
+        개별 취소. 재시작 고아 주문 청소가 유저 수동 지정가를 지우지 않게 한다.
+        paper 모드는 noop.
+
+        Returns:
+            취소한 주문 수.
+        """
+        if settings.run_mode == "paper":
+            return 0
+        await self._ensure_init()
+        orders = await self._ex.fetch_open_orders(symbol)
+        n = 0
+        for o in orders:
+            if not _is_bot_order(o):
+                continue
+            try:
+                await self._ex.cancel_order(o["id"], symbol)
+                n += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning("cancel_bot_orders: %s 취소 실패: %s", o.get("id"), e)
+        return n
+
+    async def position_opened_by_bot(
+        self, symbol: str, side: str, entry_price: float,
+    ) -> bool:
+        """재부팅 후 고아 포지션이 봇 것인지 판정 — 최근 주문 이력에 이 포지션을
+        연 봇 태그 진입주문(같은 방향·entry 1% 이내·비reduceOnly)이 있는지.
+
+        봇 지정가 진입은 SL/TP 동봉이라 체결 후 별도 open order 가 없을 수 있어
+        미체결(open)+최근 체결(closed) 주문을 모두 훑는다. 실패/미발견 시 False
+        (보수적 — 확실히 봇 것일 때만 채택). paper 모드는 False.
+
+        Args:
+            symbol: ccxt symbol.
+            side: 포지션 방향 ("long"/"short" 또는 "buy"/"sell").
+            entry_price: 포지션 진입가 (매칭 기준, 1% tolerance).
+
+        Returns:
+            봇이 연 포지션으로 판정되면 True.
+        """
+        if settings.run_mode == "paper":
+            return False
+        await self._ensure_init()
+        want_side = "buy" if side.lower() in ("long", "buy") else "sell"
+        orders: list[dict[str, Any]] = []
+        try:
+            orders += await self._ex.fetch_open_orders(symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("position_opened_by_bot: fetch_open_orders 실패: %s", e)
+        try:
+            orders += await self._ex.fetch_closed_orders(symbol, None, 50)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("position_opened_by_bot: fetch_closed_orders 실패: %s", e)
+        for o in orders:
+            if not _is_bot_order(o):
+                continue
+            info = o.get("info") or {}
+            if o.get("reduceOnly") or info.get("reduceOnly") in (True, "true", "True"):
+                continue  # 청산 주문 제외 — 진입 주문만
+            if (o.get("side") or "").lower() != want_side:
+                continue
+            px = float(o.get("average") or o.get("price") or 0) or 0.0
+            if px > 0 and abs(px - entry_price) <= entry_price * 0.01:
+                return True
+        return False
 
     # ============================================================
     # Real-time ticker (v0.1.39) — SL/TP 청산 폴링용 (봉 wick 즉시 반응)
