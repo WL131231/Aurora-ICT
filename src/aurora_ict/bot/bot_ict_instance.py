@@ -579,6 +579,10 @@ class BotIctInstance:
     _recovery_failed: bool = field(default=False)
     # 연속 fetch_position 실패 카운트 — 5회 누적 시 ERROR (네트워크/API 장애 의심).
     _sync_failure_streak: int = field(default=0)
+    # #MANUAL-POS-RESPECT 2026-07-22: 봇 ENTRY 기록 없어 채택 거절한(유저 수동 추정)
+    # 포지션 시그니처. reconcile 이 매 step recovery 를 재호출하는 로그스팸·DB부하
+    # 방지 — 같은 시그니처면 조용히 skip. 포지션 소멸/채택 시 None 리셋.
+    _declined_manual_sig: tuple[str, float, float] | None = field(default=None)
     # 진입 주문 실패 카운트 (place_order) — 누적 시 운영자 점검 신호.
     _order_failure_count: int = field(default=0)
     # 페어 확장 — 가동 시 fetch_symbol_meta 로 채우는 심볼별 거래소 메타
@@ -670,6 +674,13 @@ class BotIctInstance:
         # 완료된 task 가 남아 있을 수도 — 새 task 로 교체해 재시도 가능하게.
         self._prefetch_task = asyncio.create_task(self._prefetch_all_ohlcv_tfs())
 
+    @staticmethod
+    def _pos_sig(
+        direction: Direction, entry_price: float, qty: float,
+    ) -> tuple[str, float, float]:
+        """포지션 시그니처 (방향+entry+qty 반올림) — 미채택 수동 포지션 재시도 억제용."""
+        return (direction.value, round(entry_price, 4), round(qty, 6))
+
     async def _recover_position_from_exchange(self) -> None:
         """봇 시작 시 거래소 측 활성 포지션 복원.
 
@@ -715,6 +726,27 @@ class BotIctInstance:
         # SL/TP — Bybit V5 응답 stopLoss / takeProfit 에서 읽음.
         sl = float(pos.get("stopLossPrice") or pos.get("stop_loss") or 0) or 0.0
         tp = float(pos.get("takeProfitPrice") or pos.get("take_profit") or 0) or 0.0
+        # #MANUAL-POS-RESPECT 2026-07-22 (TDAF 유저 컴플레인): 봇은 자기가 연
+        # 포지션만 채택·관리한다. 매칭되는 미청산 ENTRY 기록(같은 방향 + entry 가격
+        # 1% 이내)이 없으면 유저 수동 포지션으로 간주하고 절대 건드리지 않는다 —
+        # 채택·보호SL·TP복원·트레일 전부 skip. (과거엔 무조건 입양해 유저 수동
+        # 포지션에 봇이 SL/TP 를 걸어 컴플레인 발생. 봇 지정가 진입은 SL/TP 동봉이라
+        # 설령 고아 체결이어도 거래소측 보호는 유지되므로 미채택이 안전.)
+        # 단, 소유권 대조는 사용자별 기록(trades_data_dir)이 있는 SaaS 에서만 가능.
+        # 단독 .exe(trades_data_dir=None)는 대조 불가라 기존 복구 동작 유지.
+        if self.trades_data_dir is not None:
+            _own = self._find_unclosed_entry_event(direction)
+            if _own is None or abs(_own.price - entry_price) > entry_price * 0.01:
+                logger.warning(
+                    "recover: 미추적 포지션(봇 ENTRY 기록 없음) — 유저 수동 포지션으로 "
+                    "간주해 채택·SL/TP 미설정 (%s %s entry=%.4f qty=%.4f)",
+                    self.symbol, direction.value, entry_price, contracts,
+                )
+                # 재시도 스팸 방지 — 이 포지션은 다시 시도/로그하지 않음.
+                self._declined_manual_sig = self._pos_sig(
+                    direction, entry_price, contracts,
+                )
+                return
         # #RESTORE-PARTIAL 2026-06-24: 복원 포지션도 분할익절 대상(파트너 요청).
         # SL 이 본전이면 이미 부분익절된 것으로 보고 재청산 방지, 아니면 tp1 계산.
         _r_tp1, _r_done = self._restore_partial_state(entry_price, sl, direction)
@@ -728,6 +760,7 @@ class BotIctInstance:
             tp1_price=_r_tp1,
             partial_done=_r_done,
         )
+        self._declined_manual_sig = None  # 봇 포지션 채택 — 거절 시그니처 해제
         logger.info(
             "recover: 활성 포지션 복원 — %s %s entry=%.4f qty=%.4f sl=%.4f tp=%.4f",
             self.symbol, direction.value, entry_price, contracts, sl, tp,
@@ -2573,6 +2606,21 @@ class BotIctInstance:
             # 거래소에 포지션이 있으면 복구 절차로 입양 — RECOVERED 기록 +
             # TP 복원 시도 + 무SL 이면 보호 SL (P1-2).
             if self._pending_entry is None:
+                # #MANUAL-POS-RESPECT: 이미 유저 수동으로 판정해 거절한 포지션이면
+                # 매 step 재시도/재로그 억제(같은 시그니처면 조용히 skip).
+                ex_dir0 = self._exchange_position_direction(ex_pos)
+                ex_entry0 = float(
+                    ex_pos.get("entryPrice") or ex_pos.get("entry_price")
+                    or ex_pos.get("averagePrice") or 0,
+                )
+                ex_qty0 = float(ex_pos.get("contracts", 0) or 0)
+                if (
+                    ex_dir0 is not None
+                    and self._declined_manual_sig is not None
+                    and self._pos_sig(ex_dir0, ex_entry0, ex_qty0)
+                    == self._declined_manual_sig
+                ):
+                    return
                 logger.warning(
                     "미추적 포지션 발견 — 입양 시도 (%s, 고아 체결/수동 진입)",
                     self.symbol,
@@ -4055,6 +4103,8 @@ class BotIctInstance:
             # 일치하는지 검증 (#POS-SYNC 2026-06-06, 04:14 방향 불일치 사건).
             await self._reconcile_open_position(pos)
             return
+        # 거래소에 포지션 없음 — 이전 거절 시그니처 리셋(다음 포지션은 재평가).
+        self._declined_manual_sig = None
         last_known = self.active_position
         if last_known is None:
             return
