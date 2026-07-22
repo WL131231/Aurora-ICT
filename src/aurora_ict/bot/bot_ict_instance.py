@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 from ccxt.base.errors import AuthenticationError
 
+from aurora_ict.bot.shared_ohlcv_cache import GLOBAL_OHLCV_CACHE, SharedOhlcvCache
 from aurora_ict.bot.structure_trail import compute_structure_trail
 from aurora_ict.config.settings import ORIGO_MODEL_NAME
 from aurora_ict.indicators.cisd import CisdType, detect_cisd
@@ -562,12 +563,12 @@ class BotIctInstance:
     _last_logged_trend_summary: str = field(default="")  # trend_cache 직렬화 핑거프린트
 
     # 2026-05-27 파트너 요청 — UI 차트 TF 토글 시 로딩 없이 즉시 응답.
-    # 봇 start 시 background prefetch 로 모든 TF 채워두고, /ict/ohlcv 가
-    # cache 사용. polling 시 마지막 N봉만 incremental refresh.
-    # 자료: dict[tf, list[[ts_ms, o, h, l, c, v], ...]] ts 오름차순.
-    _ohlcv_cache: dict[str, list[list[Any]]] = field(default_factory=dict)
-    # TF 별 동시 갱신 방지 — lazy init (이벤트 루프 필요).
-    _ohlcv_cache_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
+    # 봇 start 시 background prefetch 로 모든 TF 채워두고, /ict/ohlcv 가 cache 사용.
+    # polling 시 마지막 N봉만 incremental refresh.
+    # 2026-07-22: 봇별 캐시 → (symbol,tf) 전역 공유 캐시로 전환(중복제거·메모리절감).
+    # 같은 심볼 여러 유저면 심볼당 1벌만 보유. 기본=GLOBAL_OHLCV_CACHE(전역 공유),
+    # 테스트는 격리 위해 별도 인스턴스 주입 가능. 저장 자료: (symbol,tf)→ts오름차순 봉.
+    _shared_ohlcv: SharedOhlcvCache = field(default_factory=lambda: GLOBAL_OHLCV_CACHE)
     # prefetch background task 핸들 (취소용).
     _prefetch_task: asyncio.Task[None] | None = field(default=None)
 
@@ -4537,9 +4538,14 @@ class BotIctInstance:
         except Exception:  # noqa: BLE001
             pass
 
-        # OHLCV snapshot — prefetch cache 활용 (없으면 빈 list)
-        ohlcv_1h = self._ohlcv_cache.get("1h", [])
-        ohlcv_5m = self._ohlcv_cache.get("5m", [])
+        # OHLCV snapshot — 1h 는 공유 prefetch cache 활용, 5m 은 차트 캐시 대상이
+        # 아니라(15m·1h만) close 시점 직접 fetch (저빈도라 비용 미미, 학습 데이터셋의
+        # 5m 그래뉼래러티 보존). 실패 시 빈 list.
+        ohlcv_1h = self._shared_ohlcv.get(self.symbol, "1h") or []
+        try:
+            ohlcv_5m = await self.client.fetch_ohlcv(self.symbol, "5m", 300)
+        except Exception:  # noqa: BLE001
+            ohlcv_5m = []
         # window: entry 50봉 전 ~ exit + 5봉
         def _window(rows: list[list[Any]], entry_ms: int, exit_ms: int) -> list[list[Any]]:
             if not rows or entry_ms <= 0:
@@ -4661,32 +4667,29 @@ class BotIctInstance:
     _UI_OHLCV_REFRESH_TAIL: ClassVar[int] = 200
 
     def _get_ohlcv_lock(self, tf: str) -> asyncio.Lock:
-        """TF 별 cache 갱신 lock — lazy init (이벤트 루프 안에서)."""
-        lock = self._ohlcv_cache_locks.get(tf)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._ohlcv_cache_locks[tf] = lock
-        return lock
+        """(symbol, tf) 별 cache 갱신 lock — 공유 캐시에 위임 (심볼 단위 직렬화)."""
+        return self._shared_ohlcv.get_lock(self.symbol, tf)
 
     async def _prefetch_all_ohlcv_tfs(self) -> None:
         """봇 시작 직후 background — 모든 UI TF prefetch.
 
-        각 TF 별로 _UI_OHLCV_TF_LIMITS 만큼 fetch_ohlcv → _ohlcv_cache 채움.
-        실패 시 해당 TF skip (다른 TF prefetch 계속). 사용자가 봇 가동 후
-        바로 차트 띄우면 작은 TF (1d/1w) 부터 차례로 채워져 즉시 응답 가능.
+        각 TF 별로 _UI_OHLCV_TF_LIMITS 만큼 fetch_ohlcv → 공유 캐시(symbol,tf) 채움.
+        같은 심볼을 다른 봇/유저가 이미 채웠으면 skip(심볼당 1회만 fetch). 실패 시
+        해당 TF skip (다른 TF prefetch 계속). 작은 봉수 TF 부터 채워 즉시 응답 가능.
         """
         # 작은 봉 수부터 먼저 — 빨리 끝나는 TF 부터 cache 채워 즉시 응답 가능.
         tf_order = sorted(self._UI_OHLCV_TF_LIMITS.items(), key=lambda kv: kv[1])
         for tf, limit in tf_order:
             try:
                 async with self._get_ohlcv_lock(tf):
-                    if tf in self._ohlcv_cache:
-                        continue  # 이미 누가 채웠으면 skip
+                    if self._shared_ohlcv.has(self.symbol, tf):
+                        continue  # 다른 봇/유저가 같은 심볼 이미 채웠으면 skip (공유)
                     rows = await self.client.fetch_ohlcv(self.symbol, tf, limit)
                     if rows:
-                        self._ohlcv_cache[tf] = list(rows)
+                        self._shared_ohlcv.set(self.symbol, tf, list(rows))
                         logger.info(
-                            "OHLCV prefetch 완료 %s — %d봉", tf, len(rows),
+                            "OHLCV prefetch 완료 %s %s — %d봉",
+                            self.symbol, tf, len(rows),
                         )
             except asyncio.CancelledError:
                 raise
@@ -4710,13 +4713,13 @@ class BotIctInstance:
                 )
                 if not new_rows:
                     return
-                cache = self._ohlcv_cache.get(tf, [])
+                cache = self._shared_ohlcv.get(self.symbol, tf) or []
                 # ts → row 로 merge (새 봉 add + 진행 중 봉 update)
                 by_ts = {r[0]: r for r in cache}
                 for r in new_rows:
                     by_ts[r[0]] = r
                 merged = sorted(by_ts.values(), key=lambda r: r[0])
-                self._ohlcv_cache[tf] = merged
+                self._shared_ohlcv.set(self.symbol, tf, merged)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
@@ -4738,7 +4741,7 @@ class BotIctInstance:
         Returns:
             ts 오름차순 rows. requested_limit 못 채워도 있는 만큼 반환.
         """
-        cache = self._ohlcv_cache.get(tf)
+        cache = self._shared_ohlcv.get(self.symbol, tf)
         if cache and len(cache) > 0:
             # cache hit — background refresh 트리거 (await 안 함)
             asyncio.create_task(self._refresh_ohlcv_cache_recent(tf))
@@ -4746,15 +4749,16 @@ class BotIctInstance:
         # cache miss — 작은 limit 으로 sync fetch + 풀 prefetch 백그라운드 트리거
         quick_limit = min(requested_limit, 200)
         async with self._get_ohlcv_lock(tf):
-            if tf in self._ohlcv_cache:  # 다른 task 가 채웠을 수도
-                return self._ohlcv_cache[tf][-requested_limit:]
+            existing = self._shared_ohlcv.get(self.symbol, tf)
+            if existing is not None:  # 다른 task/봇 가 채웠을 수도 (심볼 공유)
+                return existing[-requested_limit:]
             try:
                 rows = await self.client.fetch_ohlcv(self.symbol, tf, quick_limit)
             except Exception as e:  # noqa: BLE001
                 logger.warning("get_ohlcv_cached sync fetch %s 실패: %s", tf, e)
                 return []
             if rows:
-                self._ohlcv_cache[tf] = list(rows)
+                self._shared_ohlcv.set(self.symbol, tf, list(rows))
             # 풀 prefetch — 이 TF 만 추가로 받음
             target_limit = self._UI_OHLCV_TF_LIMITS.get(tf, requested_limit)
             if target_limit > quick_limit:
@@ -4767,9 +4771,10 @@ class BotIctInstance:
             async with self._get_ohlcv_lock(tf):
                 rows = await self.client.fetch_ohlcv(self.symbol, tf, limit)
                 if rows:
-                    self._ohlcv_cache[tf] = list(rows)
+                    self._shared_ohlcv.set(self.symbol, tf, list(rows))
                     logger.info(
-                        "OHLCV background prefetch %s — %d봉", tf, len(rows),
+                        "OHLCV background prefetch %s %s — %d봉",
+                        self.symbol, tf, len(rows),
                     )
         except asyncio.CancelledError:
             raise
