@@ -505,6 +505,38 @@ class AuroraClientAdapter:
         except Exception as e:  # noqa: BLE001
             self._wlog("cancel_all_orders 실패: %s", e)
 
+    async def cancel_bot_orders(self, symbol: str) -> int:
+        """봇 태그(orderLinkId) 붙은 미체결 주문만 취소 — 유저 수동 주문 보존.
+
+        Aurora client.cancel_bot_orders 위임. 하위 client 가 미지원(구버전/덕타입)
+        이면 안전하게 0 반환(취소 안 함 — 유저 주문 보호 우선). 실패도 0.
+        """
+        try:
+            return await self._client.cancel_bot_orders(symbol)
+        except AttributeError:
+            self._wlog("cancel_bot_orders 미지원 client — skip (유저 주문 보호)")
+            return 0
+        except Exception as e:  # noqa: BLE001
+            self._wlog("cancel_bot_orders 실패: %s", e)
+            return 0
+
+    async def position_opened_by_bot(
+        self, symbol: str, side: str, entry_price: float,
+    ) -> bool:
+        """고아 포지션이 봇 것인지 판정 (주문 이력의 봇 태그 대조) — client 위임.
+
+        하위 client 미지원/실패 시 False (보수적 — 확실히 봇 것일 때만 채택).
+        """
+        try:
+            return await self._client.position_opened_by_bot(
+                symbol, side, entry_price,
+            )
+        except AttributeError:
+            return False
+        except Exception as e:  # noqa: BLE001
+            self._wlog("position_opened_by_bot 실패: %s", e)
+            return False
+
     async def fetch_closed_positions(
         self, since_ms: int | None = None, limit: int = 200,
     ) -> list[Any]:

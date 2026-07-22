@@ -330,7 +330,9 @@ async def test_place_order_reduce_only_param():
         )
         call_args = client._mock_ex.create_order.call_args  # type: ignore[attr-defined]
         params = call_args.args[5]
-        assert params == {"reduceOnly": True}
+        assert params["reduceOnly"] is True
+        # 2026-07-22: 모든 봇 주문에 태그(orderLinkId) 동봉.
+        assert params["orderLinkId"].startswith("AUR")
 
 
 # ============================================================
@@ -696,3 +698,98 @@ async def test_fetch_closed_positions_bybit_network_error_returns_empty():
         )
         result = await client.fetch_closed_positions()
         assert result == []
+
+
+# ============================================================
+# 봇 주문 태그 (orderLinkId) — 2026-07-22
+# 재부팅 후 고아 포지션 소유권 인식 + 유저 수동 주문 보존(선별 취소)
+# ============================================================
+
+
+def test_is_bot_order_and_gen_link_id() -> None:
+    """_gen_bot_order_link_id 는 태그 prefix + 36자 미만, _is_bot_order 판정."""
+    from aurora.exchange.ccxt_client import (
+        BOT_ORDER_TAG,
+        _gen_bot_order_link_id,
+        _is_bot_order,
+    )
+
+    oid = _gen_bot_order_link_id()
+    assert oid.startswith(BOT_ORDER_TAG)
+    assert len(oid) < 36                       # Bybit orderLinkId 한도
+    assert _gen_bot_order_link_id() != oid     # 고유
+    # clientOrderId 필드
+    assert _is_bot_order({"clientOrderId": oid}) is True
+    # info.orderLinkId 폴백
+    assert _is_bot_order({"info": {"orderLinkId": oid}}) is True
+    # 유저 수동 주문(태그 없음)
+    assert _is_bot_order({"clientOrderId": "user-123"}) is False
+    assert _is_bot_order({"clientOrderId": ""}) is False
+    assert _is_bot_order({}) is False
+
+
+@pytest.mark.asyncio
+async def test_place_order_adds_bot_tag() -> None:
+    """place_order 가 create_order params 에 봇 태그 orderLinkId 부착."""
+    from aurora.exchange.ccxt_client import BOT_ORDER_TAG
+
+    client = _make_client()
+    client._mock_ex.create_order = AsyncMock(return_value={  # type: ignore[attr-defined]
+        "id": "o1", "symbol": "BTC/USDT:USDT", "side": "buy",
+        "amount": 1.0, "price": 100.0, "status": "open", "info": {},
+    })
+    await client.place_order("BTC/USDT:USDT", "buy", 1.0, price=100.0)
+    params = client._mock_ex.create_order.call_args.args[5]  # type: ignore[attr-defined]
+    assert params["orderLinkId"].startswith(BOT_ORDER_TAG)
+
+
+@pytest.mark.asyncio
+async def test_cancel_bot_orders_only_cancels_tagged() -> None:
+    """cancel_bot_orders 는 봇 태그 주문만 취소, 유저 수동 주문 보존."""
+    from aurora.exchange.ccxt_client import _gen_bot_order_link_id
+
+    bot_oid = _gen_bot_order_link_id()
+    client = _make_client()
+    client._mock_ex.fetch_open_orders = AsyncMock(return_value=[  # type: ignore[attr-defined]
+        {"id": "bot1", "clientOrderId": bot_oid},
+        {"id": "user1", "clientOrderId": "manual-abc"},
+        {"id": "bot2", "info": {"orderLinkId": _gen_bot_order_link_id()}},
+    ])
+    client._mock_ex.cancel_order = AsyncMock(return_value=None)  # type: ignore[attr-defined]
+    n = await client.cancel_bot_orders("BTC/USDT:USDT")
+    assert n == 2  # 봇 주문 2건만
+    cancelled_ids = {
+        c.args[0] for c in client._mock_ex.cancel_order.call_args_list  # type: ignore[attr-defined]
+    }
+    assert cancelled_ids == {"bot1", "bot2"}  # user1 은 취소 안 됨
+
+
+@pytest.mark.asyncio
+async def test_position_opened_by_bot_matches_tag_and_entry() -> None:
+    """position_opened_by_bot: 봇 태그 + 방향 + entry 1% 이내 진입주문이면 True."""
+    from aurora.exchange.ccxt_client import _gen_bot_order_link_id
+
+    client = _make_client()
+    client._mock_ex.fetch_open_orders = AsyncMock(return_value=[])  # type: ignore[attr-defined]
+    client._mock_ex.fetch_closed_orders = AsyncMock(return_value=[  # type: ignore[attr-defined]
+        {"id": "e1", "clientOrderId": _gen_bot_order_link_id(),
+         "side": "buy", "price": 80000.0, "average": 80000.0, "info": {}},
+    ])
+    # 매칭(long, entry 80000) → True
+    assert await client.position_opened_by_bot("BTC/USDT:USDT", "long", 80000.0) is True
+    # 방향 불일치(short) → False
+    assert await client.position_opened_by_bot("BTC/USDT:USDT", "short", 80000.0) is False
+    # entry 1% 초과 → False
+    assert await client.position_opened_by_bot("BTC/USDT:USDT", "long", 90000.0) is False
+
+
+@pytest.mark.asyncio
+async def test_position_opened_by_bot_ignores_untagged() -> None:
+    """유저 수동 주문(태그 없음)만 있으면 False (봇 것 아님)."""
+    client = _make_client()
+    client._mock_ex.fetch_open_orders = AsyncMock(return_value=[])  # type: ignore[attr-defined]
+    client._mock_ex.fetch_closed_orders = AsyncMock(return_value=[  # type: ignore[attr-defined]
+        {"id": "u1", "clientOrderId": "manual-xyz",
+         "side": "buy", "price": 80000.0, "average": 80000.0, "info": {}},
+    ])
+    assert await client.position_opened_by_bot("BTC/USDT:USDT", "long", 80000.0) is False

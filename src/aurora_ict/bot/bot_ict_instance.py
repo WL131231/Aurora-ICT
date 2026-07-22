@@ -627,8 +627,11 @@ class BotIctInstance:
         # 지정가는 sync 의 방향 검증·입양이 처리하므로 청소는 무포지션일 때만.
         if self.active_position is None:
             try:
-                await self.client.cancel_all_orders(self.symbol)
-                logger.info("startup 고아 주문 청소 — cancel_all_orders(%s)", self.symbol)
+                n_cxl = await self.client.cancel_bot_orders(self.symbol)
+                logger.info(
+                    "startup 고아 주문 청소 — 봇 주문만 취소 %d건 (유저 수동 주문 보존, %s)",
+                    n_cxl or 0, self.symbol,
+                )
             except Exception as e:  # noqa: BLE001
                 logger.warning("startup 고아 주문 청소 실패 (무시): %s", e)
         else:
@@ -736,10 +739,22 @@ class BotIctInstance:
         # 단독 .exe(trades_data_dir=None)는 대조 불가라 기존 복구 동작 유지.
         if self.trades_data_dir is not None:
             _own = self._find_unclosed_entry_event(direction)
-            if _own is None or abs(_own.price - entry_price) > entry_price * 0.01:
+            _rec_match = (
+                _own is not None
+                and abs(_own.price - entry_price) <= entry_price * 0.01
+            )
+            # 봇 ENTRY 기록이 없어도, 거래소 주문 이력에 봇 태그(orderLinkId=AUR*)가
+            # 있으면 봇이 연 포지션(고아 체결·DB 유실 대비 — "우리만 아는 표시").
+            # 기록 매칭 또는 태그 매칭 중 하나면 봇 포지션으로 채택.
+            _tag_match = False
+            if not _rec_match:
+                _tag_match = await self.client.position_opened_by_bot(
+                    self.symbol, direction.value, entry_price,
+                )
+            if not _rec_match and not _tag_match:
                 logger.warning(
-                    "recover: 미추적 포지션(봇 ENTRY 기록 없음) — 유저 수동 포지션으로 "
-                    "간주해 채택·SL/TP 미설정 (%s %s entry=%.4f qty=%.4f)",
+                    "recover: 미추적 포지션(봇 ENTRY 기록·주문태그 모두 없음) — 유저 "
+                    "수동 포지션으로 간주해 채택·SL/TP 미설정 (%s %s entry=%.4f qty=%.4f)",
                     self.symbol, direction.value, entry_price, contracts,
                 )
                 # 재시도 스팸 방지 — 이 포지션은 다시 시도/로그하지 않음.
@@ -890,7 +905,7 @@ class BotIctInstance:
         if self._pending_entry is not None:
             pe = self._pending_entry
             try:
-                await self.client.cancel_all_orders(self.symbol)
+                await self.client.cancel_bot_orders(self.symbol)
                 logger.info(
                     "STOP: 지정가 미체결 (entry=%.4f qty=%.6f) 취소",
                     pe.entry, pe.qty,
@@ -2218,7 +2233,7 @@ class BotIctInstance:
         now_ms = int(time.time() * 1000)
         if now_ms - pe.placed_ts_ms >= self.entry_limit_ttl_sec * 1000:
             try:
-                await self.client.cancel_all_orders(self.symbol)
+                await self.client.cancel_bot_orders(self.symbol)
             except Exception as e:  # noqa: BLE001
                 logger.warning("pending limit 취소 실패: %s", e)
             logger.info(
@@ -2242,7 +2257,7 @@ class BotIctInstance:
         if self._pending_entry is None:
             return False
         try:
-            await self.client.cancel_all_orders(self.symbol)
+            await self.client.cancel_bot_orders(self.symbol)
         except Exception as e:  # noqa: BLE001
             logger.warning("pending entry 수동 취소 — cancel_all_orders 실패: %s", e)
         logger.info(
