@@ -134,11 +134,14 @@ async def auto_resume_running_bots(
     chunk_n = max(1, int(os.environ.get("AURORA_ICT_RESUME_CHUNK", "6")))
     for i in range(0, len(bots), chunk_n):
         chunk = bots[i:i + chunk_n]
+        # return_exceptions=True: _resume_one 은 예외를 삼키지만, 만일 CancelledError
+        # 등이 새더라도 청크 격리가 구조적으로 보장되게(다른 봇 안 죽게) 한다.
         results = await asyncio.gather(
             *(_resume_one(code, sym) for code, sym in chunk),
+            return_exceptions=True,
         )
-        stats["succeeded"] += sum(1 for ok in results if ok)
-        stats["failed"] += sum(1 for ok in results if not ok)
+        stats["succeeded"] += sum(1 for ok in results if ok is True)
+        stats["failed"] += sum(1 for ok in results if ok is not True)
     return stats
 
 

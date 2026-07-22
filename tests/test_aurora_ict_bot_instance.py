@@ -1157,6 +1157,29 @@ async def test_recover_ignores_untracked_position_saas(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_setup_blocked_when_foreign_position_present() -> None:
+    """#MANUAL-POS-RESPECT(리뷰 HIGH): 봇 flat 인데 거래소에 미추적 포지션 있으면
+    신규 진입 차단(유저 수동 포지션 위에 안 얹음) — place_order 미호출."""
+    from aurora_ict.indicators.fvg import FVG, FVGType
+    from aurora_ict.strategy.silver_bullet import SilverBulletSetup
+
+    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    # 봇은 flat(active_position None) 이나 거래소엔 유저 수동 포지션 존재.
+    client.fetch_position = AsyncMock(return_value={
+        "contracts": 0.05, "side": "long", "entryPrice": 100.0,
+    })
+    bot = BotIctInstance(client=client, step_interval_sec=3600)
+    assert bot.active_position is None
+    fvg = FVG(type=FVGType.BULLISH, idx=5, ts_ms=1, low=98, high=102)
+    setup = SilverBulletSetup(
+        ts_ms=1, direction=Direction.LONG, window="any",
+        entry=100.0, stop_loss=95.0, take_profit=115.0, risk_reward=3.0, fvg=fvg)
+    await bot._execute_setup(setup)
+    assert bot.active_position is None          # 진입 안 함
+    client.place_order.assert_not_awaited()      # 주문 안 냄
+
+
+@pytest.mark.asyncio
 async def test_recover_adopts_untracked_when_bot_tagged(tmp_path) -> None:
     """#MANUAL-POS-RESPECT: 봇 ENTRY 기록 없어도 거래소 주문 태그로 봇 것 판정되면
     채택 (고아 체결·DB 유실 대비 — '우리만 아는 표시' 마커 인식)."""

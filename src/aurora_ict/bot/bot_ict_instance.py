@@ -131,6 +131,13 @@ class ExchangeClientProtocol(Protocol):
 
     async def cancel_all_orders(self, symbol: str) -> None: ...
 
+    # 2026-07-22: 봇 주문 태그 기반 — 선별취소 + 고아 포지션 소유권 판정.
+    async def cancel_bot_orders(self, symbol: str) -> int: ...
+
+    async def position_opened_by_bot(
+        self, symbol: str, side: str, entry_price: float, qty: float = 0.0,
+    ) -> bool: ...
+
     async def fetch_closed_positions(
         self, since_ms: int | None = None, limit: int = 200,
     ) -> list[Any]: ...
@@ -749,7 +756,7 @@ class BotIctInstance:
             _tag_match = False
             if not _rec_match:
                 _tag_match = await self.client.position_opened_by_bot(
-                    self.symbol, direction.value, entry_price,
+                    self.symbol, direction.value, entry_price, contracts,
                 )
             if not _rec_match and not _tag_match:
                 logger.warning(
@@ -1849,6 +1856,26 @@ class BotIctInstance:
         - use_market_entry=True 면 레거시 즉시 시장가 (slippage 발생, 비권장).
         """
         side = "buy" if setup.direction is Direction.LONG else "sell"
+
+        # #MANUAL-POS-RESPECT 2026-07-22 (리뷰 HIGH): 봇이 flat(active_position None)
+        # 인데 거래소에 포지션이 있으면 그건 유저 수동 포지션(또는 미채택 고아)이다.
+        # 그 위에 얹거나(one-way 모드 합산) flip 되지 않게 신규 진입을 차단한다 —
+        # 과거엔 미채택 포지션을 밟고 진입해 reconcile 이 합산·SL/TP 부착(수동포지션
+        # 침해)하거나 비상청산했다. flip 경로(htf_flip_target)는 active_position 보유
+        # 상태라 여기 해당 없음. 확인 실패 시에도 안전상 진입 보류.
+        if self.active_position is None:
+            try:
+                _ex = await self.client.fetch_position(self.symbol)
+                _exqty = float((_ex or {}).get("contracts", 0) or 0)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("진입 전 포지션 확인 실패 — 안전상 진입 보류: %s", e)
+                return
+            if _exqty != 0:
+                logger.warning(
+                    "진입 차단 — 봇 flat 이나 거래소에 미추적 포지션 존재(유저 수동 "
+                    "추정 qty=%.6f) → 신규 진입 보류 (%s)", _exqty, self.symbol,
+                )
+                return
 
         # #MMBM 2026-07-21: 이번 실행 셋업의 모델 태그 갱신 (매매기록 분리 실측용).
         # SB(Silver Bullet)=Origo, MMBM=별도 태그. 진입~청산 사이 단일 포지션 유지

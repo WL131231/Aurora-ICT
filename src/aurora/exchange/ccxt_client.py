@@ -563,19 +563,25 @@ class CcxtClient:
         return n
 
     async def position_opened_by_bot(
-        self, symbol: str, side: str, entry_price: float,
+        self, symbol: str, side: str, entry_price: float, qty: float = 0.0,
     ) -> bool:
         """재부팅 후 고아 포지션이 봇 것인지 판정 — 최근 주문 이력에 이 포지션을
-        연 봇 태그 진입주문(같은 방향·entry 1% 이내·비reduceOnly)이 있는지.
+        연 봇 태그 **체결** 진입주문(같은 방향·entry 1% 이내·비reduceOnly·qty 근사)이
+        있는지.
 
         봇 지정가 진입은 SL/TP 동봉이라 체결 후 별도 open order 가 없을 수 있어
         미체결(open)+최근 체결(closed) 주문을 모두 훑는다. 실패/미발견 시 False
         (보수적 — 확실히 봇 것일 때만 채택). paper 모드는 False.
 
+        오탐 방지(리뷰): (1) filled>0 만 — TTL 취소된 미체결 봇 주문이 현재가
+        근처면 유저 수동 포지션을 오채택할 수 있었음. (2) qty(주어지면) 근사 매칭 —
+        예전 라운드의 다른 수량 주문이 비슷한 가격에 걸린 오탐 억제.
+
         Args:
             symbol: ccxt symbol.
             side: 포지션 방향 ("long"/"short" 또는 "buy"/"sell").
             entry_price: 포지션 진입가 (매칭 기준, 1% tolerance).
+            qty: 포지션 수량 (>0 이면 체결수량 ±10% 매칭 요구, 0 이면 미검사).
 
         Returns:
             봇이 연 포지션으로 판정되면 True.
@@ -599,11 +605,17 @@ class CcxtClient:
             info = o.get("info") or {}
             if o.get("reduceOnly") or info.get("reduceOnly") in (True, "true", "True"):
                 continue  # 청산 주문 제외 — 진입 주문만
+            filled = float(o.get("filled") or 0) or 0.0
+            if filled <= 0:
+                continue  # 체결분만 — 취소된 미체결 주문 오탐 제외
             if (o.get("side") or "").lower() != want_side:
                 continue
             px = float(o.get("average") or o.get("price") or 0) or 0.0
-            if px > 0 and abs(px - entry_price) <= entry_price * 0.01:
-                return True
+            if px <= 0 or abs(px - entry_price) > entry_price * 0.01:
+                continue
+            if qty > 0 and abs(filled - qty) > qty * 0.1:
+                continue  # 수량 불일치 — 예전 라운드 주문 오탐 억제
+            return True
         return False
 
     # ============================================================
