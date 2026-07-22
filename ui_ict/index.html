@@ -1430,8 +1430,12 @@
     /* main(차트 컨테이너) — 풀 너비 + relative (fab/판단/포지션 absolute 기준). */
     .main { width: 100%; position: relative; }
 
-    /* 차트 — 고정 높이 (세로 스크롤 위해 flex:1 해제, 차트 아래 패널 펼침). */
-    .chart-wrap { flex: none; height: 60vh; min-height: 0; }
+    /* 차트 — 세로 스크롤 위해 flex:1 해제. 2026-07-22 겹침 fix: judgment/positions
+       패널이 chart-wrap(자식)이라 chart-wrap 을 60vh 고정하면 static 패널이 넘쳐
+       아래 사이드바(페어칩·START)와 겹침. → chart-wrap 은 auto(자식 높이만큼 성장),
+       #chart 에만 60vh 부여 → 차트 아래로 판단·포지션 패널이 정상 흐름으로 쌓임. */
+    .chart-wrap { flex: none; height: auto; min-height: 0; }
+    .chart-wrap > #chart { height: 60vh; }
 
     /* 차트 toolbar — 가로 스크롤 (TF 한 줄). 햄버거 제거로 padding 정상화. */
     .chart-toolbar {
