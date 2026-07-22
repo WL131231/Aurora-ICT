@@ -61,7 +61,10 @@ MAX_PAIRS_PER_USER = 10
 MAX_CHOICE_PAIRS = 3  # 고정 7 외 사용자 자유 선택 상한
 # #DOS 2026-07-13: 단일 Fly 머신(8x/8GB) 전역 봇 슬롯 상한. 유저당 7~10봇이라
 # ~40 이면 4~5명 동시 풀가동. 상용화 확장 시 환경변수/머신 증설로 상향.
-MAX_TOTAL_BOTS = int(os.environ.get("AURORA_ICT_MAX_TOTAL_BOTS", "80"))
+# 2026-07-22: 차트 TF 를 15m·1h 로 축소해 봇당 OHLCV 캐시가 ~9배 감소(18.6만→2만봉,
+# 약 3GB 여유 확보) → 상한 80→120 확대. 유저 더 수용(AICT-TDAF 상한거부 해소).
+# 환경변수로 추가 상향 가능하나 메모리 감시 병행 필요.
+MAX_TOTAL_BOTS = int(os.environ.get("AURORA_ICT_MAX_TOTAL_BOTS", "120"))
 _ALT_LEVERAGE = 15
 
 logger = logging.getLogger(__name__)

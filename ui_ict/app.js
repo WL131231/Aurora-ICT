@@ -9,9 +9,10 @@ const API = "";  // same-origin — fetch("/auth/status") 처럼 동작
 
 // 현재 선택된 차트 timeframe (localStorage 영속화)
 // 2026-05-28: 파트너 결정 — default 1h → 5m (settings.timeframe 정합)
-let currentTimeframe = localStorage.getItem("aurora_ict_tf") || "5m";
-const VALID_TFS = ["1m", "5m", "15m", "1h", "2h", "4h", "1d", "1w"];
-if (!VALID_TFS.includes(currentTimeframe)) currentTimeframe = "5m";
+let currentTimeframe = localStorage.getItem("aurora_ict_tf") || "1h";
+// 2026-07-22 파트너 지시: 차트 TF 를 15m·1h 만 유지(메모리 절감 — 봇당 캐시 ~9배↓).
+const VALID_TFS = ["15m", "1h"];
+if (!VALID_TFS.includes(currentTimeframe)) currentTimeframe = "1h";
 
 // 현재 보고 있는 차트 페어(ccxt symbol) — 좌측 TRADING PAIR(매매)와 별개로
 // "어느 페어 차트를 볼지"만 정한다. 차트 데이터(ohlcv/markers)에만 영향,
@@ -26,10 +27,9 @@ const _chartCache = new Map();
 
 // TF 별 fetch 봉 한도 — 큰 TF 는 history 전부, 작은 TF 는 메모리/시간 상한.
 // 2026-05-27 파트너 요청: 거래소 시작부터 현재까지 가능한 만큼.
+// 2026-07-22: 백엔드 _UI_OHLCV_TF_LIMITS 와 정합 (15m·1h 만, 각 10000봉).
 const CANDLE_LIMIT = {
-  "1m": 5000, "5m": 20000, "15m": 50000,
-  "1h": 60000, "2h": 30000, "4h": 15000,
-  "1d": 5000, "1w": 1500,
+  "15m": 10000, "1h": 10000,
 };
 const MARKER_LIMIT = 2000;
 

@@ -4650,12 +4650,12 @@ class BotIctInstance:
     # 2026-05-27: UI 차트 OHLCV cache + prefetch (TF 토글 즉시 응답용)
     # ============================================================
 
-    # TF 별 prefetch 한도 — 작은 TF (1m/5m) 는 메모리 부담으로 합리적 max,
-    # 큰 TF (1h~1w) 는 Bybit 거래소 history 다 (2020-03~). app.js CANDLE_LIMIT 정합.
+    # TF 별 prefetch 한도 — 2026-07-22 파트너 지시로 차트 TF 를 15m·1h 만 유지
+    # (나머지 제거). 봇당 캐시가 18.6만봉→2만봉(~9배↓)로 줄어 8GB 에서 동시 봇 상한
+    # 을 안전하게 확대(메모리 여유 확보). 트레이드(5m)는 이 캐시와 무관한 별도 fetch.
+    # app.js CANDLE_LIMIT 와 정합 유지 필수. 값=합리적 스크롤 여유(기본뷰는 ~300봉).
     _UI_OHLCV_TF_LIMITS: ClassVar[dict[str, int]] = {
-        "1m": 5000, "5m": 20000, "15m": 50000,
-        "1h": 60000, "2h": 30000, "4h": 15000,
-        "1d": 5000, "1w": 1500,
+        "15m": 10000, "1h": 10000,
     }
     # /ict/ohlcv 가 cache 갱신 트리거할 때 받을 봉 수 (마지막 N봉만 refresh).
     _UI_OHLCV_REFRESH_TAIL: ClassVar[int] = 200
