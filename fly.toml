@@ -22,7 +22,10 @@ primary_region = "sin"
   AURORA_ICT_SAAS = "1"
 
 [[mounts]]
-  source = "aurora_data"
+  # 2026-07-22 인시던트: 롤링 배포가 머신 제거 후 재생성 시 원 볼륨 호스트(sin/bfac)
+  # 자원부족으로 launch 실패 → 봇 다운. aurora_data(vol_vwn6x989xp099p1v)를 여유
+  # 호스트(sin/0b9f)로 fork → aurora_data2(vol_re1z79j3xzgom954)로 전환해 복구.
+  source = "aurora_data2"
   destination = "/data"
 
 [[services]]
