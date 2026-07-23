@@ -122,3 +122,26 @@ async def test_recover_rebuilds_tp_grid_and_fixed_sl() -> None:
     assert pos.stop == pytest.approx(98.0)
     assert pos.tp_prices == pytest.approx([101.0, 102.0, 103.0, 104.0])
     assert pos.init_qty == pytest.approx(5.0)
+
+
+@pytest.mark.asyncio
+async def test_small_position_full_close_when_chunk_below_min() -> None:
+    """#Cursus 2026-07-23 (파트너): 25% 분할 청크가 거래소 최소수량 미달인 소액
+    포지션은 분할하지 않고 첫 TP 도달 시 잔량을 통짜 청산."""
+    client = _client()
+    bot = BotTrendInstance(client=client)
+    await bot._open(Direction.LONG, price=100.0)
+    pos = bot.active_position
+    # 최소수량 = init_qty → 25% 청크(init×0.25) < min_qty → 통짜 청산 조건.
+    bot._symbol_meta = {
+        "min_qty": pos.init_qty, "qty_step": None, "max_leverage": None,
+    }
+    full_qty = pos.qty
+    client.place_order.reset_mock()
+
+    await bot._check_split_tp(101.0)  # TP1 도달
+
+    assert bot.active_position is None                    # 전량 종료
+    call = client.place_order.await_args
+    assert call.kwargs.get("reduce_only") is True
+    assert call.kwargs.get("qty") == pytest.approx(full_qty)  # 통짜(전량)

@@ -500,6 +500,11 @@ class BotIctInstance:
     # None 이면 record 시 None 박힘 (구식 흐름 호환).
     run_mode: str | None = None
 
+    # #REENTRY-BLOCK 2026-07-23 (파트너): 사용자가 TP 전에 수동 청산하면, 같은 방향·
+    # 같은 진입가 setup 을 봇이 곧바로 재진입해 사용자 의도(조기 익절)를 무시했다.
+    # 청산된 setup(방향+진입가)을 이 시간(초) 동안 재진입 차단. 0 이면 기능 off.
+    manual_close_reentry_block_sec: int = 14400  # 4h — 동일 setup 재진입 쿨다운
+
     # 2026-06-08: 텔레그램 매매 알림 — 이 봇 소유자 코드 + 알림 콜백.
     # MultiUserBotManager 가 주입. 콜백 시그니처: async (user_code, TradeEvent).
     # 미주입(None)이거나 user_code 빈 값이면 알림 안 보냄(.exe / 테스트 호환).
@@ -590,6 +595,9 @@ class BotIctInstance:
     # 포지션 시그니처. reconcile 이 매 step recovery 를 재호출하는 로그스팸·DB부하
     # 방지 — 같은 시그니처면 조용히 skip. 포지션 소멸/채택 시 None 리셋.
     _declined_manual_sig: tuple[str, float, float] | None = field(default=None)
+    # #REENTRY-BLOCK 2026-07-23: 사용자 수동청산된 setup 시그니처 (방향, 진입가, 만료ts_ms).
+    # 만료 전 동일 방향·진입가 1% 이내 setup 재진입 차단. 신규 진입/만료 시 해제.
+    _reentry_block: tuple[str, float, int] | None = field(default=None)
     # 진입 주문 실패 카운트 (place_order) — 누적 시 운영자 점검 신호.
     _order_failure_count: int = field(default=0)
     # 페어 확장 — 가동 시 fetch_symbol_meta 로 채우는 심볼별 거래소 메타
@@ -690,6 +698,48 @@ class BotIctInstance:
     ) -> tuple[str, float, float]:
         """포지션 시그니처 (방향+entry+qty 반올림) — 미채택 수동 포지션 재시도 억제용."""
         return (direction.value, round(entry_price, 4), round(qty, 6))
+
+    def _arm_reentry_block(
+        self, direction: Direction, entry: float, reason: str,
+    ) -> None:
+        """#REENTRY-BLOCK: 사용자 수동청산된 setup(방향+진입가) 재진입 차단 쿨다운 설정.
+
+        같은 방향·진입가 1% 이내 setup 을 manual_close_reentry_block_sec 동안 차단해
+        조기 익절한 사용자 의도를 존중한다. block_sec=0 이면 기능 off (설정 안 함).
+
+        Args:
+            direction: 청산된 포지션 방향.
+            entry: 청산된 포지션 진입가 (재진입 매칭 기준).
+            reason: 로그용 사유(UI 청산 / 거래소 수동청산 등).
+        """
+        if self.manual_close_reentry_block_sec <= 0 or entry <= 0:
+            return
+        now_ms = int(time.time() * 1000)
+        self._reentry_block = (
+            direction.value, entry,
+            now_ms + self.manual_close_reentry_block_sec * 1000,
+        )
+        logger.info(
+            "재진입 차단 arm — %s %s entry=%.4f (%ds, 사유=%s)",
+            self.symbol, direction.value, entry,
+            self.manual_close_reentry_block_sec, reason,
+        )
+
+    def _reentry_blocked(self, setup: SilverBulletSetup) -> bool:
+        """이 setup 이 사용자 수동청산 쿨다운에 걸리는지 (같은 방향·진입가 1% 이내·미만료).
+
+        만료된 block 은 즉시 해제하고 False. 다른 방향/먼 진입가는 통과(True 아님).
+        """
+        blk = self._reentry_block
+        if blk is None:
+            return False
+        bdir, bentry, bexp = blk
+        if int(time.time() * 1000) >= bexp:
+            self._reentry_block = None  # 만료 — 해제
+            return False
+        if setup.direction.value != bdir or bentry <= 0:
+            return False
+        return abs(setup.entry - bentry) <= bentry * 0.01
 
     async def _recover_position_from_exchange(self) -> None:
         """봇 시작 시 거래소 측 활성 포지션 복원.
@@ -1857,6 +1907,16 @@ class BotIctInstance:
         """
         side = "buy" if setup.direction is Direction.LONG else "sell"
 
+        # #REENTRY-BLOCK 2026-07-23 (파트너): 사용자가 TP 전 수동청산한 동일 setup
+        # (방향+진입가 1% 이내)은 쿨다운 동안 재진입 억제 — 조기 익절 의도 존중.
+        # flip(active_position 보유)은 해당 없음. API 호출 전 먼저 검사(비용 0).
+        if self.active_position is None and self._reentry_blocked(setup):
+            logger.info(
+                "재진입 차단 — 사용자 수동청산 동일 setup (dir=%s entry=%.4f) 쿨다운 (%s)",
+                setup.direction.value, setup.entry, self.symbol,
+            )
+            return
+
         # #MANUAL-POS-RESPECT 2026-07-22 (리뷰 HIGH): 봇이 flat(active_position None)
         # 인데 거래소에 포지션이 있으면 그건 유저 수동 포지션(또는 미채택 고아)이다.
         # 그 위에 얹거나(one-way 모드 합산) flip 되지 않게 신규 진입을 차단한다 —
@@ -2148,6 +2208,7 @@ class BotIctInstance:
             equity_at_entry=_market_entry_equity,
             tp1_price=self._calc_tp1(fill_price, setup.stop_loss, setup.direction),
         )
+        self._reentry_block = None  # 신규 진입 확정 — 재진입 차단 해제
         # #BUG-2 해소: ENTRY 이벤트 기록 (체결됨 — 먼저 기록).
         self._record_trade(
             TradeEventType.ENTRY,
@@ -2231,6 +2292,7 @@ class BotIctInstance:
                 equity_at_entry=entry_equity,
                 tp1_price=self._calc_tp1(entry_px, pe.stop_loss, pe.direction),
             )
+            self._reentry_block = None  # 신규 진입 확정 — 재진입 차단 해제
             # #BUG-2: ENTRY 기록 (체결됨 — 먼저 기록).
             self._record_trade(
                 TradeEventType.ENTRY,
@@ -4177,6 +4239,12 @@ class BotIctInstance:
             ):
                 evt_type = TradeEventType.SL_HIT
                 close_reason = "trail_stop (거래소 트레일링 청산)"
+        # #REENTRY-BLOCK: SYNC_CLOSE(=SL/TP/트레일 아님) = 사용자가 거래소에서 직접
+        # 수동청산 → 같은 방향·진입가 setup 즉시 재진입 억제(조기 익절 의도 존중).
+        if evt_type is TradeEventType.SYNC_CLOSE:
+            self._arm_reentry_block(
+                last_known.direction, last_known.entry, "거래소 수동청산(SYNC_CLOSE)",
+            )
         logger.info(
             "position 종료 — entry=%.4f close=%.4f pnl=%.4f USDT (%s)",
             last_known.entry, close_px, pnl_usd, close_reason,
