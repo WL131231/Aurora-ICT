@@ -1193,6 +1193,12 @@ def _register_multi_user_routes(
             ) from e
         remaining = ex_qty - close_qty
         if req.fraction >= 1.0 or remaining <= 1e-9:
+            # #REENTRY-BLOCK 2026-07-23: 사용자 수동 전체청산 → 봇이 같은 setup 즉시
+            # 재진입하지 않게 쿨다운 arm (조기 익절 의도 존중). Cursus 등 미지원 봇은 무시.
+            try:
+                bot._arm_reentry_block(ap.direction, ap.entry, "UI 수동청산")
+            except Exception:  # noqa: BLE001, S110
+                pass
             bot.active_position = None
             logger.info(
                 "[multi-user] %s 전체 청산 완료 — qty=%.6f", user_code, close_qty,
@@ -2513,6 +2519,11 @@ def create_app(
 
         remaining = ex_qty - close_qty
         if req.fraction >= 1.0 or remaining <= 1e-9:
+            # #REENTRY-BLOCK 2026-07-23: 사용자 수동 전체청산 → 동일 setup 재진입 쿨다운.
+            try:
+                bot._arm_reentry_block(ap.direction, ap.entry, "UI 수동청산")
+            except Exception:  # noqa: BLE001, S110
+                pass
             bot.active_position = None
             logger.info("전체 청산 완료 — qty=%.6f", close_qty)
             return {"closed_qty": close_qty, "remaining_qty": 0.0, "active": False}

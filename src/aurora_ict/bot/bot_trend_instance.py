@@ -490,12 +490,26 @@ class BotTrendInstance:
             )
             if not reached:
                 continue
-            qty_part = min(pos.init_qty * self.tp_frac, pos.qty)
-            if hasattr(self.client, "round_amount"):
-                try:
-                    qty_part = float(self.client.round_amount(self.symbol, qty_part))
-                except Exception:  # noqa: BLE001
-                    pass
+            # #Cursus 2026-07-23 (파트너 지시): 소액 포지션은 25% 분할 청크가 거래소
+            # 최소주문수량(min_qty) 미달이라 place_order 가 거부됐다(분할 포기→트레일에
+            # 의존). 분할 청크 < min_qty 면 분할하지 않고 첫 TP 도달 시 잔량을 통짜
+            # 청산한다(진입수량이 분할 감당 안 되는 소액 포지션). min_qty 미상이면 기존.
+            min_qty = self._symbol_meta.get("min_qty")
+            full_close = (
+                min_qty is not None
+                and pos.init_qty * self.tp_frac < float(min_qty)
+            )
+            if full_close:
+                qty_part = pos.qty
+            else:
+                qty_part = min(pos.init_qty * self.tp_frac, pos.qty)
+                if hasattr(self.client, "round_amount"):
+                    try:
+                        qty_part = float(
+                            self.client.round_amount(self.symbol, qty_part),
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
             if qty_part <= 0:
                 # 최소 수량 미달(소액 포지션 25%) — 분할 포기, 트레일이 청산.
                 pos.tp_filled[k] = True
@@ -513,13 +527,26 @@ class BotTrendInstance:
                 )
                 pos.tp_filled[k] = True
                 continue
-            pos.tp_filled[k] = True
             pos.qty = max(0.0, pos.qty - qty_part)
             self._record_trade(
                 TradeEventType.TP_HIT, direction=pos.direction, price=tp_px,
                 qty=qty_part, entry_for_pnl=pos.entry,
-                reason=f"4분할 TP{k + 1}({self.tp_pcts[k] * 100:.0f}%)",
+                reason=(
+                    f"소액 통짜 TP{k + 1}" if full_close
+                    else f"4분할 TP{k + 1}({self.tp_pcts[k] * 100:.0f}%)"
+                ),
             )
+            if full_close:
+                # 통짜 청산 — 나머지 TP 전부 소진 처리 + 종료.
+                for j in range(len(pos.tp_filled)):
+                    pos.tp_filled[j] = True
+                logger.info(
+                    "Cursus 소액 포지션(분할 청크<최소수량) — TP%d 통짜 청산 "
+                    "%s @ %.4f qty=%.6f",
+                    k + 1, self.symbol, tp_px, qty_part,
+                )
+                break
+            pos.tp_filled[k] = True
             logger.info(
                 "Cursus 분할 TP%d 체결 — %s @ %.4f qty=%.6f 잔량=%.6f",
                 k + 1, self.symbol, tp_px, qty_part, pos.qty,
