@@ -36,6 +36,7 @@ from aurora_ict.bot.bot_ict_instance import (
     ExchangeClientProtocol,
     _log_alert_task_exc,
 )
+from aurora_ict.bot.order_error_notify import notify_order_error
 from aurora_ict.interfaces.trades_store import TradeEvent, TradeEventType, TradesStore
 from aurora_ict.strategy.dual_st import (
     DualSTConfig,
@@ -124,6 +125,8 @@ class BotTrendInstance:
     _task: asyncio.Task[None] | None = field(default=None)
     _trades_store: TradesStore | None = field(default=None)
     _symbol_meta: dict[str, float | None] = field(default_factory=dict)
+    # #ORDER-ERR-NOTIFY 2026-07-23: 조치필요 주문에러 카테고리별 마지막 안내 시각(ms).
+    _order_error_alert_ts: dict[str, int] = field(default_factory=dict)
     _auth_fail_streak: int = field(default=0)
     _sync_failure_streak: int = field(default=0)
     _last_heartbeat_ms: int = field(default=0)
@@ -327,6 +330,12 @@ class BotTrendInstance:
             await self.client.place_order(symbol=self.symbol, side=side, qty=qty, price=None)
         except Exception as e:  # noqa: BLE001
             logger.error("[%s] Cursus 진입 주문 실패: %s", self.symbol, e)
+            # #ORDER-ERR-NOTIFY 2026-07-23: 잔고부족·API권한 등 사용자 조치필요 에러는
+            # 연동 텔레그램으로 안내(카테고리별 6h 쿨다운).
+            notify_order_error(
+                str(e), self.notify_cb, self.user_code or "",
+                self._order_error_alert_ts,
+            )
             return
         capped = self._fixed_sl(price, direction)
         tp_prices = self._calc_tp_prices(price, direction)

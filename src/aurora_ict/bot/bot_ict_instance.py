@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 from ccxt.base.errors import AuthenticationError
 
+from aurora_ict.bot.order_error_notify import notify_order_error
 from aurora_ict.bot.shared_ohlcv_cache import GLOBAL_OHLCV_CACHE, SharedOhlcvCache
 from aurora_ict.bot.structure_trail import compute_structure_trail
 from aurora_ict.config.settings import ORIGO_MODEL_NAME
@@ -552,8 +553,6 @@ class BotIctInstance:
     _daily_limit_hit: bool = field(default=False)
     # 2026-06-10 조윤 건의: 일일 수익(TP) 한도 도달 flag — NY 자정 reset.
     _daily_profit_hit: bool = field(default=False)
-    # 2026-06-13 약관 미동의(110123) 안내 1회 발송 플래그 (봇 인스턴스 단위).
-    _terms_alerted: bool = field(default=False)
     # 2026-06-12 페어별 일일 손실 한도 — 이 심볼의 오늘 실현손익 + sticky flag.
     _today_pair_realized_pnl_usdt: float = field(default=0.0)
     _daily_pair_limit_hit: bool = field(default=False)
@@ -598,6 +597,9 @@ class BotIctInstance:
     # #REENTRY-BLOCK 2026-07-23: 사용자 수동청산된 setup 시그니처 (방향, 진입가, 만료ts_ms).
     # 만료 전 동일 방향·진입가 1% 이내 setup 재진입 차단. 신규 진입/만료 시 해제.
     _reentry_block: tuple[str, float, int] | None = field(default=None)
+    # #ORDER-ERR-NOTIFY 2026-07-23: 조치필요 주문에러(잔고부족·API권한 등) 카테고리별
+    # 마지막 텔레그램 안내 시각(ms) — 6h 쿨다운 도배 방지.
+    _order_error_alert_ts: dict[str, int] = field(default_factory=dict)
     # 진입 주문 실패 카운트 (place_order) — 누적 시 운영자 점검 신호.
     _order_failure_count: int = field(default=0)
     # 페어 확장 — 가동 시 fetch_symbol_meta 로 채우는 심볼별 거래소 메타
@@ -2129,24 +2131,12 @@ class BotIctInstance:
                 entry_price,
                 setup.ts_ms if hasattr(setup, "ts_ms") else 0, e,
             )
-            # 2026-06-13 파트너: 약관 미동의(110123)는 사용자만 풀 수 있음 —
-            # 연동 텔레그램으로 1회 안내 (봇 인스턴스당 1번, 스팸 방지).
-            err_s = str(e)
-            if ("110123" in err_s or "Trading Terms" in err_s) and not self._terms_alerted:
-                self._terms_alerted = True
-                if self.notify_cb is not None and self.user_code:
-                    msg = (
-                        f"⚠ <b>{self.symbol}</b> 주문이 거래소에서 거절되고 있어요.\n"
-                        "Bybit 정책상 이 컨트랙트는 <b>웹/앱에서 약관 동의 1회</b>가 "
-                        "필요합니다.\n"
-                        "Bybit 에서 해당 페어 주문 화면을 열어 약관에 동의해 주세요 — "
-                        "동의 후 봇이 자동으로 다시 매매합니다."
-                    )
-                    try:
-                        task = asyncio.create_task(self.notify_cb(self.user_code, msg))
-                        task.add_done_callback(_log_alert_task_exc)
-                    except RuntimeError:
-                        pass  # 이벤트 루프 없음(동기 테스트)
+            # 2026-06-13 파트너: 약관 미동의·잔고부족·API 권한 등 '사용자만 풀 수
+            # 있는' 거부는 연동 텔레그램으로 해당 사용자에게 직접 안내(카테고리별
+            # 6h 쿨다운 도배 방지). 2026-07-23 확장: 잔고부족/API키 권한·유효성.
+            notify_order_error(
+                str(e), self.notify_cb, self.user_code, self._order_error_alert_ts,
+            )
             return
 
         # 체결 여부 — filled_qty / avg_fill_price 로 즉시 체결 판정.

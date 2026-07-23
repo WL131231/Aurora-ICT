@@ -97,6 +97,59 @@ _LABELS: dict[str, dict[str, Any]] = {
     },
 }
 
+# 2026-07-23 파트너 요청: 진입 사유 구체화 — context_json 의 confluences(어떤 근거가
+# 작동했는지) 를 사람이 읽는 라벨로 변환해 "근거" 라인으로 노출(등급·손익비만이 아니라).
+_BASIS_LABEL = {"ko": "근거", "en": "Basis", "zh": "依据", "ja": "根拠"}
+_CONF_LABELS: dict[str, dict[str, str]] = {
+    "ko": {
+        "ote": "OTE 되돌림", "cisd": "CISD 구조전환", "po3": "PO3 분배",
+        "ob": "오더블록", "sweep": "유동성 스윕", "macro": "매크로 시간대",
+        "bias": "HTF 편향정합", "htf": "HTF 지지", "smt": "SMT 다이버전스",
+        "fvg": "FVG", "breaker": "브레이커", "choch": "CHoCH 전환",
+    },
+    "en": {
+        "ote": "OTE retrace", "cisd": "CISD shift", "po3": "PO3 dist",
+        "ob": "Order Block", "sweep": "Liq. Sweep", "macro": "Macro window",
+        "bias": "HTF bias align", "htf": "HTF support", "smt": "SMT div",
+        "fvg": "FVG", "breaker": "Breaker", "choch": "CHoCH",
+    },
+}
+# 진입 근거 아님(감점 메타) — 근거 라인서 제외.
+_CONF_SKIP_PREFIX = ("dol_counter",)
+
+
+def _conf_key(code: str) -> str:
+    """confluence code(ote / cisd=x / ob=..@.. / macro_high=.. 등) → 라벨 키."""
+    c = code.lower()
+    if c.startswith("po3"):
+        return "po3"
+    if c.startswith("macro"):
+        return "macro"
+    if c.startswith("htf_support"):
+        return "htf"
+    for k in ("ote", "cisd", "ob", "sweep", "bias", "smt", "fvg", "breaker", "choch"):
+        if c.startswith(k):
+            return k
+    return ""
+
+
+def _fmt_confluences(confs: Any, lang: str) -> str:
+    """confluences 리스트 → 사람이 읽는 근거 문자열 (중복 제거, 감점 메타 제외)."""
+    if not isinstance(confs, list):
+        return ""
+    lm = _CONF_LABELS.get(lang) or _CONF_LABELS["en"]
+    seen: set[str] = set()
+    out: list[str] = []
+    for code in confs:
+        if not isinstance(code, str) or code.lower().startswith(_CONF_SKIP_PREFIX):
+            continue
+        label = lm.get(_conf_key(code))
+        if label and label not in seen:
+            seen.add(label)
+            out.append(label)
+    return " · ".join(out)
+
+
 _ENTRY_EVENTS = {"entry", "flip_open"}
 
 # 2026-06-12 파트너 요청: 하단 고정 버튼 — 다른 코드로 알림을 옮길 때 사용.
@@ -190,6 +243,11 @@ def format_trade(
         elif getattr(event, "reason", ""):
             # context_json 이 없으면(구식 이벤트 등) reason 원문 fallback.
             lines.append(f"{label_set['reason']} {event.reason}")
+        # 2026-07-23 파트너: 진입 근거 구체화 — 어떤 confluence(OTE/CISD/OB/스윕 등)가
+        # 작동했는지 사람이 읽는 라벨로 노출.
+        basis = _fmt_confluences(ctx.get("confluences"), lang)
+        if basis:
+            lines.append(f"{_BASIS_LABEL.get(lang, _BASIS_LABEL['ko'])} {basis}")
     else:
         # 2026-06-12 파트너 멘트 포맷: 수익 / 청산가+날짜 / 사유 / 코드 를
         # 빈 줄로 구분, 라벨 뒤 " : ". 변동% 줄은 템플릿에서 제외됨.
