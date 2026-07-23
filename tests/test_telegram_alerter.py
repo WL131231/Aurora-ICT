@@ -345,3 +345,52 @@ async def test_send_user_text_to_linked_chat(tmp_path) -> None:
     await al.send_user_text(code, "약관 동의 필요")
     assert sent and sent[0][0] == "55" and "약관" in sent[0][1]
     await al.aclose()
+
+
+def test_format_trade_entry_basis_from_confluences() -> None:
+    """#2026-07-23: 진입 근거 구체화 — confluences 를 사람이 읽는 '근거' 라인으로."""
+    import json
+
+    from aurora_ict.interfaces.trades_store import TradeEvent, TradeEventType
+
+    ctx = json.dumps({
+        "entry": 100.0, "sl": 95.0, "tp": 115.0, "score": 5, "rr": 2.58,
+        "window": "turtle",
+        "confluences": ["ote", "cisd=bull", "sweep", "ob=bull@123",
+                        "dol_counter_bear_-2"],
+    })
+    ev = TradeEvent(
+        ts_ms=0, event_type=TradeEventType.ENTRY, symbol="LINK/USDT:USDT",
+        direction="long", price=100.0, qty=1.0, context_json=ctx,
+    )
+    text = format_trade("AICT-X-X-X", ev)
+    assert "근거" in text
+    assert "OTE 되돌림" in text and "CISD 구조전환" in text
+    assert "유동성 스윕" in text and "오더블록" in text
+    assert "dol_counter" not in text          # 감점 메타 제외
+    assert "등급 5" in text and "2.58" in text  # 기존 요약도 유지
+
+
+def test_order_error_notify_classifies_and_throttles() -> None:
+    """#ORDER-ERR-NOTIFY: 조치필요 에러 분류 + 카테고리별 쿨다운(중복 억제)."""
+    from aurora_ict.bot.order_error_notify import (
+        classify_order_error,
+        notify_order_error,
+    )
+
+    assert classify_order_error('bybit {"retCode":110007}')[0] == "insufficient_balance"
+    assert classify_order_error("Permission denied")[0] == "api_permission"
+    assert classify_order_error("just a random error") is None
+
+    sent: list[str] = []
+
+    async def _cb(code: str, msg: str) -> None:
+        sent.append(msg)
+
+    throttle: dict[str, int] = {}
+    # 이벤트루프 없는 동기 컨텍스트 — create_task RuntimeError 경로(no-op) 안전.
+    notify_order_error("110007 not enough", _cb, "AICT-X", throttle)
+    # 같은 카테고리 재호출 — 쿨다운으로 throttle 기록만 갱신 안 함(이미 있음).
+    assert "insufficient_balance" in throttle
+    notify_order_error("random", _cb, "AICT-X", throttle)  # 미분류 — no-op
+    notify_order_error("110007", None, "AICT-X", throttle)  # cb 없음 — no-op
