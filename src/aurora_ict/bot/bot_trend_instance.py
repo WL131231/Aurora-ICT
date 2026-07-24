@@ -36,6 +36,7 @@ from aurora_ict.bot.bot_ict_instance import (
     ExchangeClientProtocol,
     _log_alert_task_exc,
 )
+from aurora_ict.bot.margin_guard import cap_qty_to_available
 from aurora_ict.bot.order_error_notify import notify_order_error
 from aurora_ict.interfaces.trades_store import TradeEvent, TradeEventType, TradesStore
 from aurora_ict.strategy.dual_st import (
@@ -322,6 +323,9 @@ class BotTrendInstance:
         (#363 가드는 ST×6 SL 시절 산물 — 원본 복원으로 원인 자체 소멸).
         """
         qty = await self._calc_qty(price)
+        # #MARGIN-GUARD 2026-07-24: 진입 전 가용잔고 체크 — 필요증거금 초과면 수량
+        # 축소, 최소미달이면 skip. 여러 페어 동시 운용 시 '잔고부족' 거부 원천 차단.
+        qty = await cap_qty_to_available(self.client, self.symbol, qty, price, self.leverage)
         if qty <= 0:
             logger.warning("[%s] qty 0 — 진입 skip (잔고/가격 확인)", self.symbol)
             return

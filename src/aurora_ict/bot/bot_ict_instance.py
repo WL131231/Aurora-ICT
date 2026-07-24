@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 from ccxt.base.errors import AuthenticationError
 
+from aurora_ict.bot.margin_guard import cap_qty_to_available
 from aurora_ict.bot.order_error_notify import notify_order_error
 from aurora_ict.bot.shared_ohlcv_cache import GLOBAL_OHLCV_CACHE, SharedOhlcvCache
 from aurora_ict.bot.structure_trail import compute_structure_trail
@@ -2086,6 +2087,13 @@ class BotIctInstance:
         # #FORCE-ENTRY 2026-06-25: admin 강제진입은 거래소 최소수량을 직접 지정
         # (force_qty)해 리스크 기반 sizing(_calc_qty)을 우회한다. 일반 진입=None.
         qty = force_qty if force_qty is not None else self._calc_qty(setup, equity)
+        # #MARGIN-GUARD 2026-07-24: 진입 전 가용잔고 체크 — 필요증거금 초과면 수량
+        # 축소, 최소미달이면 skip(여러 페어 동시 운용 시 '잔고부족' 거부 원천 차단).
+        # admin 강제진입(force_qty)은 명시 수량이라 캡 제외.
+        if force_qty is None:
+            qty = await cap_qty_to_available(
+                self.client, self.symbol, qty, setup.entry, self.leverage,
+            )
         if qty <= 0:
             logger.warning("qty 계산 결과 0 이하 → skip: setup=%s", setup.ts_ms)
             return
