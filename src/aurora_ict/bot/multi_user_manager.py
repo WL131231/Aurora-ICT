@@ -325,7 +325,39 @@ class MultiUserBotManager:
         key: SlotKey = (user_code, symbol)
         slot = self._slots.get(key)
         if slot is not None and slot.bot is not None:
-            return slot.bot
+            # #MODEL-HEAL 2026-07-27 (파트너 보고: Cursus 인데 ICT 판단 표시): 모델
+            # 전환 bg task 가 실패/레이스로 일부 페어에 옛 모델 봇을 남기면 judgment/
+            # 차트가 모델 혼재로 표시됐다. 저장된 선택 모델과 봇 클래스가 어긋나고
+            # 봇이 정지 상태면 슬롯 폐기 후 아래 생성 경로로 재생성(자가치유).
+            # 가동 중이면 매매 연속성 우선 — 건드리지 않고 경고만(전환 task 소관).
+            try:
+                from aurora_ict.config.settings import (
+                    AVAILABLE_MODELS as _AM,
+                )
+                from aurora_ict.config.settings import (
+                    DEFAULT_MODEL_NAME as _DM,
+                )
+                _sel = users_db.get_last_model(self.db_path, user_code) or _DM
+                _want_cursus = _AM.get(_sel) == "cursus"
+                _is_cursus = type(slot.bot).__name__ == "BotTrendInstance"
+                if _want_cursus != _is_cursus:
+                    if slot.bot.state.value != "running":
+                        await self._safe_close_client(slot.client)
+                        self._slots.pop(key, None)
+                        slot = None
+                        logger.info(
+                            "모델 불일치 슬롯 자가치유 — %s %s 재생성 (선택=%s)",
+                            user_code, symbol, _sel,
+                        )
+                    else:
+                        logger.warning(
+                            "모델 불일치 슬롯(가동중) — 전환 미완 추정, 재전환 필요: %s %s",
+                            user_code, symbol,
+                        )
+            except Exception as e:  # noqa: BLE001 — 치유 실패는 기존 봇 유지가 안전
+                logger.debug("모델 일치 검사 실패(기존 봇 유지): %s", e)
+            if slot is not None:
+                return slot.bot
         # 페어 확장 — 동시 가동 페어 수 상한 (신규 슬롯일 때만 카운트).
         # 고정7 구도(2026-06-12): 고정 페어는 상한 10 안에서 항상 허용,
         # 자유 선택 페어는 고정 외 MAX_CHOICE_PAIRS(3)개까지.
