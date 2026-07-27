@@ -817,6 +817,30 @@ def _register_multi_user_routes(
             cur = DEFAULT_MODEL_NAME
         return {"current": cur, "available": list(AVAILABLE_MODELS.keys())}
 
+    def _normalize_model_name(name: str) -> str | None:
+        """모델명 → 현행 정식명 정규화 (#MODEL-SWITCH-FIX 2026-07-27).
+
+        UI(index.html)가 하드코딩한 옛 버전명("Origo 1.2")을 보내면 현행명
+        ("Origo 2.2")과 exact 불일치 → 400 으로 조용히 실패해 Cursus→Origo 전환이
+        안 됐다. 패밀리(Origo*/Cursus*) prefix 로 정규화해 버전 bump 에 견고하게.
+
+        Args:
+            name: 요청 모델명 (버전 무관).
+
+        Returns:
+            AVAILABLE_MODELS 의 정식 키, 매칭 실패 시 None.
+        """
+        from aurora_ict.config.settings import AVAILABLE_MODELS
+        if name in AVAILABLE_MODELS:
+            return name
+        fam = (name or "").strip().lower().split(" ")[0]
+        if not fam:
+            return None
+        for canon, sid in AVAILABLE_MODELS.items():
+            if sid == fam or canon.lower().split(" ")[0] == fam:
+                return canon
+        return None
+
     @app.post("/ict/model")
     async def set_model_mu(
         req: ModelRequest,
@@ -826,9 +850,10 @@ def _register_multi_user_routes(
         슬롯 폐기 후 재가동(다음 빌드가 새 모델로 봇 생성). 미선택은 Origo fallback.
         """
         from aurora_ict.auth import users_db as _users_db
-        from aurora_ict.config.settings import AVAILABLE_MODELS
-        if req.model not in AVAILABLE_MODELS:
+        _canon = _normalize_model_name(req.model)
+        if _canon is None:
             raise HTTPException(status_code=400, detail=f"알 수 없는 모델: {req.model}")
+        req.model = _canon
         # 2026-06-26 #MULTIPAIR-MODEL: 사용자의 모든 페어 슬롯을 폐기 후 재가동 —
         # _DEFAULT_SYMBOL(BTC) 만 바꾸면 HYPE/SOL 등 다른 페어가 기존 모델로 남아
         # (Origo 봇 유지) Cursus 로직이 안 돈다. 전 페어를 새 모델로 재생성.

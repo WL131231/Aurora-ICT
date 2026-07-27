@@ -2238,11 +2238,13 @@
         </svg>
       </button>
       <div class="model-dd-menu" id="model-dd-menu" role="listbox">
-        <div class="model-dd-opt is-selected" data-value="origo-1.2" data-model="Origo 1.2" role="option">
-          <span class="model-dd-opt-name">Origo 1.2</span>
+        <!-- 2026-07-27 #MODEL-SWITCH-FIX: 하드코딩 버전명이 서버 현행명과 어긋나
+             전환 400 실패했었음 — 서버가 패밀리 정규화 + JS 가 서버 목록으로 갱신. -->
+        <div class="model-dd-opt is-selected" data-value="origo" data-model="Origo 2.2" role="option">
+          <span class="model-dd-opt-name">Origo 2.2</span>
           <span class="model-dd-desc">ICT 기반 로직 · 단타형 (안정형 하이브리드)</span>
         </div>
-        <div class="model-dd-opt" data-value="cursus-1.0" data-model="Cursus 1.0" role="option">
+        <div class="model-dd-opt" data-value="cursus" data-model="Cursus 1.0" role="option">
           <span class="model-dd-opt-name">Cursus 1.0</span>
           <span class="model-dd-desc">Dual SuperTrend · 추세추종</span>
         </div>

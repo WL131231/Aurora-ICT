@@ -1005,3 +1005,26 @@ def test_close_position_noop_when_exchange_flat(
     assert len(fc.placed_orders) == n_before  # 신규 주문 0건
     assert bot.active_position is None
     client.post("/ict/stop?symbol=BTC/USDT:USDT")
+
+
+def test_model_switch_normalizes_stale_name(client, mu, db_path) -> None:
+    """#MODEL-SWITCH-FIX 2026-07-27: UI 하드코딩 옛 버전명("Origo 1.2")도 패밀리
+    정규화로 현행 Origo 로 전환돼야 (기존엔 400 조용한 실패 → Cursus→Origo 불가)."""
+    from aurora_ict.config.settings import CURSUS_MODEL_NAME, ORIGO_MODEL_NAME
+
+    _register_user(client)
+    code = "AICT-SAAS-SAAS-SAAS"
+    # Cursus 로 전환 후 → 옛 이름 "Origo 1.2" 로 복귀 시도.
+    r = client.post("/ict/model", json={"model": CURSUS_MODEL_NAME})
+    assert r.status_code == 200
+    r = client.post("/ict/model", json={"model": "Origo 1.2"})
+    assert r.status_code == 200
+    assert r.json()["model"] == ORIGO_MODEL_NAME       # 정규화된 현행명
+    assert users_db.get_last_model(db_path, code) == ORIGO_MODEL_NAME
+    # 전략 id 로도 허용 ("origo"/"cursus")
+    r = client.post("/ict/model", json={"model": "cursus"})
+    assert r.status_code == 200
+    assert r.json()["model"] == CURSUS_MODEL_NAME
+    # 진짜 모르는 이름은 여전히 400
+    r = client.post("/ict/model", json={"model": "Nexus 9"})
+    assert r.status_code == 400
