@@ -87,6 +87,48 @@ from aurora_ict.timing.power_of_3 import AmdPhase, amd_phase
 logger = logging.getLogger(__name__)
 
 
+def recovery_already_recorded(
+    events: list[Any], symbol: str, direction_value: str, entry_price: float,
+) -> bool:
+    """이 포지션의 미청산 ENTRY/RECOVERED 기록이 이미 있는지 — RECOVERED 도배 방지.
+
+    #REC-DEDUPE 2026-07-24 (파트너): 배포/재시작마다 포지션마다 RECOVERED 를 기록해
+    772건이 쌓여 기록·UI 를 오염시켰다. 같은 심볼·방향·가격(0.5%)의 ENTRY 또는
+    RECOVERED 가 이 심볼의 마지막 청산 이후에 이미 있으면 중복 기록 skip.
+    Origo·Cursus 공용 (판정 실패 시 False — 기록하는 쪽이 안전).
+
+    Args:
+        events: trades store 의 전체 이벤트 리스트.
+        symbol: 심볼.
+        direction_value: 방향 문자열 ("long"/"short").
+        entry_price: 복원 포지션 진입가.
+
+    Returns:
+        이미 기록돼 있으면 True (새 RECOVERED 기록 불필요).
+    """
+    if entry_price <= 0:
+        return False
+    close_types = {
+        TradeEventType.SL_HIT, TradeEventType.TP_HIT, TradeEventType.SYNC_CLOSE,
+        TradeEventType.MANUAL_CLOSE, TradeEventType.FLIP_CLOSE,
+    }
+    last_close_ts = 0
+    for e in events:
+        if e.symbol == symbol and e.event_type in close_types:
+            last_close_ts = max(last_close_ts, e.ts_ms or 0)
+    tol = entry_price * 0.005
+    for e in events:
+        if (
+            e.symbol == symbol
+            and e.event_type in (TradeEventType.ENTRY, TradeEventType.RECOVERED)
+            and e.direction == direction_value
+            and (e.ts_ms or 0) > last_close_ts
+            and abs((e.price or 0) - entry_price) <= tol
+        ):
+            return True
+    return False
+
+
 def _log_alert_task_exc(task: asyncio.Task) -> None:
     """매매 알림 fire-and-forget task 의 done callback — 예외를 로그로 남긴다.
 
@@ -841,13 +883,27 @@ class BotIctInstance:
             self.symbol, direction.value, entry_price, contracts, sl, tp,
         )
         # #BUG-2 해소: trades_store 에 RECOVERED 이벤트 기록.
-        self._record_trade(
-            TradeEventType.RECOVERED,
-            direction=direction,
-            price=entry_price,
-            qty=contracts,
-            reason="bot startup — exchange position fetch",
-        )
+        # #REC-DEDUPE 2026-07-24: 이 포지션의 미청산 ENTRY/RECOVERED 가 이미 있으면
+        # 중복 기록 skip (배포마다 RECOVERED 도배 방지 — 판정 실패 시 기록).
+        _dup = False
+        try:
+            if self._trades_store is not None or self.trades_data_dir is not None:
+                if self._trades_store is None:
+                    self._trades_store = TradesStore(self.trades_data_dir)
+                _dup = recovery_already_recorded(
+                    self._trades_store.all_events(), self.symbol,
+                    direction.value, entry_price,
+                )
+        except Exception:  # noqa: BLE001
+            _dup = False
+        if not _dup:
+            self._record_trade(
+                TradeEventType.RECOVERED,
+                direction=direction,
+                price=entry_price,
+                qty=contracts,
+                reason="bot startup — exchange position fetch",
+            )
         # 2026-06-12 파트너: 복구 포지션 TP=0 처리 — 자기 매매 기록(미청산
         # ENTRY 의 context)에서 원 TP 를 찾아 거래소에 재설치. setup_ts 도
         # 함께 복원해 이후 청산 분류(SL/TP)·기록 대조가 정상 동작하게.

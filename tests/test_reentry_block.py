@@ -83,3 +83,26 @@ async def test_reentry_block_cleared_on_new_entry() -> None:
     # 반대 방향(SHORT)은 차단 안 됨 → 진입 성공 → block 해제.
     await bot._execute_setup(_setup(Direction.SHORT, 100.0))
     assert bot._reentry_block is None
+
+
+def test_recovery_already_recorded_dedupe() -> None:
+    """#REC-DEDUPE: 마지막 청산 이후 동일 방향·가격 ENTRY/RECOVERED 있으면 True."""
+    from types import SimpleNamespace as E
+
+    from aurora_ict.bot.bot_ict_instance import recovery_already_recorded
+    from aurora_ict.interfaces.trades_store import TradeEventType as T
+
+    sym = "BTC/USDT:USDT"
+    # ENTRY(미청산) 존재 → 중복
+    evs = [E(symbol=sym, event_type=T.ENTRY, direction="long", ts_ms=100, price=100.0)]
+    assert recovery_already_recorded(evs, sym, "long", 100.0) is True
+    # 그 뒤 청산 → 미청산 아님 → False
+    evs.append(E(symbol=sym, event_type=T.SL_HIT, direction="long", ts_ms=200, price=95.0))
+    assert recovery_already_recorded(evs, sym, "long", 100.0) is False
+    # 청산 후 RECOVERED 재기록 존재 → 그 다음 복구는 중복 True
+    evs.append(E(symbol=sym, event_type=T.RECOVERED, direction="long", ts_ms=300, price=100.0))
+    assert recovery_already_recorded(evs, sym, "long", 100.0) is True
+    # 다른 방향/먼 가격/다른 심볼 → False
+    assert recovery_already_recorded(evs, sym, "short", 100.0) is False
+    assert recovery_already_recorded(evs, sym, "long", 110.0) is False
+    assert recovery_already_recorded(evs, "ETH/USDT:USDT", "long", 100.0) is False
