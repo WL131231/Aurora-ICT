@@ -1170,3 +1170,37 @@ async def test_start_demo_user_unaffected_by_last_run_mode_fallback(
     assert slot.settings.run_mode is RunMode.DEMO
 
     await mu.stop(code)
+
+
+@pytest.mark.asyncio
+async def test_model_mismatch_slot_self_heals(
+    db_path, base_settings, master_key,
+) -> None:
+    """#MODEL-HEAL 2026-07-27: 전환 실패로 남은 스테일 슬롯 — 저장 모델과 봇 클래스
+    불일치 + 정지 상태면 다음 접근 때 재생성 (Cursus 계정에 ICT 판단 뜨던 혼재 해소)."""
+    from aurora_ict.bot.bot_trend_instance import BotTrendInstance
+    from aurora_ict.config.settings import CURSUS_MODEL_NAME, ORIGO_MODEL_NAME
+
+    code = "AICT-HEAL-HEAL-HEAL"
+    users_db.create_user(db_path, code)
+    enc = keystore.encrypt_secret("sec", key=master_key)
+    users_db.set_api_keys(db_path, code, "pub", enc)
+
+    clients: list = []
+    mu = MultiUserBotManager(
+        client_factory=_factory_factory(clients),
+        db_path=db_path,
+        base_settings=base_settings,
+        master_key=master_key,
+    )
+    # 기본(Origo) 봇 생성 — 스테일 시나리오 재현.
+    bot1 = await mu.get_or_create_bot(code)
+    assert type(bot1).__name__ != "BotTrendInstance"
+    # 사용자가 Cursus 로 전환(전환 task 는 실패했다고 가정 — 슬롯 그대로).
+    users_db.set_last_model(db_path, code, CURSUS_MODEL_NAME)
+    bot2 = await mu.get_or_create_bot(code)
+    assert isinstance(bot2, BotTrendInstance)  # 자가치유 재생성
+    # 역방향 — Origo 로 되돌리면 ICT 봇으로 재생성.
+    users_db.set_last_model(db_path, code, ORIGO_MODEL_NAME)
+    bot3 = await mu.get_or_create_bot(code)
+    assert type(bot3).__name__ == "BotIctInstance"

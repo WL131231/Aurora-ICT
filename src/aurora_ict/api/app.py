@@ -868,20 +868,24 @@ def _register_multi_user_routes(
 
         async def _switch_models_bg() -> None:
             for sym in user_syms:
-                _slot = mu_manager._slots.get((user_code, sym))
-                _running = (
-                    _slot is not None and _slot.bot is not None
-                    and _slot.bot.state.value == "running"
-                )
-                # stop 이 per-(user,sym) lock 안에서 슬롯 폐기(pop)·클라이언트 정리까지
-                # 담당 — 정지 슬롯도 안전 제거(새 모델로 재생성). 직접 _slots.pop(레이스)
-                # 제거. 모델 전환은 선호 유지(forget_preference=False)라 재가동 시 복원.
-                await mu_manager.stop(user_code, sym, forget_preference=False)
-                if _running:
-                    try:
+                # #MODEL-HEAL 2026-07-27: 페어별 예외 격리 — 기존엔 ValueError 외
+                # 예외가 루프를 죽여 나머지 페어가 옛 모델로 남았다(모델 혼재 —
+                # Cursus 계정에 ICT 판단 표시). 실패 페어는 get_or_create 의
+                # 자가치유가 다음 접근 때 재생성.
+                try:
+                    _slot = mu_manager._slots.get((user_code, sym))
+                    _running = (
+                        _slot is not None and _slot.bot is not None
+                        and _slot.bot.state.value == "running"
+                    )
+                    # stop 이 per-(user,sym) lock 안에서 슬롯 폐기(pop)·클라이언트 정리
+                    # 까지 담당 — 정지 슬롯도 안전 제거(새 모델로 재생성). 모델 전환은
+                    # 선호 유지(forget_preference=False)라 재가동 시 복원.
+                    await mu_manager.stop(user_code, sym, forget_preference=False)
+                    if _running:
                         await mu_manager.start(user_code, sym)
-                    except ValueError as e:
-                        logger.warning("모델 전환 후 %s 재가동 실패: %s", sym, e)
+                except Exception as e:  # noqa: BLE001 — 다음 페어 계속
+                    logger.warning("모델 전환 — %s 처리 실패(다음 페어 계속): %s", sym, e)
 
         _t = asyncio.create_task(_switch_models_bg())
         _bg = getattr(app.state, "_switch_tasks", None)
