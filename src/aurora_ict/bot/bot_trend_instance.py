@@ -35,6 +35,7 @@ from aurora_ict.bot.bot_ict_instance import (
     BotState,
     ExchangeClientProtocol,
     _log_alert_task_exc,
+    recovery_already_recorded,
 )
 from aurora_ict.bot.margin_guard import cap_qty_to_available
 from aurora_ict.bot.order_error_notify import notify_order_error
@@ -462,10 +463,24 @@ class BotTrendInstance:
         # 거래소에 SL 이 이미 있으면(sl>0) 확정, 없으면 무방비 → 다음 step 강제 적용.
         self._sl_synced = sl > 0
         if record:
-            self._record_trade(
-                TradeEventType.RECOVERED, direction=direction, price=entry, qty=contracts,
-                reason="Cursus 봇 재시작 포지션 복원",
-            )
+            # #REC-DEDUPE 2026-07-24: 미청산 ENTRY/RECOVERED 이미 있으면 중복 기록
+            # skip (배포마다 RECOVERED 도배 방지 — 판정 실패 시 기록).
+            _dup = False
+            try:
+                if self._trades_store is None and self.trades_data_dir is not None:
+                    self._trades_store = TradesStore(self.trades_data_dir)
+                if self._trades_store is not None:
+                    _dup = recovery_already_recorded(
+                        self._trades_store.all_events(), self.symbol,
+                        direction.value, entry,
+                    )
+            except Exception:  # noqa: BLE001
+                _dup = False
+            if not _dup:
+                self._record_trade(
+                    TradeEventType.RECOVERED, direction=direction, price=entry,
+                    qty=contracts, reason="Cursus 봇 재시작 포지션 복원",
+                )
         logger.info(
             "Cursus 복원 — %s %s entry=%.4f qty=%.6f sl=%.4f",
             self.symbol, direction.value, entry, contracts, sl,
