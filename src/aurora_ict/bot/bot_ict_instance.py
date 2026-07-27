@@ -375,10 +375,14 @@ class BotIctInstance:
     smart_size_enabled: bool = True
     # #MMBM 2026-07-21 (FST#7): 마켓메이커 반전 모델을 2번째 진입으로 병렬 가동.
     # SB(Silver Bullet) 셋업 없을 때만 시도 — HTF정합 방향 discount/premium 반전
-    # (CHoCH). 자체 조건으로 검증돼 SB 게이트는 우회하되 _execute_setup 의 리스크
-    # 레이어(서킷브레이커·일일한도·사이징·DD스로틀·maker 지정가) 는 공유. 매매기록
-    # model 태그로 SB 와 분리 실측. ⚠️ maker(지정가) 전제·횡보장 약세 — 실측 관찰용.
-    mmbm_enabled: bool = True
+    # (CHoCH). SB 게이트는 우회하되 _execute_setup 의 리스크 레이어(서킷브레이커·
+    # 일일한도·사이징·DD스로틀·maker 지정가) 는 공유. 매매기록 model 태그로 분리.
+    # 2026-07-27 OFF(파트너 승인): 라이브 24청산 전패(-43.97) + 재검증 매트릭스에서
+    # 라이브 구성 5년 -181%, 원 검증(종가진입+2R "+1040% gross")은 재현 실패(승률 6%,
+    # 소실 스크립트의 부기 착시 추정), 정통 요소(스윕/SMT/트레일) 어떤 조합도 robust
+    # 흑자 없음 → 실행 가능한 검증 엣지 부재 판정. 기존 포지션은 거래소 SL/TP 로
+    # 자연 청산, 신규 진입만 중단. 상세: 연구리포 mmbm_matrix (7/24~27).
+    mmbm_enabled: bool = False
 
     # Multi-TF 모드 — True 면 HTF (Trade TF 위 모든 단계) setup 추적 + LTF (Trade TF)
     # 에서 retrace + structure shift + FVG confirm 시 진입. ICT 정통 multi-TF framework.
