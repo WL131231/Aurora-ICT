@@ -237,9 +237,33 @@ function _applyCursusTradeMarkers(pnl) {
 
 // 차트 봇 모델에 따라 하단 범례를 ICT(Origo) / SuperTrend(Cursus)로 토글하고,
 // Cursus 면 기본 TF 를 1h 로 1회 자동 전환(사용자 수동 변경은 존중).
+// #MODEL-UI 2026-07-27: 모델 패밀리 판정 — 버전 bump("Cursus 1.1" 등)에도 안 깨지게.
+function _isCursusModel(model) {
+  return !!model && String(model).toLowerCase().startsWith("cursus");
+}
+
+// #MODEL-UI 2026-07-27 (파트너): Cursus 는 FVG/OB/PD존/BOS/스윕/강저·약고 등 ICT
+// 개념을 안 쓰므로 차트에서 전부 제거 — 각 렌더러를 빈 값으로 호출해 기존 잔상까지 청소.
+function _clearIctOverlays() {
+  try {
+    candleSeries.setMarkers([]);
+    renderObBoxes([]);
+    renderFvgBoxes([]);
+    renderIfvgBoxes([]);
+    renderBreakerBoxes([]);
+    renderSweepZones([]);
+    renderTrailingExtremes(null);
+    renderBosSegments([]);
+    renderEqlSegments([]);
+    renderPdZones(null);
+  } catch (e) { /* noop — 일부 렌더러 부재/실패해도 차트 유지 */ }
+}
+
 function _applyChartModel(model) {
   if (!model) return;
-  const isCursus = model === "Cursus 1.0";
+  const isCursus = _isCursusModel(model);
+  // 킬존바·세션배지·viz 토글(BOS/EQH/PD) 등 ICT 전용 UI 를 CSS 로 일괄 숨김.
+  document.body.classList.toggle("model-cursus", isCursus);
   const legIct = document.querySelector(".legend-ict");
   const legCur = document.querySelector(".legend-cursus");
   // 클래스 토글로 숨김 — 인라인 display 는 모바일 미디어쿼리(.legend{display:none})를
@@ -1062,7 +1086,13 @@ function _applyChartData(candles, markers, stOverlay, model) {
     // markers 가 차트 첫 봉보다 옛 영역에 뜨는 것 방지 — first ts 이전 필터.
     _filterMarkersByFirstBar(markers, candles[0].time);
   }
-  renderMarkers(markers);
+  // #MODEL-UI 2026-07-27: Cursus 차트는 ICT 마커/존 미표시(개념 무관) — 전체 클리어.
+  // Cursus 진입/청산 마커는 _applyCursusTradeMarkers(closed_pnl 기반)가 별도 담당.
+  if (_isCursusModel(model)) {
+    _clearIctOverlays();
+  } else {
+    renderMarkers(markers);
+  }
 }
 
 // 전환 시 캐시된 차트가 있으면 즉시 표시(체감 즉답). fresh 는 직후 fetchAndRender 가 갱신.
