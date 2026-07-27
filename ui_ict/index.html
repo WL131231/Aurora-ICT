@@ -1444,7 +1444,14 @@
       overflow-x: auto;
       gap: 8px;
     }
-    /* killzone 배지(5개) — 화면 넘치면 가로 스크롤 (잘림 방지). */
+    /* #MODEL-UI 2026-07-27 (파트너): Cursus 모델이면 ICT 전용 UI 숨김 —
+     킬존바·세션배지·viz 토글(BOS/EQH·EQL/PD Zones). Cursus 는 SuperTrend 추세형이라
+     킬존/ICT 존 개념을 안 씀. app.js _applyChartModel 이 body.model-cursus 토글. */
+  body.model-cursus .killzone-bar,
+  body.model-cursus .session-badge,
+  body.model-cursus .viz-toggle { display: none !important; }
+
+  /* killzone 배지(5개) — 화면 넘치면 가로 스크롤 (잘림 방지). */
     .killzone-bar {
       max-width: calc(100vw - 24px);
       overflow-x: auto;
