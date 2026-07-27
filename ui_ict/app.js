@@ -1759,7 +1759,12 @@ _updateVizButtons();
         try {
           await api("/ict/model", "POST", { model });
           toast("모델 변경: " + model);
-        } catch (e) { console.warn("모델 전환 실패", e); }
+        } catch (e) {
+          // 2026-07-27 #MODEL-SWITCH-FIX: 조용한 실패가 "전환 안 됨" 혼란 유발 —
+          // 사용자에게 실패를 보이게.
+          console.warn("모델 전환 실패", e);
+          toast("모델 변경 실패 — 잠시 후 다시 시도해 주세요");
+        }
       }
     });
     // 2026-06-25 #CURSUS: 호버 툴팁 — sidebar overflow(한 축 auto면 가로도 clip) 회피
@@ -1784,6 +1789,18 @@ _updateVizButtons();
       const r = await api("/ict/model");
       const cur = r && r.current;
       if (!cur) return;
+      // 2026-07-27 #MODEL-SWITCH-FIX: 옵션 라벨/데이터를 서버 현행명으로 동기화 —
+      // 하드코딩 버전명이 낡아도(Origo 2.2→2.3 bump 등) 전환·표시가 안 깨지게.
+      const avail = (r && r.available) || [];
+      menu.querySelectorAll(".model-dd-opt").forEach((o) => {
+        const fam = (o.dataset.model || "").split(" ")[0].toLowerCase();
+        const canon = avail.find((m) => m.toLowerCase().split(" ")[0] === fam);
+        if (canon) {
+          o.dataset.model = canon;
+          const nm = o.querySelector(".model-dd-opt-name");
+          if (nm) nm.textContent = canon;
+        }
+      });
       menu.querySelectorAll(".model-dd-opt").forEach((o) => {
         const sel = o.dataset.model === cur;
         o.classList.toggle("is-selected", sel);
