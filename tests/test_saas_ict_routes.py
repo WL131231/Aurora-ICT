@@ -1028,3 +1028,21 @@ def test_model_switch_normalizes_stale_name(client, mu, db_path) -> None:
     # 진짜 모르는 이름은 여전히 400
     r = client.post("/ict/model", json={"model": "Nexus 9"})
     assert r.status_code == 400
+
+
+def test_judgment_returns_cursus_payload_for_trend_bot(client, mu, db_path) -> None:
+    """#2026-07-27 fix: Cursus 사용자 judgment 는 추세형 판단 응답 — 기존 hasattr
+    덕타이핑이 추세형의 동명 심 필드에 오판해 ICT 판단(등급/RR/혼조)을 반환했었음."""
+    from aurora_ict.config.settings import CURSUS_MODEL_NAME
+
+    _register_user(client)
+    r = client.post("/ict/model", json={"model": CURSUS_MODEL_NAME})
+    assert r.status_code == 200
+    # 슬롯 생성(차트 lazy 로딩 경로) 후 judgment 조회.
+    client.get("/ict/ohlcv?timeframe=1h&limit=10")
+    r = client.get("/ict/judgment")
+    assert r.status_code == 200
+    j = r.json()
+    blob = str(j.get("direction", {})) + str(j.get("entry_condition", {}))
+    assert "Cursus" in blob                    # 추세형 페이로드
+    assert "등급" not in blob                  # ICT entry_condition 아님

@@ -1805,7 +1805,10 @@ def _register_multi_user_routes(
                     "title": "봇 미가동", "detail": "START 눌러 가동",
                 },
             }
-        if not hasattr(bot, "_htf_fvg_map_cache"):
+        # 2026-07-27 fix(파트너 보고): hasattr(_htf_fvg_map_cache) 덕타이핑은 추세형
+        # 에도 동명 UI호환 심 필드가 있어 항상 ICT 분기로 오판(Cursus 에 ICT 판단
+        # 표시) — 클래스명으로 명시 판별.
+        if type(bot).__name__ == "BotTrendInstance":
             # #CURSUS 2026-06-26: 추세형 봇(BotTrendInstance)은 ICT judgment
             # (HTF FVG 가중치) 비대상 — 추세형 판단(ST 정렬·트레일가) 응답으로 교체.
             return await _cursus_judgment_payload(bot)
@@ -2697,7 +2700,10 @@ def create_app(
                 "reasons": [],
                 "entry_condition": {"title": "봇 미가동", "detail": "START 눌러 가동"},
             }
-        if not hasattr(bot, "_htf_fvg_map_cache"):
+        # 2026-07-27 fix(파트너 보고): hasattr(_htf_fvg_map_cache) 덕타이핑은 추세형
+        # 에도 동명 UI호환 심 필드가 있어 항상 ICT 분기로 오판(Cursus 에 ICT 판단
+        # 표시) — 클래스명으로 명시 판별.
+        if type(bot).__name__ == "BotTrendInstance":
             # #CURSUS 2026-06-26: 추세형 봇은 ICT judgment 비대상 — 추세형 판단 응답.
             return await _cursus_judgment_payload(bot)
         # HTF FVG 가중치 합산 → 방향 확률
