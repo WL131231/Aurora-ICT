@@ -27,6 +27,7 @@ from __future__ import annotations
 import csv
 import hmac
 import io
+import json
 import logging
 import os
 import re
@@ -158,6 +159,56 @@ def _query_trades(
             )
             return []
     return [dict(r) for r in rows]
+
+
+_ROI_CLOSE_TYPES = {"sl_hit", "tp_hit", "sync_close", "manual_close", "flip_close"}
+
+
+def _attach_roi(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """청산 행에 roi_pct(증거금 대비 %, ±) 소급 계산 부착 (#ROI 2026-07-28 파트너).
+
+    margin = 가격×수량÷레버리지. 레버리지 해석 우선순위:
+      ① 행 context_json 의 leverage ② 같은 (symbol, setup_ts) ENTRY 의 context
+      ③ 모델 기본값(Cursus: BTC 10x/알트 7x, 그 외 Origo 20x).
+    과거 행도 조회 시점에 계산되므로 소급 표시. 실패 행은 None(UI '—').
+    """
+    ent_lev: dict[tuple[str, int], float] = {}
+    for r in rows:
+        if r.get("event_type") == "entry" and r.get("context_json") and r.get("setup_ts_ms"):
+            try:
+                lv = json.loads(r["context_json"]).get("leverage")
+                if lv:
+                    ent_lev[(r.get("symbol") or "", int(r["setup_ts_ms"]))] = float(lv)
+            except (ValueError, TypeError):
+                pass
+    for r in rows:
+        r["roi_pct"] = None
+        if (r.get("event_type") or "") not in _ROI_CLOSE_TYPES:
+            continue
+        pnl, px, qty = r.get("pnl_usdt"), r.get("price"), r.get("qty")
+        if pnl in (None, 0) or not px or not qty:
+            continue
+        lev = None
+        try:
+            ctx = json.loads(r.get("context_json") or "{}")
+            lev = ctx.get("leverage") or (ctx.get("settings") or {}).get("leverage")
+        except (ValueError, TypeError):
+            pass
+        if not lev and r.get("setup_ts_ms"):
+            lev = ent_lev.get((r.get("symbol") or "", int(r["setup_ts_ms"])))
+        if not lev:
+            m = r.get("model") or ""
+            if m.startswith("Cursus"):
+                lev = 10.0 if str(r.get("symbol") or "").startswith("BTC") else 7.0
+            else:
+                lev = 20.0
+        try:
+            margin = float(px) * float(qty) / float(lev)
+            if margin > 0:
+                r["roi_pct"] = round(float(pnl) / margin * 100, 2)
+        except (ValueError, TypeError, ZeroDivisionError):
+            pass
+    return rows
 
 
 def _trades_to_csv(
@@ -367,7 +418,7 @@ def create_trades_router(
     ) -> dict[str, Any]:
         """본인 거래 list — 시간 내림차순. SQLite 부재 시 빈 list."""
         db = _trades_db_path(data_dir, user_code)
-        rows = _query_trades(db, limit, since_ms, event_type)
+        rows = _attach_roi(_query_trades(db, limit, since_ms, event_type))
         return {
             "trades": rows,
             "count": len(rows),
@@ -408,7 +459,7 @@ def create_trades_router(
         """지정한 사용자 거래 — 운영 진단용."""
         _check_admin_cookie_or_header(cookie_token, x_admin_token)
         db = _trades_db_path(data_dir, user_code)
-        rows = _query_trades(db, limit, since_ms, event_type)
+        rows = _attach_roi(_query_trades(db, limit, since_ms, event_type))
         return {
             "user_code": user_code,
             "trades": rows,

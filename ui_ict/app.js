@@ -1904,8 +1904,9 @@ let _fixedPairs = new Set([
   "DOGE/USDT:USDT", "LINK/USDT:USDT", "HYPE/USDT:USDT",
 ]);
 let _maxChoicePairs = 3;
-// 2026-06-12 선택 추천 (2차 검증 양면 흑자, 순서=순위) — 피커 상단 고정 + 배지.
-let _recommendedPairs = ["NEAR/USDT:USDT", "ENA/USDT:USDT", "FIL/USDT:USDT", "ARB/USDT:USDT"];
+// 2026-07-28 선택 추천 (2.2 현행 설정 23종 재스캔, 순서=순위) — 서버 값이 우선,
+// 이건 로드 전 fallback.
+let _recommendedPairs = ["TIA/USDT:USDT", "NEAR/USDT:USDT", "DOT/USDT:USDT"];
 let _runningSymbols = new Set();
 
 /** 가동 중인 페어 중 고정7 밖(사용자 선택) 페어 수. */

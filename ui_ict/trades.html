@@ -476,11 +476,13 @@
           <th data-i18n="trades.colPrice">가격</th>
           <th data-i18n="trades.colQty">수량</th>
           <th data-i18n="trades.colPnl">PnL (USDT)</th>
+          <!-- 2026-07-28 파트너 요청: 증거금 대비 수익률(±%) — 과거 기록도 서버 소급 계산. -->
+          <th>ROI</th>
           <th data-i18n="trades.colReason">사유</th>
         </tr>
       </thead>
       <tbody id="rows">
-        <tr><td colspan="10" class="empty" data-i18n="trades.loading">로딩 중…</td></tr>
+        <tr><td colspan="11" class="empty" data-i18n="trades.loading">로딩 중…</td></tr>
       </tbody>
     </table>
   </div>
@@ -746,6 +748,9 @@
         <td>${fmt(r.price, 2)}</td>
         <td>${fmt(r.qty, 4)}</td>
         <td class="${pnlCls}">${pnlTxt}</td>
+        <td class="${r.roi_pct == null ? "" : (r.roi_pct >= 0 ? "pnl-pos" : "pnl-neg")}" style="font-size:11px">${
+          r.roi_pct == null ? "—" : `${r.roi_pct >= 0 ? "+" : ""}${r.roi_pct.toFixed(2)}%`
+        }</td>
         <td style="color:var(--text-3);font-size:10px">${escapeHtml(r.reason || "")}</td>
       </tr>`;
     }
@@ -754,7 +759,7 @@
       lastRows = rows || [];
       const tbody = $("rows");
       if (!rows || rows.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="9" class="empty">데이터 없음</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="11" class="empty">데이터 없음</td></tr>`;
         return;
       }
       tbody.innerHTML = rows.map((r, i) => rowHtml(r, i)).join("");
@@ -782,7 +787,7 @@
       tr.classList.add("expanded");
       const detailTr = document.createElement("tr");
       detailTr.className = "detail-row";
-      detailTr.innerHTML = `<td colspan="9"><div class="detail-box">${detailHtml(r)}</div></td>`;
+      detailTr.innerHTML = `<td colspan="11"><div class="detail-box">${detailHtml(r)}</div></td>`;
       tr.parentNode.insertBefore(detailTr, tr.nextSibling);
     });
 
@@ -934,7 +939,7 @@
         renderStats(data.stats || {}, data.current_seed_usdt);
         renderRows(data.trades || []);
       } catch (e) {
-        $("rows").innerHTML = `<tr><td colspan="9" class="empty">` +
+        $("rows").innerHTML = `<tr><td colspan="11" class="empty">` +
           `로딩 실패 — ${escapeHtml(e.message)}</td></tr>`;
         toast(e.message, true);
       }
