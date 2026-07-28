@@ -1034,3 +1034,32 @@ def test_safe_user_code_blocks_traversal() -> None:
     # path 함수도 동일 방어 (중앙 게이트 경유).
     with pytest.raises(HTTPException):
         _trades_db_path(Path("/data"), "../../etc")
+
+
+def test_attach_roi_computes_margin_pct() -> None:
+    """#ROI 2026-07-28: 청산 행에 증거금 대비 % 소급 부착 — lev 해석 3단계."""
+    from aurora_ict.api.trades_router import _attach_roi
+
+    rows = [
+        # ENTRY (ctx 에 leverage 15) — 매칭 소스
+        dict(event_type="entry", symbol="ETH/USDT:USDT", setup_ts_ms=111,
+             price=2000.0, qty=1.0, pnl_usdt=None, model="Origo 2.2",
+             context_json='{"leverage": 15}'),
+        # 청산 — ENTRY 매칭으로 lev 15: margin=2000*1/15=133.33, pnl 10 → +7.5%
+        dict(event_type="tp_hit", symbol="ETH/USDT:USDT", setup_ts_ms=111,
+             price=2000.0, qty=1.0, pnl_usdt=10.0, model="Origo 2.2",
+             context_json=None),
+        # 청산 — 매칭 없음 + Cursus 알트 → 기본 7x: margin=100*7/7=100, pnl -5 → -5%
+        dict(event_type="sl_hit", symbol="DOGE/USDT:USDT", setup_ts_ms=None,
+             price=100.0, qty=7.0, pnl_usdt=-5.0, model="Cursus 1.0",
+             context_json=None),
+        # 비청산 행 — None 유지
+        dict(event_type="recovered", symbol="BTC/USDT:USDT", setup_ts_ms=None,
+             price=60000.0, qty=1.0, pnl_usdt=None, model="Origo 2.2",
+             context_json=None),
+    ]
+    out = _attach_roi(rows)
+    assert out[1]["roi_pct"] == 7.5
+    assert out[2]["roi_pct"] == -5.0
+    assert out[0]["roi_pct"] is None
+    assert out[3]["roi_pct"] is None
