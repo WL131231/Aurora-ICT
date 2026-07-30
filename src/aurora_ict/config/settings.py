@@ -304,6 +304,15 @@ class IctSettings(BaseSettings):
     # 고점 스윕-반락이면 LONG 차단. 0=off. 근거: 7/1 BTC 스윕-반전 후 봇이 EMA
     # 지연으로 7/4 까지 숏 → -165 전멸. 백테 K=2: +240→+253, DD -25%, 빈도 -22%.
     origo_sweep_gate_days: int = Field(default=0, ge=0, le=10)
+    # 2026-07-30 #FLIP-MIN-R (Origo 2.3): HTF FVG flip 발동 시 이익이 r×R 미만이면
+    # flip 무시하고 원래 청산(TP/트레일)까지 홀드. 0=off.
+    # 근거: flip 이 익절을 조기 절단하고 있었다 — 라이브 실측(flip 29건) 평균 **0.61R**
+    # 에서 컷(86%가 1R 미만), 홀드 반사실은 2R TP 선착 72% → 기대값 0.61R→1.17R.
+    # 라이브 정합 백테(126건): 최소 1.5R 이 net +239%, RR 1.20→1.94,
+    # MDD 764→533(net/MDD 1.90→3.17), 이웃 1.2~2.5R 전 구간 일관 개선.
+    # 파트너 실측 사례(하락장 숏이 1/3 지점 컷)가 방향 뒷받침. 배터리 한계는
+    # bot_ict_instance.flip_min_r 주석 참조(실질표본 40건, 롱 악화·숏 개선).
+    origo_flip_min_r: float = Field(default=0.0, ge=0.0, le=10.0)
     # 2026-07-10 #REGIME-OTE (Origo 1.7): 상승 국면(일봉 20일 z>0.75) 전용 OTE 깊이.
     # 0=off(항상 ote_level). 국면 랩: 상승 국면은 얕은 되돌림 롱이 역선택(-96%),
     # 0.786 깊이만 전/후반 동시 개선·흑자 전환(+94%). 조건부 적용 합계 +2816→+3006%.
@@ -469,6 +478,11 @@ class IctSettings(BaseSettings):
             # K=3/5 과차단). 파트너 승인 2026-07-07 ("3번 판단 그런식으로 적용").
             if self.origo_sweep_gate_days < 2:
                 self.origo_sweep_gate_days = 2
+            # #FLIP-MIN-R (Origo 2.3): flip 조기 절단 방지 — 최소 1.5R 강제.
+            # 파트너 결정 2026-07-30 (1.8R 이 백테 미세 우위였으나 1.5R 선택 — flip 방어
+            # 기능을 더 보존하는 보수적 값). 사용자가 더 높게 올린 건 유지.
+            if self.origo_flip_min_r < 1.5:
+                self.origo_flip_min_r = 1.5
             # #REGIME-OTE (Origo 1.7): 상승 국면 OTE 0.786 강제.
             if self.origo_ote_up_level <= 0:
                 self.origo_ote_up_level = 0.786

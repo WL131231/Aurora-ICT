@@ -532,6 +532,20 @@ class BotIctInstance:
     flip_watch_ws_reconnect_max: int = 5
     # FVG 약화 임계치 — touch 누적 도달 시 mitigation 후보 / flip target 제외.
     htf_fvg_max_touch_count: int = 3
+    # #FLIP-MIN-R 2026-07-30 (Origo 2.3): flip 발동 시 이익이 이 R 미만이면 **flip 무시**
+    # 하고 원래 청산(TP/트레일)까지 홀드. 0 = 비활성(기존 동작).
+    #
+    # 근거 — flip 이 익절을 너무 일찍 자르고 있었다. 두 갈래 독립 검증:
+    #   ① 라이브 실측 반사실(5/28~7/30, flip 29건): flip 은 평균 **+0.61R** 에서 절단
+    #      (86%가 1R 미만). 청산 후 실제 가격 추적 시 2R TP 선착 **72%** / SL 선착 28%
+    #      → 기대값 0.61R → **1.17R**. 손익분기 RR 1.17 과 일치해 흑자권 진입 규모.
+    #   ② 라이브 정합 백테(5년 7페어 126건, live_parity.py): 8시나리오 중 **현행이 최하위**.
+    #      최소 1.5R 적용 시 net +239%, RR 1.20→1.94, MDD 764→533(net/MDD 1.90→3.17),
+    #      연도 흑자 4/6→5/6. 이웃 1.2~2.5R 전 구간 일관 개선(단일값 스파이크 아님).
+    # 한계(파트너 승인 후 배포) — 실질 표본 40건(무변화 67%)이라 부트스트랩 95% 하한이
+    #   음수, 페어 개선 3/7, 롱은 악화(숏만 +330%). MDD 감소와 이웃 일관성은 확인됨.
+    #   라이브 실측 사례(하락장 숏이 1/3 지점에서 컷)가 방향을 뒷받침.
+    flip_min_r: float = 0.0
 
     # 2026-05-29 #HTF-LTF-CONFLICT: HTF FVG bull/bear 우세 + LTF setup 반대 방향 차단.
     # 0 = 비활성, 1.10 = bull 이 bear 의 110% 이상이면 short setup 차단 (역도 마찬가지).
@@ -4520,6 +4534,30 @@ class BotIctInstance:
             return
         await self.handle_htf_flip(last_close, last_ts, target)
 
+    def _flip_profit_r(self, pos: _ActivePosition, price: float) -> float:
+        """flip 발동 시점의 이익(R 배수). **진입 시점 risk** 기준.
+
+        trail/BE 로 이동한 ``pos.stop_loss`` 를 쓰면 R 이 왜곡되므로, 진입 시 계산되어
+        이후 불변인 ``tp1_price``(= entry ± partial_tp_rr × 초기risk)에서 역산한다.
+        tp1_price 가 없으면(분할익절 off) 현재 stop_loss 로 근사한다.
+
+        Args:
+            pos: 활성 포지션.
+            price: flip 발동 가격.
+
+        Returns:
+            이익 R 배수. risk 산출 불가면 0.0 (게이트가 통과시키지 않도록 보수적).
+        """
+        risk = 0.0
+        if pos.tp1_price > 0 and self.partial_tp_rr > 0:
+            risk = abs(pos.tp1_price - pos.entry) / self.partial_tp_rr
+        if risk <= 0:
+            risk = abs(pos.entry - pos.stop_loss)   # fallback (trail 이동 가능성 있음)
+        if risk <= 0 or pos.entry <= 0:
+            return 0.0
+        sign = 1.0 if pos.direction is Direction.LONG else -1.0
+        return (price - pos.entry) * sign / risk
+
     async def handle_htf_flip(
         self,
         trigger_price: float,
@@ -4538,6 +4576,17 @@ class BotIctInstance:
         pos = self.active_position
         if pos is None:
             return
+        # #FLIP-MIN-R 2026-07-30: 이익이 최소 R 미만이면 flip 무시 — 조기 절단 방지.
+        # WS watcher / step() 공통 경로라 여기 한 곳에서 막는다. flag 설정 **전에**
+        # return 해서 다음 tick 에 재평가되게 한다(가격이 더 가면 그때 flip 발동).
+        if self.flip_min_r > 0:
+            r_now = self._flip_profit_r(pos, trigger_price)
+            if r_now < self.flip_min_r:
+                logger.info(
+                    "flip skip — 이익 %.2fR < 최소 %.2fR (#FLIP-MIN-R, %s FVG w%d)",
+                    r_now, self.flip_min_r, target.tf, target.weight,
+                )
+                return
         # 같은 봉에 다시 안 박이게 flag.
         self._flip_done_for_ts = ts_ms
 
