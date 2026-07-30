@@ -313,6 +313,20 @@ class IctSettings(BaseSettings):
     # 파트너 실측 사례(하락장 숏이 1/3 지점 컷)가 방향 뒷받침. 배터리 한계는
     # bot_ict_instance.flip_min_r 주석 참조(실질표본 40건, 롱 악화·숏 개선).
     origo_flip_min_r: float = Field(default=0.0, ge=0.0, le=10.0)
+    # 2026-07-30 #MIN-SIZE (파트너 지시): 가용잔고 부족으로 진입 수량이 계획의 이 비율
+    # 미만으로 축소되면 진입 포기. 0=off.
+    # 배경: 한 포지션이 증거금 대부분을 먹은 뒤 남은 잔고로 극소액 포지션을 또 잡고
+    # 있었다(라이브 실측 최소 notional 0.58 USDT).
+    # 값 선정 근거(라이브 568건, 유저 중앙값 대비 상대크기 분석):
+    #   하한 20% → 차단 30건(5.3%), 차단분 ROI -0.37% vs 유지분 -0.35% (중립),
+    #              차단분 pnl -0.17 USDT = 전체 기여 0.0%, notional 중앙 4.0 USDT.
+    #   하한 30% → 차단분 ROI -0.16%/pnl **+6.13** = 흑자를 자르므로 부적합.
+    # ⚠️ ROI 개선 목적이 아니다 — "명백히 무의미한 거래 제거 + 증거금 확보"가 목적.
+    #   소액이 성적이 나쁘다는 1차 분석(-0.51%)은 유저 효과(시드 작은 유저의 성적)와
+    #   크기 효과를 혼동한 것이었고, 유저 내 상대크기로 보면 소액이 특별히 나쁘지 않다.
+    #   측정되지 않는 비용(증거금 점유로 더 좋은 셋업 상실, 분할익절 최소수량 미달)이
+    #   실질 근거다.
+    origo_min_entry_qty_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
     # 2026-07-10 #REGIME-OTE (Origo 1.7): 상승 국면(일봉 20일 z>0.75) 전용 OTE 깊이.
     # 0=off(항상 ote_level). 국면 랩: 상승 국면은 얕은 되돌림 롱이 역선택(-96%),
     # 0.786 깊이만 전/후반 동시 개선·흑자 전환(+94%). 조건부 적용 합계 +2816→+3006%.
@@ -483,6 +497,10 @@ class IctSettings(BaseSettings):
             # 기능을 더 보존하는 보수적 값). 사용자가 더 높게 올린 건 유지.
             if self.origo_flip_min_r < 1.5:
                 self.origo_flip_min_r = 1.5
+            # #MIN-SIZE: 극소액 진입 방지 — 계획의 20% 미만이면 skip (파트너 결정
+            # 2026-07-30, 30% 는 흑자 구간을 잘라 부적합). 사용자가 올린 건 유지.
+            if self.origo_min_entry_qty_ratio < 0.2:
+                self.origo_min_entry_qty_ratio = 0.2
             # #REGIME-OTE (Origo 1.7): 상승 국면 OTE 0.786 강제.
             if self.origo_ote_up_level <= 0:
                 self.origo_ote_up_level = 0.786

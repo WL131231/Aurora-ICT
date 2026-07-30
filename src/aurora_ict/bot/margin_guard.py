@@ -46,6 +46,7 @@ async def available_usdt(client: Any) -> float:
 
 async def cap_qty_to_available(
     client: Any, symbol: str, qty: float, price: float, leverage: int,
+    min_qty_ratio: float = 0.0,
 ) -> float:
     """가용잔고로 진입 수량 상한 — 필요증거금 > 가용이면 축소(라운딩), 최소미달이면 0.
 
@@ -55,10 +56,25 @@ async def cap_qty_to_available(
         qty: 원 진입 수량.
         price: 진입가(추정).
         leverage: 레버리지 (증거금 = notional/leverage).
+        min_qty_ratio: **축소 하한** — 축소된 수량이 원 계획의 이 비율 미만이면
+            진입을 포기(0 반환). 0 = 비활성(기존 동작).
+
+            #MIN-SIZE 2026-07-30 (파트너 지시): 한 포지션이 증거금 대부분을 먹은 뒤
+            남은 잔고로 **극소액 포지션을 의미 없이 또 잡는** 문제. 라이브 실측
+            (Origo 581진입): 최소 notional **0.58 USDT**, 5% 분위 9.31, 일부 유저는
+            진입의 **3분의 1**이 중앙값 절반 미만이었다.
+            소액은 성적도 나쁘다 — notional 5분위별 ROI 최소구간 **-0.51%**(승률 38%)
+            vs 최대구간 -0.25%(승률 48%)로 크기와 단조 관계. 20 USDT 미만 49건은
+            pnl 합계 +1.09 로 기여가 사실상 0 이면서 건수 9% 를 차지했다.
+            게다가 증거금을 묶어 더 좋은 셋업을 놓치고, 최소주문 근처면 분할익절도
+            걸리지 않는다(측정되지 않는 비용).
+            **절대 금액 하한은 쓰지 않는다** — 시드가 작은 유저는 정상 진입도
+            수십 USDT 라 고정 하한을 걸면 거래 자체가 막힌다. 계획 대비 비율이라
+            시드 크기와 무관하게 작동하고, 가용이 충분하면 영향이 없다.
 
     Returns:
         조정된 수량. 가용 조회 실패(-1)면 원 qty 그대로(거래소가 최종 판단).
-        축소분이 최소주문 미달이면 round_amount 결과 0 → 호출부가 skip.
+        축소분이 최소주문 미달이거나 min_qty_ratio 미달이면 0 → 호출부가 skip.
     """
     if qty <= 0 or price <= 0 or leverage <= 0:
         return qty
@@ -78,6 +94,16 @@ async def cap_qty_to_available(
             capped = float(client.round_amount(symbol, capped))
         except Exception:  # noqa: BLE001
             pass
+    # #MIN-SIZE: 계획의 min_qty_ratio 미만으로 쪼그라들면 진입 자체를 포기.
+    # 라운딩 **후** 값으로 판정한다(거래소 최소단위로 내림되어 더 작아질 수 있음).
+    if min_qty_ratio > 0 and capped < qty * min_qty_ratio:
+        logger.info(
+            "[%s] 진입 skip — 가용 %.2f USDT 로는 계획의 %.0f%% 만 진입 가능"
+            " (%.6f→%.6f, 하한 %.0f%%). 극소액 포지션 방지 (#MIN-SIZE)",
+            symbol, avail, 100 * capped / qty if qty > 0 else 0.0,
+            qty, capped, 100 * min_qty_ratio,
+        )
+        return 0.0
     logger.info(
         "[%s] 가용잔고 %.2f USDT — 진입수량 축소 %.6f→%.6f (필요증거금 초과 방지)",
         symbol, avail, qty, capped,
