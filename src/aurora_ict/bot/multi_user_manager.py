@@ -442,6 +442,8 @@ class MultiUserBotManager:
             ote_up_level=settings.origo_ote_up_level,
             # #FLIP-MIN-R (Origo 2.3): flip 조기 절단 방지 — 구독제 1.5R 강제, referral 0(off).
             flip_min_r=settings.origo_flip_min_r,
+            # #MIN-SIZE: 극소액 진입 방지 — 구독제 20% 강제, referral 0(off).
+            min_entry_qty_ratio=settings.origo_min_entry_qty_ratio,
             # #DD-THROTTLE (Origo 1.8): 낙폭 리스크 스로틀 — 구독제 25%/x0.7 강제.
             dd_throttle_pct=settings.origo_dd_throttle_pct,
             dd_throttle_factor=settings.origo_dd_throttle_factor,

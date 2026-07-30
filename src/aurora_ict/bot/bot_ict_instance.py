@@ -532,6 +532,16 @@ class BotIctInstance:
     flip_watch_ws_reconnect_max: int = 5
     # FVG 약화 임계치 — touch 누적 도달 시 mitigation 후보 / flip target 제외.
     htf_fvg_max_touch_count: int = 3
+    # #MIN-SIZE 2026-07-30 (파트너 지시): 가용잔고 부족으로 진입 수량이 계획의 이 비율
+    # 미만으로 축소되면 **진입 자체를 포기**. 0 = 비활성.
+    # 배경 — 한 포지션이 증거금 대부분을 먹은 뒤 남은 잔고로 극소액 포지션을 의미 없이
+    # 또 잡고 있었다. 라이브 실측(Origo 581진입): 최소 notional **0.58 USDT**,
+    # 5% 분위 9.31, 일부 유저는 진입의 **1/3**이 중앙값 절반 미만.
+    # 소액은 성적도 나쁘다 — notional 5분위 ROI 최소구간 **-0.51%**(승률 38%) vs
+    # 최대구간 -0.25%(승률 48%), 크기와 단조 관계. 20 USDT 미만 49건은 pnl 합계
+    # +1.09(기여 0)인데 건수 9% 차지. 증거금 점유로 더 좋은 셋업을 놓치는 비용은 별도.
+    # 상세 근거는 margin_guard.cap_qty_to_available docstring 참조.
+    min_entry_qty_ratio: float = 0.0
     # #FLIP-MIN-R 2026-07-30 (Origo 2.3): flip 발동 시 이익이 이 R 미만이면 **flip 무시**
     # 하고 원래 청산(TP/트레일)까지 홀드. 0 = 비활성(기존 동작).
     #
@@ -2167,6 +2177,7 @@ class BotIctInstance:
         if force_qty is None:
             qty = await cap_qty_to_available(
                 self.client, self.symbol, qty, setup.entry, self.leverage,
+                min_qty_ratio=self.min_entry_qty_ratio,
             )
         if qty <= 0:
             logger.warning("qty 계산 결과 0 이하 → skip: setup=%s", setup.ts_ms)
