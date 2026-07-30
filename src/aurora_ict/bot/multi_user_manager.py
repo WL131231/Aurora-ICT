@@ -440,6 +440,8 @@ class MultiUserBotManager:
             sweep_gate_days=settings.origo_sweep_gate_days,
             # #REGIME-OTE (Origo 1.7): 상승 국면 OTE 0.786 — 구독제 강제, referral 0.
             ote_up_level=settings.origo_ote_up_level,
+            # #FLIP-MIN-R (Origo 2.3): flip 조기 절단 방지 — 구독제 1.5R 강제, referral 0(off).
+            flip_min_r=settings.origo_flip_min_r,
             # #DD-THROTTLE (Origo 1.8): 낙폭 리스크 스로틀 — 구독제 25%/x0.7 강제.
             dd_throttle_pct=settings.origo_dd_throttle_pct,
             dd_throttle_factor=settings.origo_dd_throttle_factor,
