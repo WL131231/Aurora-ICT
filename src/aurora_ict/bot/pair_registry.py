@@ -115,8 +115,10 @@ class PairRegistry:
     def __init__(self, *, limit: int = 30, ttl_sec: float = 3600.0) -> None:
         self.limit = limit
         self.ttl_sec = float(ttl_sec)
-        # 첫 조회 전 폴백 — 고정 7 은 거래소 응답 없이도 항상 가동 가능해야 함.
-        self._cache: list[str] = list(FIXED_PAIRS)
+        # 첫 조회 전 폴백 — 고정 페어는 거래소 응답 없이도 항상 가동 가능해야 함.
+        # 두 모델 모두 포함(#CURSUS-PAIRS): Origo 목록만 넣으면 조회 전 TRX 가동이
+        # 거부된다.
+        self._cache: list[str] = list(dict.fromkeys((*FIXED_PAIRS, *CURSUS_FIXED_PAIRS)))
         self._fetched_at: float | None = None
 
     async def get_allowed(
@@ -137,7 +139,11 @@ class PairRegistry:
             pairs = await source.list_top_usdt_perps(self.limit)
             if pairs:
                 merged = [p for p in pairs if p not in EXCLUDED_PAIRS]
-                for fixed in FIXED_PAIRS:
+                # #CURSUS-PAIRS 2026-07-31: **두 모델의 고정 페어 모두** 보장한다.
+                # FIXED_PAIRS 만 보던 탓에 Cursus 전용 TRX 가 화이트리스트에 없어
+                # 가동이 거부됐다("거래대금 상위 30 에 없습니다" — 라이브 실측).
+                # 고정 페어는 정의상 거래대금 순위와 무관하게 허용돼야 한다.
+                for fixed in (*FIXED_PAIRS, *CURSUS_FIXED_PAIRS):
                     if fixed not in merged:
                         merged.append(fixed)
                 self._cache = merged
@@ -155,10 +161,12 @@ class PairRegistry:
 
 
 __all__ = [
+    "CURSUS_FIXED_PAIRS",
     "EXCLUDED_PAIRS",
     "FIXED_PAIRS",
     "MAJOR_PAIRS",
     "RECOMMENDED_PAIRS",
     "PairRegistry",
     "PairSource",
+    "fixed_pairs_for_model",
 ]

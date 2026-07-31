@@ -90,3 +90,49 @@ def test_start_preferred_uses_model_pairs(mu: MultiUserBotManager) -> None:
     # (금지 페어가 아니라 "자동으로 켜지지 않을 뿐" — 의도된 동작).
     assert pairs.count(LINK) == 1
     assert pairs.index(TRX) < pairs.index(LINK)
+
+
+# ---- 화이트리스트 (2026-07-31 라이브 실패에서 추가) ----
+
+class _Src:
+    """거래대금 상위 N 조회 스텁 — TRX 는 순위 밖(실제 상황)."""
+
+    def __init__(self, pairs: list[str]) -> None:
+        self._pairs = pairs
+
+    async def list_top_usdt_perps(self, limit: int) -> list[str]:
+        return self._pairs[:limit]
+
+
+@pytest.mark.asyncio
+async def test_whitelist_includes_cursus_fixed_pairs() -> None:
+    """★ 라이브 실패 재현 — TRX 가 거래대금 상위 밖이어도 가동 허용돼야 한다.
+
+    실측 로그:
+        [.../TRX/USDT:USDT] 고정 페어 정합 가동 실패:
+        'TRX/USDT:USDT' 는 거래 가능 목록(거래대금 상위 30)에 없습니다.
+
+    고정 페어는 정의상 거래대금 순위와 무관하게 허용된다(LINK 도 같은 이유로
+    이미 보강돼 있었는데, Cursus 목록만 빠져 있었다).
+    """
+    from aurora_ict.bot.pair_registry import PairRegistry
+
+    reg = PairRegistry(limit=30)
+    src = _Src(["BTC/USDT:USDT", "ETH/USDT:USDT"])   # TRX·LINK 없음
+
+    allowed = await reg.get_allowed(src)
+
+    assert TRX in allowed
+    assert LINK in allowed
+    assert await reg.is_allowed(src, TRX)
+
+
+@pytest.mark.asyncio
+async def test_whitelist_fallback_before_first_fetch() -> None:
+    """첫 조회 전 폴백 캐시에도 두 모델 고정 페어가 모두 들어 있어야 한다."""
+    from aurora_ict.bot.pair_registry import PairRegistry
+
+    reg = PairRegistry()
+
+    assert TRX in reg._cache
+    assert LINK in reg._cache
