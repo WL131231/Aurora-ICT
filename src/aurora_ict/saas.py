@@ -46,6 +46,25 @@ from aurora_ict.paths import data_dir
 logger = logging.getLogger(__name__)
 
 
+async def _reconcile_pairs_once(mu: MultiUserBotManager) -> None:
+    """모델 고정 페어 정합 1회 — 실패해도 봇 운영에 영향 없게 삼킨다.
+
+    #CURSUS-PAIRS 2026-07-31: 개발자 페어 변경(LINK→TRX)을 사용자 조작 없이
+    수렴시킨다. 포지션이 있는 슬롯은 정지하지 않으므로, 거래가 끝나는 다음
+    주기(10분)에 자연히 정리된다.
+    """
+    try:
+        st = await mu.reconcile_fixed_pairs()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("고정 페어 정합 오류 (다음 주기 계속): %s", e)
+        return
+    if st.get("stopped") or st.get("started") or st.get("held"):
+        logger.info(
+            "고정 페어 정합 — 정지 %d · 가동 %d · 보류 %d",
+            st.get("stopped", 0), st.get("started", 0), st.get("held", 0),
+        )
+
+
 async def auto_resume_running_bots(
     mu: MultiUserBotManager,
     db_path: Path | str,
@@ -259,6 +278,7 @@ def main() -> int:
             # 1회성 복원이 실패한 사용자가 수동 START 까지 영원히 죽어 있었다.
             # → 10분 주기 재시도 루프. auto_resume 는 멱등(이미 가동 중 re-start
             # 무시 + STOP 사용자는 bot_running 플래그가 꺼져 대상 아님)이라 안전.
+            await _reconcile_pairs_once(mu)
             while True:
                 await asyncio.sleep(600)
                 try:
@@ -267,6 +287,7 @@ def main() -> int:
                         logger.warning("주기 재가동 재시도 — 실패 %d건 잔존", stats["failed"])
                 except Exception as e:  # noqa: BLE001
                     logger.warning("주기 재가동 재시도 오류 (다음 주기 계속): %s", e)
+                await _reconcile_pairs_once(mu)
         # task 참조 보관 — asyncio 는 task 를 weak ref 로만 들고 있어 GC 로 중도
         # 취소될 수 있으므로 app.state 에 보관한다.
         app.state.resume_task = asyncio.create_task(_resume_bg())
