@@ -203,11 +203,11 @@ class BotTrendInstance:
             logger.warning("set_leverage 실패 (%s): %s", self.symbol, e)
         await self._recover_position_from_exchange()
         # 무포지션이면 startup 고아 주문 청소(활성 포지션 있으면 SL 보존 위해 skip).
+        # #ORDER-TAG: **봇 주문만** 취소한다. cancel_all 은 사용자가 직접 건 지정가
+        # 까지 지운다 — Origo 는 #385 에서 이미 선별 취소로 바뀌었는데 Cursus 만
+        # 남아 있었다(2026-08-01 점검). 지정가 진입 도입으로 실제 위험이 됐다.
         if self.active_position is None:
-            try:
-                await self.client.cancel_all_orders(self.symbol)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("startup 주문 청소 실패 (무시): %s", e)
+            await self._cancel_entry_orders()
         self.state = BotState.RUNNING
         self._task = asyncio.create_task(self._run_loop())
         logger.info(
@@ -216,7 +216,21 @@ class BotTrendInstance:
         )
 
     async def stop(self) -> None:
-        """봇 정지 — _run_loop task cancel."""
+        """봇 정지 — 미체결 지정가 취소 + _run_loop task cancel.
+
+        #LIMIT-ENTRY: 지정가 대기 중 정지하면 주문이 거래소에 남는다. 봇이 없는
+        사이 체결되면 SL(주문 동봉분)만 살아 있고 4분할 TP·래더 트레일·REVERSE 는
+        아무도 관리하지 않는 방치 포지션이 된다. Origo 는 같은 이유로 STOP 시
+        pending 을 취소한다(2026-05-27 파트너 요청) — Cursus 에도 맞춘다.
+        """
+        if self._pending_limit is not None:
+            pend = self._pending_limit
+            if await self._cancel_entry_orders():
+                logger.info(
+                    "STOP: Cursus 지정가 미체결 (px=%.4f qty=%.6f) 취소",
+                    pend.price, pend.qty,
+                )
+            self._pending_limit = None
         self.state = BotState.STOPPED
         if self._task is not None:
             self._task.cancel()
