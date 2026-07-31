@@ -1706,6 +1706,91 @@ def _register_multi_user_routes(
         return {"ok": True, "code": code, "symbol": symbol,
                 "detail": "미추적 포지션 청산 완료"}
 
+    @app.get("/admin/position/ownership")
+    async def admin_position_ownership(
+        code: str = Query(...),
+        symbol: str = Query(...),
+        x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+        cookie_token: str | None = Cookie(default=None, alias="aurora_admin_token"),
+    ) -> dict[str, Any]:
+        """미추적 포지션이 **봇 것인지 유저 수동인지** 진단 (2026-07-31 파트너 요청).
+
+        판정 근거를 모두 노출한다 — 어느 갈래로 걸렸는지 보이게.
+            tag_match  : 거래소 주문 이력에 봇 태그(orderLinkId=AUR*) 체결 진입주문
+                         → **유일한 확정 증거**. 있으면 봇이 연 포지션.
+            entry_rec  : 봇 매매기록(ENTRY)에 같은 방향·가격 1% 이내 미청산분
+            has_sl     : 거래소 SL 등록 여부. 봇은 진입 시 SL 을 반드시 등록하고
+                         실패하면 비상청산까지 하므로, **SL 이 없으면 봇 것이 아닐
+                         가능성이 매우 높다**.
+        레버리지는 근거가 못 된다 — 봇이 설정한 값이 계정에 남아 유저 수동 진입에도
+        그대로 적용된다.
+
+        읽기 전용 — 포지션을 건드리지 않는다.
+        """
+        from aurora_ict.api.trades_router import _check_admin_cookie_or_header
+        _check_admin_cookie_or_header(cookie_token, x_admin_token)
+        client = None
+        bot = None
+        for (u, _s), s2 in list(mu_manager._slots.items()):
+            if u != code:
+                continue
+            if client is None and s2.client is not None:
+                client = s2.client
+            if _s == symbol and s2.bot is not None:
+                bot = s2.bot
+        if client is None:
+            raise HTTPException(status_code=404, detail="사용자 client 없음")
+        try:
+            pos = await client.fetch_position(symbol)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"포지션 조회 실패: {e}") from e
+        contracts = float((pos or {}).get("contracts", 0) or 0)
+        side_raw = str((pos or {}).get("side", "") or "").lower()
+        if contracts <= 0 or side_raw not in ("long", "short", "buy", "sell"):
+            raise HTTPException(status_code=404, detail="활성 포지션 없음")
+        direction = "long" if side_raw in ("long", "buy") else "short"
+        entry = float((pos or {}).get("entryPrice")
+                      or (pos or {}).get("entry_price") or 0)
+        info = (pos or {}).get("info") or {}
+        sl = float(info.get("stopLoss") or (pos or {}).get("stopLossPrice") or 0)
+        tag_match = False
+        try:
+            tag_match = await client.position_opened_by_bot(
+                symbol, direction, entry, contracts,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[admin/ownership] 태그 조회 실패 %s %s: %s", code, symbol, e)
+        entry_rec = None
+        if bot is not None and hasattr(bot, "_find_unclosed_entry_event"):
+            try:
+                from aurora_ict.strategy.silver_bullet import Direction as Dir
+                ev = bot._find_unclosed_entry_event(
+                    Dir.LONG if direction == "long" else Dir.SHORT,
+                )
+                if ev is not None:
+                    entry_rec = {"price": ev.price, "ts_ms": ev.ts_ms,
+                                 "qty": float(getattr(ev, "qty", 0.0) or 0.0),
+                                 "setup_ts_ms": ev.setup_ts_ms}
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[admin/ownership] ENTRY 기록 조회 실패: %s", e)
+        verdict = (
+            "bot" if tag_match or entry_rec is not None
+            else ("manual_likely" if sl <= 0 else "unknown")
+        )
+        return {
+            "code": code, "symbol": symbol, "direction": direction,
+            "entry": entry, "qty": contracts, "stop_loss": sl,
+            "tag_match": tag_match,          # ★ 확정 증거
+            "entry_record": entry_rec,
+            "has_sl": sl > 0,
+            "bot_slot_exists": bot is not None,
+            "verdict": verdict,
+            "note": ("tag_match 가 True 면 봇이 연 포지션 확정. "
+                     "둘 다 없고 SL 도 없으면 유저 수동 포지션일 가능성이 높다 "
+                     "(봇은 진입 시 SL 등록 실패 시 비상청산한다). "
+                     "레버리지는 근거가 아니다 — 봇이 설정한 값이 계정에 남는다."),
+        }
+
     @app.post("/admin/position/force-entry")
     async def admin_force_entry(
         code: str = Query(...),

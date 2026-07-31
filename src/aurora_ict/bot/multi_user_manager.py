@@ -41,10 +41,12 @@ from aurora_ict.bot.bot_ict_instance import (
     ExchangeClientProtocol,
 )
 from aurora_ict.bot.pair_registry import (
+    CURSUS_FIXED_PAIRS,
     EXCLUDED_PAIRS,
     FIXED_PAIRS,
     MAJOR_PAIRS,
     PairRegistry,
+    fixed_pairs_for_model,
 )
 from aurora_ict.config.settings import (
     TRADE_TIMEFRAMES,
@@ -384,11 +386,12 @@ class MultiUserBotManager:
                     f"동시 가동 페어는 최대 {MAX_PAIRS_PER_USER}개입니다 "
                     f"(현재 {len(existing)}개 — 일부 정지 후 추가하세요).",
                 )
-            if symbol not in FIXED_PAIRS:
-                choice = {s for s in existing if s not in FIXED_PAIRS}
+            _fixed = self._fixed_pairs(user_code)   # #CURSUS-PAIRS: 모델별 고정 페어
+            if symbol not in _fixed:
+                choice = {s for s in existing if s not in _fixed}
                 if len(choice) >= MAX_CHOICE_PAIRS:
                     raise ValueError(
-                        f"선택 페어는 고정 {len(FIXED_PAIRS)}개 외 최대 "
+                        f"선택 페어는 고정 {len(_fixed)}개 외 최대 "
                         f"{MAX_CHOICE_PAIRS}개입니다 (현재 선택 {len(choice)}개"
                         " — 일부 정지 후 추가하세요).",
                     )
@@ -620,7 +623,9 @@ class MultiUserBotManager:
             # (예: LINK 30위 밖) 피커에서 검색조차 안 됨 — 누락 고정 페어의
             # 시세를 개별 조회해 행을 보장한다 (조회 실패 시 가격 미상 행).
             have = {str(r.get("symbol")) for r in rows}
-            for fixed in FIXED_PAIRS:
+            # #CURSUS-PAIRS: 두 모델의 고정 페어 합집합 — 피커에서 TRX(Cursus)와
+            # LINK(Origo) 가 모델과 무관하게 검색 가능해야 한다(행 보장 목적).
+            for fixed in dict.fromkeys((*FIXED_PAIRS, *CURSUS_FIXED_PAIRS)):
                 if fixed in have:
                     continue
                 last = None
@@ -853,6 +858,26 @@ class MultiUserBotManager:
                 user_code, symbol,
             )
 
+    def _fixed_pairs(self, user_code: str) -> tuple[str, ...]:
+        """사용자 모델의 고정 페어 — Cursus 는 TRX 포함·LINK 제외(개발자 지정).
+
+        #CURSUS-PAIRS 2026-07-31 후속: 모델 분기가 API(페어 피커)에만 들어가 있어
+        **봇을 실제로 띄우는 경로는 여전히 Origo 목록**을 쓰고 있었다. 그 결과
+        Cursus 유저에게 LINK 가 계속 켜지고 TRX 는 안 켜졌다(라이브 로그로 확인).
+
+        Args:
+            user_code: 사용자 코드.
+
+        Returns:
+            모델별 고정 페어. 모델 조회 실패 시 기본(Origo) 목록.
+        """
+        try:
+            model = users_db.get_last_model(self.db_path, user_code)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("모델 조회 실패(%s) — 기본 고정 페어 사용: %s", user_code, e)
+            return FIXED_PAIRS
+        return fixed_pairs_for_model(model)
+
     async def start_preferred(
         self, user_code: str, *, force_run_mode: RunMode | None = None,
     ) -> list[str]:
@@ -868,11 +893,12 @@ class MultiUserBotManager:
             가동된 symbol 목록.
         """
         last = users_db.get_last_active_pairs(self.db_path, user_code)
+        fixed = self._fixed_pairs(user_code)   # #CURSUS-PAIRS: 모델별 고정 페어
         choice = [
             s for s in last
-            if s not in FIXED_PAIRS and s not in EXCLUDED_PAIRS
+            if s not in fixed and s not in EXCLUDED_PAIRS
         ][:MAX_CHOICE_PAIRS]
-        pairs = list(FIXED_PAIRS) + choice
+        pairs = list(fixed) + choice
         started: list[str] = []
         for sym in pairs:
             try:
