@@ -878,6 +878,104 @@ class MultiUserBotManager:
             return FIXED_PAIRS
         return fixed_pairs_for_model(model)
 
+    async def _has_live_exposure(self, user_code: str, symbol: str) -> bool | None:
+        """이 슬롯에 살아있는 포지션/대기주문이 있나 — 자동 정지 가능 여부 판정.
+
+        Returns:
+            True(있음·정지 금지) / False(없음·정지 가능) / **None(판정 불가)**.
+            None 은 "정지하면 안 된다" 와 같게 취급한다 — 조회가 실패했는데 껐다가
+            실제로는 포지션이 있었다면 SL/TP 관리 주체가 사라진다.
+        """
+        slot = self._slots.get((user_code, symbol))
+        if slot is None:
+            return False
+        bot = getattr(slot, "bot", None)
+        if bot is not None:
+            if getattr(bot, "active_position", None) is not None:
+                return True
+            # 지정가 진입 대기(#LIMIT-ENTRY) 중이면 주문이 거래소에 걸려 있다.
+            if getattr(bot, "_pending_limit", None) is not None:
+                return True
+            if getattr(bot, "_pending_entry", None) is not None:
+                return True
+        client = getattr(slot, "client", None)
+        if client is None:
+            return None
+        try:   # 봇이 모르는 포지션(입양 전·수동)까지 거래소 진실로 확인
+            ex = await client.fetch_position(symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[%s/%s] 정합 정리 — 포지션 조회 실패, 보류: %s",
+                           user_code, symbol, e)
+            return None
+        return float((ex or {}).get("contracts", 0) or 0) > 0
+
+    async def reconcile_fixed_pairs(self) -> dict[str, int]:
+        """모델 고정 페어 정합 — 옛 목록 잔재를 정지하고 그 자리에 새 고정 페어 가동.
+
+        #CURSUS-PAIRS 2026-07-31: 개발자 지정으로 Cursus 고정 페어가 LINK→TRX 로
+        바뀌었으나, **이미 떠 있는 슬롯은 사용자가 STOP→START 하기 전까지 그대로**
+        였다(모델 전환도 심볼 목록은 유지한 채 봇만 재생성한다). 사용자 조작 없이
+        수렴시키기 위한 주기 작업이다.
+
+        안전 규칙:
+          - 정리 대상은 **다른 모델의 고정 페어**로 한정한다(LINK↔TRX). 사용자가
+            직접 고른 선택 페어(예: ADA)는 건드리지 않는다.
+          - 포지션·대기주문이 있거나 **판정에 실패하면 정지하지 않는다**. 다음
+            주기에 다시 시도하므로, 거래가 끝나면 자연히 정리된다.
+          - 새 페어 가동은 **정지에 성공한 수만큼만** 한다(실질 1:1 교체). 사용자가
+            의도적으로 꺼둔 페어를 임의로 켜지 않기 위해서다.
+
+        Returns:
+            ``{"stopped": int, "started": int, "held": int}`` 통계.
+        """
+        stats = {"stopped": 0, "started": 0, "held": 0}
+        both = (*FIXED_PAIRS, *CURSUS_FIXED_PAIRS)
+        for user in {u for (u, _s) in list(self._slots.keys())}:
+            fixed = self._fixed_pairs(user)
+            legacy = {s for s in both if s not in fixed}
+            syms = [s for (u, s) in list(self._slots.keys()) if u == user]
+            swapped = 0
+            for sym in syms:
+                if sym not in legacy:
+                    continue
+                exposed = await self._has_live_exposure(user, sym)
+                if exposed is not False:
+                    stats["held"] += 1
+                    logger.info(
+                        "[%s/%s] 고정 페어 정합 — 포지션/주문 있음(또는 판정 불가) "
+                        "→ 정지 보류, 다음 주기 재시도", user, sym,
+                    )
+                    continue
+                try:
+                    # forget_preference=True — 선호에서도 빼야 auto_resume 이
+                    # 되살리지 않는다.
+                    await self.stop(user, sym, forget_preference=True)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("[%s/%s] 고정 페어 정합 정지 실패: %s", user, sym, e)
+                    continue
+                stats["stopped"] += 1
+                swapped += 1
+                logger.info("[%s/%s] 고정 페어 정합 — 옛 고정 페어 정지", user, sym)
+            if swapped <= 0:
+                continue
+            # 켤 대상은 "빠진 고정 페어 아무거나"가 아니라 **잔재를 대체하는 짝**이다
+            # (Cursus 면 TRX). 두 모델 공통 페어(BTC 등)는 이미 떠 있는 게 정상이고,
+            # 꺼져 있다면 사용자가 의도적으로 끈 것이라 임의로 켜면 안 된다.
+            other = CURSUS_FIXED_PAIRS if set(fixed) == set(FIXED_PAIRS) else FIXED_PAIRS
+            missing = [
+                s for s in fixed
+                if s not in other and (user, s) not in self._slots
+            ]
+            for sym in missing[:swapped]:
+                try:
+                    await self.start(user, sym)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("[%s/%s] 고정 페어 정합 가동 실패: %s", user, sym, e)
+                    continue
+                stats["started"] += 1
+                logger.info("[%s/%s] 고정 페어 정합 — 새 고정 페어 가동", user, sym)
+        return stats
+
     async def start_preferred(
         self, user_code: str, *, force_run_mode: RunMode | None = None,
     ) -> list[str]:
