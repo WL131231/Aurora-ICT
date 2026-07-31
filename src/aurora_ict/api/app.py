@@ -38,7 +38,6 @@ from aurora_ict.bot.multi_user_manager import (
 )
 from aurora_ict.bot.pair_registry import (
     EXCLUDED_PAIRS,
-    FIXED_PAIRS,
     RECOMMENDED_PAIRS,
 )
 from aurora_ict.config.settings import TRADE_TIMEFRAMES, IctSettings, RunMode
@@ -664,6 +663,13 @@ def _register_multi_user_routes(
             tickers 는 페어 선택기 시세 표시용(거래대금 정렬). 시세 조회
             전/실패 시 tickers 는 빈 배열, pairs 는 화이트리스트 폴백.
         """
+        # #CURSUS-PAIRS 2026-07-31: 모델별 고정 페어 분리. Cursus 는 개발자 지정으로
+        # TRX 포함·LINK 제외라 Origo 목록(백테 확정 7페어)과 공유하면 안 된다.
+        from aurora_ict.auth import users_db as _udb  # noqa: PLC0415
+        from aurora_ict.bot.pair_registry import fixed_pairs_for_model  # noqa: PLC0415
+
+        _model = _udb.get_last_model(mu_manager.db_path, user_code)
+        _fixed = fixed_pairs_for_model(_model)
         try:
             tickers = await mu_manager.list_market_tickers(user_code)
         except Exception as e:  # noqa: BLE001
@@ -672,7 +678,7 @@ def _register_multi_user_routes(
         tickers = [t for t in tickers if t.get("symbol") not in EXCLUDED_PAIRS]
         if tickers:
             pairs = [t["symbol"] for t in tickers]
-            for fixed in FIXED_PAIRS:
+            for fixed in _fixed:
                 if fixed not in pairs:
                     pairs.append(fixed)
         else:
@@ -680,13 +686,13 @@ def _register_multi_user_routes(
                 pairs = await mu_manager.list_tradable_pairs(user_code)
             except Exception as e:  # noqa: BLE001
                 logger.warning("markets pairs 폴백 실패 — %s: %s", user_code, e)
-                pairs = list(FIXED_PAIRS)
+                pairs = list(_fixed)
         pairs = [p for p in pairs if p not in EXCLUDED_PAIRS]
         return {
             "pairs": pairs,
             "tickers": tickers,
             "max_pairs": MAX_PAIRS_PER_USER,
-            "fixed_pairs": list(FIXED_PAIRS),
+            "fixed_pairs": list(_fixed),
             "max_choice_pairs": MAX_CHOICE_PAIRS,
             # 2026-06-12: 선택 추천 (2차 검증 양면 흑자, 순서=순위) — 피커 상단 고정.
             "recommended_pairs": list(RECOMMENDED_PAIRS),
