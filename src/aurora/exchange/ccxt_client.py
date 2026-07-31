@@ -613,8 +613,15 @@ class CcxtClient:
             px = float(o.get("average") or o.get("price") or 0) or 0.0
             if px <= 0 or abs(px - entry_price) > entry_price * 0.01:
                 continue
-            if qty > 0 and abs(filled - qty) > qty * 0.1:
-                continue  # 수량 불일치 — 예전 라운드 주문 오탐 억제
+            # #PARTIAL-ORPHAN 2026-07-31: 부분 청산된 봇 포지션도 인식해야 한다.
+            # 기존 `abs(filled - qty) > qty*0.1` 는 **양방향 ±10%** 라, 4분할 TP 로
+            # 25% 가 익절된 잔량(예: 진입 564 → 현재 423)을 "수량 불일치" 로 배제해
+            # 봇 포지션이 미추적 고아로 방치됐다(라이브 DOGE 3건 실측).
+            # 봇이 연 포지션은 부분 청산으로 **줄어들 수만** 있으므로 하한을 두지
+            # 않고, 현재 수량이 체결량을 유의하게 **넘을 때만** 배제한다
+            # (넘으면 다른 진입이 합산된 것 = 우리 주문이 연 포지션이 아님).
+            if qty > 0 and qty > filled * 1.1:
+                continue
             return True
         return False
 
