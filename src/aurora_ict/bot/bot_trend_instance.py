@@ -85,6 +85,33 @@ class _TrendPosition:
 
 
 @dataclass(slots=True)
+class _PendingLimitEntry:
+    """#LIMIT-ENTRY — 지표 라벨 좌표에 걸어둔 미체결 지정가 진입 주문.
+
+    개발자 지표(Pine v6 "Dual SuperTrend, Ichimoku and DMI ... by DGT") 정본에서
+    브레이크아웃 "매수 지점"은 신호봉의 **저점(롱 ▲) / 고점(숏 ▼)** 에 그려진다.
+    종가 추격 대신 그 되돌림 가격에 지정가를 걸어 눌림에서 잡는 것이 개발자 운용법.
+
+    Attributes:
+        direction: 진입 방향.
+        price: 지정가 = 신호봉 저점(롱)/고점(숏). 주문 후 갱신하지 않는다.
+        qty: 주문 수량.
+        stop: 체결 시 적용될 고정 SL(지정가 기준 2%) — 주문에 동봉해 무방비 창 제거.
+        order_id: 취소용 거래소 주문 ID.
+        signal_bar_ms: 신호봉 시각(ms) — 중복 주문 판별 키.
+        expire_bar_ms: 이 시각을 넘긴 봉이 오면 미체결 취소(TTL).
+    """
+
+    direction: Direction
+    price: float
+    qty: float
+    stop: float
+    order_id: str
+    signal_bar_ms: int
+    expire_bar_ms: int
+
+
+@dataclass(slots=True)
 class BotTrendInstance:
     """Cursus 추세형 봇 — Dual SuperTrend 트레일링.
 
@@ -115,6 +142,11 @@ class BotTrendInstance:
     enable_split_tp: bool = True
     tp_pcts: tuple[float, ...] = (0.01, 0.02, 0.03, 0.04)
     tp_frac: float = 0.25
+    # #LIMIT-ENTRY 2026-07-31: 시장가 대신 지표 라벨 좌표(신호봉 저/고)에 지정가.
+    # ttl_bars = 미체결 취소까지 기다릴 봉 수(1h 봉 기준). 신호봉 다음 봉부터 세며,
+    # 넘기면 취소 — 추세가 이미 떠난 뒤 뒤늦게 잡히는 것을 막는다.
+    limit_entry: bool = False
+    limit_entry_ttl_bars: int = 3
     trades_data_dir: Path | None = None
     user_code: str | None = None
     run_mode: str = "live"
@@ -144,6 +176,9 @@ class BotTrendInstance:
     # None/False 로 노출. #CURSUS hotfix 2026-06-25. (분기 조건이 모두 None/False 에서
     # 안전하게 빠지도록 설계됨 — 추세형은 pending/daily-limit 개념 미사용.)
     _pending_entry: Any = field(default=None)
+    # #LIMIT-ENTRY 미체결 지정가 주문(진입 대기). ICT 호환 stub 인 _pending_entry 와
+    # 별개 — 저건 UI 가 읽는 Origo 전용 필드라 건드리지 않는다.
+    _pending_limit: _PendingLimitEntry | None = field(default=None)
     _daily_profit_hit: bool = field(default=False)
     _daily_limit_hit: bool = field(default=False)
     _htf_fvg_map_cache: Any = field(default=None)
@@ -231,9 +266,22 @@ class BotTrendInstance:
             return
         price = float(df["close"].iloc[-1])
         sig = latest_signal(df, self.cfg)         # Direction | None
+        # #LIMIT-ENTRY: 지정가 좌표가 되는 신호봉 — latest_signal 이 보는 봉과 동일한
+        # 마지막 행이다(Pine 라벨도 신호봉 bar_index 의 low/high 에 그려진다).
+        bar = {
+            "ts": float(df["ts"].iloc[-1]),
+            "low": float(df["low"].iloc[-1]),
+            "high": float(df["high"].iloc[-1]),
+        }
 
         # 거래소 동기화 — active 인데 거래소 qty 0 이면 SL 체결로 청산됨.
         await self._sync_position_state(price)
+        # #LIMIT-ENTRY: 미체결 지정가가 걸려 있으면 체결 확인/TTL 취소를 먼저 한다.
+        # 조용한 재입양(_recover)보다 앞서야 체결이 ENTRY 로 기록된다.
+        if self._pending_limit is not None:
+            await self._handle_pending_limit(df, price, sig)
+            if self.active_position is None and self._pending_limit is not None:
+                return  # 아직 체결 대기 — 신규 주문 중복 금지
         # 봇 모르는 거래소 포지션(재시작 사이·수동·force 진입) 입양 — active None 인데
         # 거래소에 포지션이 있으면 _recover 가 복원(고정 2% SL + entry 기준 TP 그리드).
         if self.active_position is None:
@@ -292,7 +340,7 @@ class BotTrendInstance:
                 return
             # REVERSE — 반대 신호.
             if sig is not None and sig is not pos.direction:
-                await self._reverse(sig, price)
+                await self._reverse(sig, price, bar=bar)
             return
 
         # 무포지션 — 진입 신호.
@@ -308,7 +356,7 @@ class BotTrendInstance:
                     )
                     self._daily_limit_hit = True
                 return
-            await self._open(sig, price)
+            await self._open(sig, price, bar=bar)
 
     def _fixed_sl(self, entry: float, direction: Direction) -> float:
         """원본 고정 SL — entry ∓ sl_pct(2%). 청산가 캡(안전망)만 추가 적용."""
@@ -316,13 +364,25 @@ class BotTrendInstance:
         raw = entry * (1 - sign * self.cfg.sl_pct)
         return self._liq_capped_sl(raw, entry, direction)
 
-    async def _open(self, direction: Direction, price: float) -> None:
-        """시장가 진입 + 고정 SL(2%) + 4분할 TP 그리드 + ENTRY 기록 (원본 엔진).
+    async def _open(
+        self, direction: Direction, price: float,
+        *, bar: dict[str, float] | None = None,
+    ) -> None:
+        """진입 + 고정 SL(2%) + 4분할 TP 그리드 + ENTRY 기록 (원본 엔진).
 
         원본 build_order_plan 정합: stop = entry×(1∓sl_pct), tps = entry×(1±1~4%).
         고정 %SL 은 정의상 보호 측이라 (구)트레일 침범 가드는 불필요해졌다
         (#363 가드는 ST×6 SL 시절 산물 — 원본 복원으로 원인 자체 소멸).
+
+        Args:
+            direction: 진입 방향.
+            price: 현재가(시장가 진입 기준 · 수량 계산 기준).
+            bar: 신호봉 {ts, low, high}. ``limit_entry`` 일 때 지정가 좌표로 쓴다.
+                None 이면(REVERSE 등 봉 정보 없는 경로) 시장가로 폴백한다.
         """
+        if self.limit_entry and bar is not None:
+            await self._open_limit(direction, price, bar)
+            return
         qty = await self._calc_qty(price)
         # #MARGIN-GUARD 2026-07-24: 진입 전 가용잔고 체크 — 필요증거금 초과면 수량
         # 축소, 최소미달이면 skip. 여러 페어 동시 운용 시 '잔고부족' 거부 원천 차단.
@@ -361,7 +421,147 @@ class BotTrendInstance:
             self.symbol, side, price, qty, capped,
         )
 
-    async def _reverse(self, new_dir: Direction, price: float) -> None:
+    def _tf_ms(self) -> int:
+        """timeframe 문자열 → 봉 길이(ms). 파싱 실패 시 1h 로 폴백."""
+        tf = self.timeframe.strip().lower()
+        digits = "".join(ch for ch in tf if ch.isdigit())
+        unit_ms = {"m": 60_000, "h": 3_600_000, "d": 86_400_000}.get(tf[-1:] or "h")
+        if not digits or unit_ms is None:
+            return 3_600_000
+        return int(digits) * unit_ms
+
+    async def _open_limit(
+        self, direction: Direction, price: float, bar: dict[str, float],
+    ) -> None:
+        """#LIMIT-ENTRY — 지표 라벨 좌표(신호봉 저/고)에 지정가 진입 주문.
+
+        시장가로 종가를 추격하는 대신 **되돌림 가격**에 걸어 눌림에서 잡는다.
+        SL 을 주문에 동봉(Bybit V5 stopLoss)해 체결 즉시 보호가 붙게 하고,
+        체결 여부는 다음 step 의 :meth:`_handle_pending_limit` 이 확인한다.
+
+        Args:
+            direction: 진입 방향.
+            price: 현재가 — 로그·비교용(수량/SL 기준은 지정가 px).
+            bar: 신호봉 {ts, low, high}.
+        """
+        px = float(bar.get("low" if direction is Direction.LONG else "high", 0.0) or 0.0)
+        # NaN 은 자기 자신과 다르다 — 좌표 이상 시 진입 skip(시장가 폴백 안 함:
+        # 정본은 지정가이고, 좌표 없이 추격하면 검증한 성적과 다른 봇이 된다).
+        if not (px > 0) or px != px:
+            logger.warning("[%s] Cursus 지정가 좌표 이상(%s) — 진입 skip", self.symbol, px)
+            return
+        # tick 라운딩 불필요 — px 는 거래소 OHLCV 의 실제 체결가(저/고)라 이미 tick
+        # 배수다. 하이켄아시를 켜도 신호만 HA 로 계산하고 봉의 OHLC 는 실가격이다.
+        qty = await self._calc_qty(px)
+        qty = await cap_qty_to_available(self.client, self.symbol, qty, px, self.leverage)
+        if qty <= 0:
+            logger.warning("[%s] qty 0 — 지정가 진입 skip (잔고/가격 확인)", self.symbol)
+            return
+        stop = self._fixed_sl(px, direction)
+        side = "buy" if direction is Direction.LONG else "sell"
+        try:
+            order = await self.client.place_order(
+                symbol=self.symbol, side=side, qty=qty, price=px, stop_loss=stop,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error("[%s] Cursus 지정가 진입 주문 실패: %s", self.symbol, e)
+            notify_order_error(
+                str(e), self.notify_cb, self.user_code or "",
+                self._order_error_alert_ts,
+            )
+            return
+        bar_ts = int(bar.get("ts", 0) or 0)
+        self._pending_limit = _PendingLimitEntry(
+            direction=direction, price=px, qty=qty, stop=stop,
+            order_id=str(getattr(order, "order_id", "") or ""),
+            signal_bar_ms=bar_ts,
+            # 신호봉 다음 봉부터 ttl 개까지 유효 — 그 봉을 지나면 다음 step 에서 취소.
+            expire_bar_ms=bar_ts + self.limit_entry_ttl_bars * self._tf_ms(),
+        )
+        logger.info(
+            "Cursus 지정가 대기 — %s %s px=%.4f (현재가 %.4f) qty=%.6f SL=%.4f TTL=%d봉",
+            self.symbol, side, px, price, qty, stop, self.limit_entry_ttl_bars,
+        )
+
+    async def _handle_pending_limit(
+        self, df: pd.DataFrame, price: float, sig: Direction | None,
+    ) -> None:
+        """미체결 지정가 처리 — 체결이면 포지션 확정, 아니면 TTL·역신호로 취소.
+
+        체결 판정은 거래소 포지션 조회로 한다(주문 상태 폴링보다 어댑터 의존이 적고,
+        부분 체결도 잡힌다). 판정 실패(네트워크 등)면 아무것도 하지 않고 대기 —
+        섣불리 취소해서 실제 체결된 포지션을 무주공산으로 두지 않는다.
+
+        Args:
+            df: 최신 OHLCV(마지막 행 = 현재 봉).
+            price: 현재가.
+            sig: 이번 봉의 진입 신호(역신호 취소 판정용).
+        """
+        pend = self._pending_limit
+        if pend is None:
+            return
+        try:
+            ex = await self.client.fetch_position(self.symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[%s] 지정가 체결확인 fetch_position 실패: %s", self.symbol, e)
+            return
+        contracts = float((ex or {}).get("contracts", 0) or 0)
+        if contracts > 0:
+            self._pending_limit = None
+            # 부분 체결이면 잔여 주문이 남아 봇 모르게 수량이 늘 수 있다 → 정리.
+            # (SL 은 포지션 속성이라 주문 취소로 지워지지 않는다.)
+            await self._cancel_entry_orders()
+            await self._recover_position_from_exchange(record=False)
+            ap = self.active_position
+            if ap is None:
+                return
+            self._record_trade(
+                TradeEventType.ENTRY, direction=ap.direction, price=ap.entry, qty=ap.qty,
+                reason=(f"DualST 지정가 체결 {pend.price:.4f} "
+                        f"sl={ap.stop:.4f}(-{self.cfg.sl_pct * 100:.0f}%)"),
+            )
+            await self._apply_protective_sl(ap.stop, price)
+            logger.info(
+                "Cursus 지정가 체결 — %s %s entry=%.4f qty=%.6f SL=%.4f",
+                self.symbol, ap.direction.value, ap.entry, ap.qty, ap.stop,
+            )
+            return
+        # 미체결 — 취소 조건 판정.
+        try:
+            bar_ts = int(df["ts"].iloc[-1])
+        except Exception:  # noqa: BLE001
+            return
+        if sig is not None and sig is not pend.direction:
+            why = "역신호"
+        elif bar_ts > pend.expire_bar_ms:
+            why = f"TTL {self.limit_entry_ttl_bars}봉 만료"
+        else:
+            return
+        if not await self._cancel_entry_orders():
+            return  # 취소 실패 — pending 유지하고 다음 step 재시도
+        self._pending_limit = None
+        logger.info(
+            "Cursus 지정가 취소 — %s %s px=%.4f (%s)",
+            self.symbol, pend.direction.value, pend.price, why,
+        )
+
+    async def _cancel_entry_orders(self) -> bool:
+        """봇이 낸 미체결 주문 취소 — 유저 수동 주문은 보존. 성공 여부 반환."""
+        fn = getattr(self.client, "cancel_bot_orders", None) or getattr(
+            self.client, "cancel_all_orders", None,
+        )
+        if fn is None:
+            return True
+        try:
+            await fn(self.symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[%s] 지정가 주문 취소 실패: %s", self.symbol, e)
+            return False
+        return True
+
+    async def _reverse(
+        self, new_dir: Direction, price: float, *, bar: dict[str, float] | None = None,
+    ) -> None:
         """반대 신호 — 현재 포지션 시장가 청산(reduce_only) 후 역진입."""
         pos = self.active_position
         if pos is None:
@@ -394,7 +594,7 @@ class BotTrendInstance:
                 "[%s] Cursus REVERSE 후 잔량 확인 실패 — 역진입 보류: %s", self.symbol, e,
             )
             return
-        await self._open(new_dir, price)
+        await self._open(new_dir, price, bar=bar)
 
     async def _sync_position_state(self, price: float) -> None:
         """거래소 포지션 동기화 — active 인데 qty 0 이면 트레일 SL 체결(거래소 자동청산) 인지."""
