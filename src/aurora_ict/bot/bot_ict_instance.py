@@ -87,6 +87,51 @@ from aurora_ict.timing.power_of_3 import AmdPhase, amd_phase
 logger = logging.getLogger(__name__)
 
 
+def fully_closed_setups(events, symbol: str) -> set[int]:
+    """이 심볼에서 **전량 청산이 끝난** setup_ts 집합.
+
+    #PARTIAL-ORPHAN 2026-07-31: 청산류 이벤트가 하나 있다고 곧바로 "청산됨" 으로
+    보면 **부분 익절**을 전량 청산으로 오인한다. Cursus 4분할 TP 는 TP1(25%)
+    체결에도 TP_HIT 을 남기는데, 그 탓에 잔량 75% 가 미청산 ENTRY 후보에서 빠져
+    봇 포지션이 미추적 고아로 방치됐다(라이브 DOGE 3건 실측: 진입 564 → TP1 141
+    청산 → 잔량 423 이 방치. SL 은 살아 있었으나 TP2~4·래더 트레일이 멈춤).
+
+    판정: setup 별로 ENTRY 수량과 청산 수량 합계를 모아, 청산 합계가 진입 수량의
+    90% 이상이면 종료로 본다. 수량 정보가 없는 구 기록은 종료로 간주한다
+    (보수적 — 소유권 오채택보다 미채택이 안전).
+
+    Args:
+        events: TradeEvent 목록.
+        symbol: 대상 심볼.
+
+    Returns:
+        전량 청산된 setup_ts_ms 집합.
+    """
+    close_types = {
+        TradeEventType.SL_HIT, TradeEventType.TP_HIT, TradeEventType.SYNC_CLOSE,
+        TradeEventType.MANUAL_CLOSE, TradeEventType.FLIP_CLOSE,
+    }
+    entry_qty: dict[int, float] = {}
+    closed_qty: dict[int, float] = {}
+    no_qty: set[int] = set()
+    for ev in events:
+        if ev.symbol != symbol or not ev.setup_ts_ms:
+            continue
+        q = float(getattr(ev, "qty", 0.0) or 0.0)
+        if ev.event_type is TradeEventType.ENTRY:
+            entry_qty[ev.setup_ts_ms] = entry_qty.get(ev.setup_ts_ms, 0.0) + q
+        elif ev.event_type in close_types:
+            if q <= 0:
+                no_qty.add(ev.setup_ts_ms)
+            closed_qty[ev.setup_ts_ms] = closed_qty.get(ev.setup_ts_ms, 0.0) + q
+    out = set(no_qty)
+    for ts_, cq in closed_qty.items():
+        eq = entry_qty.get(ts_, 0.0)
+        if eq <= 0 or cq >= eq * 0.9:
+            out.add(ts_)
+    return out
+
+
 def recovery_already_recorded(
     events: list[Any], symbol: str, direction_value: str, entry_price: float,
 ) -> bool:
@@ -1018,16 +1063,7 @@ class BotIctInstance:
         except Exception as e:  # noqa: BLE001
             logger.warning("recover: all_events 실패 — TP 복원 skip: %s", e)
             return None
-        close_types = {
-            TradeEventType.SL_HIT, TradeEventType.TP_HIT,
-            TradeEventType.SYNC_CLOSE, TradeEventType.MANUAL_CLOSE,
-            TradeEventType.FLIP_CLOSE,
-        }
-        closed_ts = {
-            ev.setup_ts_ms for ev in events
-            if ev.symbol == self.symbol
-            and ev.event_type in close_types and ev.setup_ts_ms
-        }
+        closed_ts = fully_closed_setups(events, self.symbol)
         cands = [
             ev for ev in events
             if ev.symbol == self.symbol
@@ -4028,20 +4064,14 @@ class BotIctInstance:
             logger.warning("reconcile: all_events 실패 — skip: %s", e)
             return
         # 이 심볼의 청산된 setup_ts 집합 + 청산 안 된 ENTRY 수집.
-        close_types = {
-            TradeEventType.SL_HIT, TradeEventType.TP_HIT,
-            TradeEventType.SYNC_CLOSE, TradeEventType.MANUAL_CLOSE,
-            TradeEventType.FLIP_CLOSE,
-        }
-        closed_ts: set[int] = set()
-        entries: list[TradeEvent] = []
-        for ev in events:
-            if ev.symbol != self.symbol:
-                continue
-            if ev.event_type in close_types and ev.setup_ts_ms:
-                closed_ts.add(ev.setup_ts_ms)
-            elif ev.event_type is TradeEventType.ENTRY and ev.setup_ts_ms:
-                entries.append(ev)
+        # #PARTIAL-ORPHAN 2026-07-31: 부분 익절(TP_HIT 25%)을 전량 청산으로 오인하면
+        # 실제 미청산 ENTRY 가 orphan 후보에서 빠져 최종 청산 대조가 영구 누락된다.
+        closed_ts = fully_closed_setups(events, self.symbol)
+        entries: list[TradeEvent] = [
+            ev for ev in events
+            if ev.symbol == self.symbol
+            and ev.event_type is TradeEventType.ENTRY and ev.setup_ts_ms
+        ]
         orphans = [e for e in entries if e.setup_ts_ms not in closed_ts]
         if not orphans:
             return
