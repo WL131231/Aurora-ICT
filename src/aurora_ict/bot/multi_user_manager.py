@@ -956,17 +956,21 @@ class MultiUserBotManager:
                 stats["stopped"] += 1
                 swapped += 1
                 logger.info("[%s/%s] 고정 페어 정합 — 옛 고정 페어 정지", user, sym)
-            if swapped <= 0:
-                continue
-            # 켤 대상은 "빠진 고정 페어 아무거나"가 아니라 **잔재를 대체하는 짝**이다
-            # (Cursus 면 TRX). 두 모델 공통 페어(BTC 등)는 이미 떠 있는 게 정상이고,
-            # 꺼져 있다면 사용자가 의도적으로 끈 것이라 임의로 켜면 안 된다.
+            # 켤 대상은 "빠진 고정 페어 아무거나"가 아니라 **이 모델 고유의 새 고정
+            # 페어**다(Cursus 면 TRX). 두 모델 공통 페어(BTC 등)가 꺼져 있다면
+            # 사용자가 의도적으로 끈 것이라 임의로 켜지 않는다.
             other = CURSUS_FIXED_PAIRS if set(fixed) == set(FIXED_PAIRS) else FIXED_PAIRS
             missing = [
                 s for s in fixed
                 if s not in other and (user, s) not in self._slots
             ]
-            for sym in missing[:swapped]:
+            # 가동은 사용자당 **1회만**. 잔재 정지 성공과 연동하지 않는다 — 정지가
+            # 먼저 성공하고 가동만 실패하면(예: 화이트리스트 거부) 잔재가 사라져
+            # 교체가 영영 트리거되지 않기 때문이다(7/31 라이브에서 실제로 발생).
+            # 1회 제한은 이후 사용자가 그 페어를 끄면 다시 켜지 않기 위한 것.
+            if not missing or self._pair_migration_done(user):
+                continue
+            for sym in missing:
                 try:
                     await self.start(user, sym)
                 except Exception as e:  # noqa: BLE001
@@ -974,7 +978,28 @@ class MultiUserBotManager:
                     continue
                 stats["started"] += 1
                 logger.info("[%s/%s] 고정 페어 정합 — 새 고정 페어 가동", user, sym)
+            if stats["started"]:
+                self._mark_pair_migration_done(user)
         return stats
+
+    def _pair_migration_marker(self, user_code: str) -> Path:
+        """신규 고정 페어 자동 가동을 이미 수행했는지 표시하는 파일 경로."""
+        return self._user_data_dir(user_code) / ".fixed_pairs_migrated"
+
+    def _pair_migration_done(self, user_code: str) -> bool:
+        """이미 1회 자동 가동했나 — 조회 실패 시 True(보수적: 중복 가동 안 함)."""
+        try:
+            return self._pair_migration_marker(user_code).exists()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[%s] 페어 마이그레이션 마커 확인 실패: %s", user_code, e)
+            return True
+
+    def _mark_pair_migration_done(self, user_code: str) -> None:
+        """자동 가동 완료 기록 — 실패해도 무해(다음 기회에 재시도될 뿐)."""
+        try:
+            self._pair_migration_marker(user_code).write_text("1", encoding="utf-8")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[%s] 페어 마이그레이션 마커 기록 실패: %s", user_code, e)
 
     async def start_preferred(
         self, user_code: str, *, force_run_mode: RunMode | None = None,

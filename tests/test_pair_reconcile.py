@@ -48,6 +48,7 @@ class _Rec:
 
     stopped: list[tuple[str, str]] = field(default_factory=list)
     started: list[tuple[str, str]] = field(default_factory=list)
+    migrated: set[str] = field(default_factory=set)
 
 
 def _client(contracts: float = 0.0, *, fail: bool = False) -> AsyncMock:
@@ -83,6 +84,13 @@ def mu(tmp_path: Path) -> tuple[MultiUserBotManager, _Rec]:
 
     m.stop = _stop        # type: ignore[method-assign]
     m.start = _start      # type: ignore[method-assign]
+
+    # 마이그레이션 마커를 인메모리로 격리 — 실제 사용자 데이터 디렉토리에 파일을
+    # 쓰면 테스트가 결정론적이지 않다(첫 실행만 통과하고 이후 skip 됨).
+    done: set[str] = set()
+    m._pair_migration_done = lambda u: u in done        # type: ignore[method-assign]
+    m._mark_pair_migration_done = done.add              # type: ignore[method-assign]
+    rec.migrated = done                                 # type: ignore[attr-defined]
     return m, rec
 
 
@@ -113,8 +121,10 @@ async def test_open_position_is_not_stopped(mu: tuple) -> None:
     st = await m.reconcile_fixed_pairs()
 
     assert rec.stopped == []
-    assert rec.started == []          # 1:1 교체이므로 새 페어도 안 켬
     assert st["held"] == 1
+    # 새 페어(TRX) 가동은 잔재 정지와 무관하게 진행된다 — 켜지 못할 이유가 없고,
+    # 정지 성공에 연동하면 정지만 되고 가동이 실패한 경우 영영 안 켜진다.
+    assert (CODE, TRX) in rec.started
 
 
 @pytest.mark.asyncio
@@ -161,8 +171,9 @@ async def test_user_chosen_pair_untouched(mu: tuple) -> None:
 
     st = await m.reconcile_fixed_pairs()
 
-    assert rec.stopped == []
-    assert st == {"stopped": 0, "started": 0, "held": 0}
+    assert rec.stopped == []          # ADA 는 정리 대상이 아니다
+    assert st["stopped"] == 0
+    assert st["held"] == 0
 
 
 @pytest.mark.asyncio
@@ -192,3 +203,36 @@ async def test_idempotent(mu: tuple) -> None:
     assert rec.stopped == []
     assert rec.started == []
     assert st == {"stopped": 0, "started": 0, "held": 0}
+
+
+@pytest.mark.asyncio
+async def test_new_pair_started_even_without_legacy(mu: tuple) -> None:
+    """★ 7/31 라이브 함정 — 잔재가 이미 정리됐어도 새 페어는 켜야 한다.
+
+    LINK 정지는 성공했는데 TRX 가동만 실패했고(화이트리스트 거부), 다음 주기엔
+    정리할 잔재가 없어 교체가 영영 트리거되지 않았다. 그래서 가동을 정지 성공에
+    연동하지 않는다.
+    """
+    m, rec = mu
+    _put(m, BTC, _client(0.0), _Bot())   # 잔재(LINK) 없음
+
+    st = await m.reconcile_fixed_pairs()
+
+    assert (CODE, TRX) in rec.started
+    assert st == {"stopped": 0, "started": 1, "held": 0}
+
+
+@pytest.mark.asyncio
+async def test_new_pair_started_only_once(mu: tuple) -> None:
+    """가동은 사용자당 1회 — 이후 사용자가 그 페어를 끄면 다시 켜지 않는다."""
+    m, rec = mu
+    _put(m, BTC, _client(0.0), _Bot())
+    await m.reconcile_fixed_pairs()
+    assert CODE in rec.migrated
+    m._slots.pop((CODE, TRX), None)      # 사용자가 TRX 를 껐다고 가정
+    rec.started.clear()
+
+    st = await m.reconcile_fixed_pairs()
+
+    assert rec.started == []
+    assert st["started"] == 0
