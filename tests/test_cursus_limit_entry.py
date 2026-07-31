@@ -260,3 +260,51 @@ def test_tf_ms_parsing() -> None:
     assert _bot(c, timeframe="4h")._tf_ms() == 14_400_000
     assert _bot(c, timeframe="1d")._tf_ms() == 86_400_000
     assert _bot(c, timeframe="???")._tf_ms() == 3_600_000  # 폴백
+
+
+# ---- 주문 생명주기 (2026-08-01 전체 점검에서 발견) ----
+
+@pytest.mark.asyncio
+async def test_stop_cancels_pending_limit() -> None:
+    """★ STOP 시 미체결 지정가를 취소한다.
+
+    남겨두면 봇 없는 사이 체결되어 SL 만 살아 있고 4분할 TP·래더 트레일·REVERSE 를
+    아무도 관리하지 않는 방치 포지션이 된다.
+    """
+    c = _client()
+    bot = _bot(c)
+    bot._pending_limit = _pending()
+
+    await bot.stop()
+
+    assert c.cancel_bot_orders.await_count == 1
+    assert bot._pending_limit is None
+
+
+@pytest.mark.asyncio
+async def test_stop_without_pending_does_not_cancel() -> None:
+    """대기 주문이 없으면 굳이 취소 API 를 부르지 않는다."""
+    c = _client()
+    bot = _bot(c)
+
+    await bot.stop()
+
+    assert c.cancel_bot_orders.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_cleanup_preserves_user_orders() -> None:
+    """★ 기동 시 청소는 **봇 주문만** — 사용자가 직접 건 지정가를 지우면 안 된다.
+
+    Origo 는 #385 에서 선별 취소로 바뀌었는데 Cursus 만 cancel_all 로 남아 있었다.
+    """
+    c = _client()
+    c.fetch_symbol_meta = AsyncMock(return_value={})
+    c.set_leverage = AsyncMock(return_value=None)
+    bot = _bot(c)
+
+    await bot.start()
+    await bot.stop()
+
+    assert c.cancel_bot_orders.await_count >= 1
+    assert c.cancel_all_orders.await_count == 0
