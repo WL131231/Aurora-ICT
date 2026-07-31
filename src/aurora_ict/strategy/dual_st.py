@@ -53,6 +53,59 @@ class DualSTConfig:
     trail_trigger_target: int = 2
     trail_enabled: bool = True
     trail_mult: float = 6.0
+    # #HEIKIN-ASHI 2026-07-31 (개발자 변경사항): ST 계산·신호 판정을 하이켄아시
+    # 캔들로. False = 원본(실제 캔들).
+    # 백테(5년 7페어): 거래 8,151→5,591건(-31%), net -23,113%→-16,018%.
+    # ⚠️ 승률 48%·RR 0.90→0.91 로 **신호 품질은 개선되지 않는다** — 개선분은 전부
+    #    거래 감소에 따른 비용 절감이다(거래당 gross 0.497% vs 비용 3.33% 구조).
+    #    즉 이 옵션은 "좋은 신호를 고르는" 게 아니라 "노이즈 진입을 줄이는" 장치다.
+    # 체결·손익은 항상 **실제 캔들 가격**으로 이뤄진다(HA 는 신호 판정에만 사용).
+    use_heikin_ashi: bool = False
+
+
+def heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
+    """하이켄아시 캔들 변환 — 신호 판정 전용.
+
+        HA_close = (O+H+L+C)/4
+        HA_open  = (직전 HA_open + 직전 HA_close)/2   (첫 봉은 (O+C)/2)
+        HA_high  = max(H, HA_open, HA_close)
+        HA_low   = min(L, HA_open, HA_close)
+
+    평활 효과로 추세가 매끄러워져 노이즈 반전(=휩쏘 진입)이 줄어든다.
+
+    ⚠️ HA_open/HA_close 는 **계산값이라 실제로 거래되지 않은 가격**일 수 있다.
+       따라서 이 결과는 신호 판정에만 쓰고, 진입가·손절·익절은 실제 캔들 가격을
+       기준으로 삼아야 한다.
+
+    Args:
+        df: OHLCV DataFrame (시간 오름차순, open/high/low/close 필수).
+
+    Returns:
+        같은 인덱스의 HA 캔들 DataFrame. volume 이 있으면 그대로 옮긴다.
+    """
+    o = df["open"].to_numpy(dtype=float)
+    h = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    c = df["close"].to_numpy(dtype=float)
+    n = len(df)
+    ha_c = (o + h + low + c) / 4.0
+    ha_o = np.empty(n, dtype=float)
+    if n:
+        ha_o[0] = (o[0] + c[0]) / 2.0
+    for i in range(1, n):
+        ha_o[i] = (ha_o[i - 1] + ha_c[i - 1]) / 2.0
+    out = pd.DataFrame(
+        {
+            "open": ha_o,
+            "high": np.maximum.reduce([h, ha_o, ha_c]),
+            "low": np.minimum.reduce([low, ha_o, ha_c]),
+            "close": ha_c,
+        },
+        index=df.index,
+    )
+    if "volume" in df:
+        out["volume"] = df["volume"].to_numpy()
+    return out
 
 
 def atr(df: pd.DataFrame, period: int) -> pd.Series:
@@ -125,10 +178,13 @@ def compute_signals(df: pd.DataFrame, cfg: DualSTConfig) -> pd.DataFrame:
         trail: 청산 트레일 스탑 기준 ST 라인(trail_mult).
     """
     out = df.copy()
-    out["st1"] = supertrend_line(out, cfg.st1_mult, cfg.atr_period)
-    out["st2"] = supertrend_line(out, cfg.st2_mult, cfg.atr_period)
-    out["trail"] = supertrend_line(out, cfg.trail_mult, cfg.atr_period)
-    src = out["close"]
+    # #HEIKIN-ASHI: ST·정렬 판정만 HA 캔들로. 반환되는 OHLC 는 **실제 캔들**이라
+    # 호출부(봇/백테)의 진입가·손절·익절 계산은 실가격 기준으로 유지된다.
+    src_df = heikin_ashi(df) if cfg.use_heikin_ashi else out
+    out["st1"] = supertrend_line(src_df, cfg.st1_mult, cfg.atr_period)
+    out["st2"] = supertrend_line(src_df, cfg.st2_mult, cfg.atr_period)
+    out["trail"] = supertrend_line(src_df, cfg.trail_mult, cfg.atr_period)
+    src = src_df["close"]
     bull = (src > out["st1"]) & (src > out["st2"])
     bear = (src < out["st1"]) & (src < out["st2"])
     out["buy_sig"] = bull & ~bull.shift(1, fill_value=False)

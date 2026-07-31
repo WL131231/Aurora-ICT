@@ -517,11 +517,18 @@ class MultiUserBotManager:
             bot = BotTrendInstance(
                 client=client,
                 symbol=settings.symbol,
-                # 2026-06-26 파트너: Cursus 레버 페어별 — BTC 10x, 알트(ETH 포함) 7x.
-                # base 자산 정확매칭(startswith 는 BTCDOM 등 BTC-prefix 토큰 오인).
-                leverage=(10 if settings.symbol.split("/")[0] == "BTC" else 7),
-                size_pct=0.9,
-                cfg=DualSTConfig(),  # 원본 매매기법.py 기본값 (SL2%+4분할TP 래더)
+                # 2026-07-31 개발자 변경사항: **레버리지 10배 · 종목당 10% 진입**.
+                # (기존 BTC 10x/알트 7x · size 0.9 → 전 페어 10x · size 0.1)
+                # 노출이 기존 대비 약 1/9~1/18 로 축소된다. 근거 — Cursus 는 거래당
+                # gross 엣지 0.497% 가 비용 3.33% 에 먹히는 구조라(백테 5년 8,151건)
+                # 노출을 줄여도 비용 **비율**은 불변이지만, 손실 **속도**가 그만큼
+                # 느려진다. 지정가(maker) 전환 전까지의 출혈 방어 목적.
+                leverage=10,
+                size_pct=0.1,
+                # 하이켄아시 신호 — 개발자 변경사항. 백테(5년): 거래 8,151→5,591건
+                # (-31%), net -23,113%→-16,018%. 승률 48%·RR 0.90→0.91 로 신호 품질은
+                # 불변이고 개선분은 전부 거래 감소에 따른 비용 절감이다.
+                cfg=DualSTConfig(use_heikin_ashi=True),
                 # 일일 손실 한도 — Origo 와 동일하게 주입(시드 방어). 0 이면 비활성.
                 daily_loss_limit_pct=settings.daily_loss_limit_pct,
                 trades_data_dir=self._user_data_dir(user_code),

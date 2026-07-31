@@ -39,6 +39,39 @@ FIXED_PAIRS = (
     "HYPE/USDT:USDT",
 )
 
+# Cursus(DualST 추세형) 전용 고정 페어 — 2026-07-31 개발자 지정.
+# "종목 변경 해야해요 트론 필수 / LINK 제외" → FIXED_PAIRS 에서 LINK↔TRX 교체.
+# ⚠️ FIXED_PAIRS 는 Origo 백테로 확정된 목록이라 **공유하면 안 된다** — 같이 고치면
+#    Origo 페어까지 바뀐다. 모델별로 분리해 `fixed_pairs_for_model()` 로 조회한다.
+# 백테 근거(5년 1h, 라이브 정합 엔진): TRX -1,941% vs LINK -3,571% → 교체가 +1,630%
+#    개선. 단 TRX 자체도 적자라 "덜 나쁜 페어로 교체"이지 흑자 전환은 아니다.
+CURSUS_FIXED_PAIRS = (
+    "BTC/USDT:USDT",
+    "ETH/USDT:USDT",
+    "SOL/USDT:USDT",
+    "XRP/USDT:USDT",
+    "DOGE/USDT:USDT",
+    "TRX/USDT:USDT",
+    "HYPE/USDT:USDT",
+)
+
+
+def fixed_pairs_for_model(model_name: str | None) -> tuple[str, ...]:
+    """모델별 고정 페어 목록.
+
+    Args:
+        model_name: 사용자 선택 모델명(예: "Origo 2.3" / "Cursus 1.0"). None 이면 기본.
+
+    Returns:
+        Cursus 계열이면 CURSUS_FIXED_PAIRS, 그 외 FIXED_PAIRS.
+    """
+    from aurora_ict.config.settings import AVAILABLE_MODELS  # 순환 import 회피
+
+    if model_name and AVAILABLE_MODELS.get(model_name) == "cursus":
+        return CURSUS_FIXED_PAIRS
+    return FIXED_PAIRS
+
+
 # 추천 선택 페어 — 피커 상단 고정 + '추천' 배지용. 순서 = 순위.
 # 2026-07-28 Origo 2.2 현행 설정(NY_PM·cond_align 포함) 23종 재스캔으로 갱신
 # (파트너 승인: 추천 배지만, 고정 리스트 불변). 통과 기준 = 양반기 흑자 + 연도
