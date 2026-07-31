@@ -529,6 +529,15 @@ class MultiUserBotManager:
                 # (-31%), net -23,113%→-16,018%. 승률 48%·RR 0.90→0.91 로 신호 품질은
                 # 불변이고 개선분은 전부 거래 감소에 따른 비용 절감이다.
                 cfg=DualSTConfig(use_heikin_ashi=True),
+                # 2026-07-31 개발자 변경사항 마지막 항목 — **지정가 진입**.
+                # 개발자 지표(Pine v6) 정본에서 "매수 지점"은 브레이크아웃 라벨이고,
+                # 그 좌표가 신호봉의 저점(롱 ▲)/고점(숏 ▼)이다. 종가 추격 대신 그
+                # 되돌림 가격에 걸어 눌림에서 잡는다("눌림 가격대에 들어갈 수 있음").
+                # 부수 효과가 큰 축 — taker 왕복 0.11% → maker 0.02% 로 비용이 5배
+                # 줄어든다. Cursus 적자의 직접 원인이 gross 엣지 0.497% < 비용 3.33%
+                # 였으므로 비용 축을 직접 건드리는 유일한 변경이다.
+                limit_entry=True,
+                limit_entry_ttl_bars=3,
                 # 일일 손실 한도 — Origo 와 동일하게 주입(시드 방어). 0 이면 비활성.
                 daily_loss_limit_pct=settings.daily_loss_limit_pct,
                 trades_data_dir=self._user_data_dir(user_code),
