@@ -38,7 +38,6 @@ from aurora_ict.bot.multi_user_manager import (
 )
 from aurora_ict.bot.pair_registry import (
     EXCLUDED_PAIRS,
-    FIXED_PAIRS,
     RECOMMENDED_PAIRS,
 )
 from aurora_ict.config.settings import TRADE_TIMEFRAMES, IctSettings, RunMode
