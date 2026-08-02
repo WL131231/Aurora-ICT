@@ -982,6 +982,55 @@ class MultiUserBotManager:
                 self._mark_pair_migration_done(user)
         return stats
 
+    async def reconcile_models(self) -> dict[str, int]:
+        """유예된 모델 전환 완료 — 포지션이 정리된 페어를 선택 모델로 교체.
+
+        #MODEL-SWITCH-POS 2026-08-01: 모델 전환 시 포지션이 열려 있던 페어는
+        **옛 모델 봇이 그 거래를 끝까지 관리**하도록 남겨둔다(새 모델이 입양하면
+        SL/TP 를 자기 방식으로 덮어써 계획과 다른 청산이 된다). 이 주기 작업이
+        거래 종료를 감지해 그때 교체한다 — 사용자는 아무것도 하지 않아도 된다.
+
+        판정은 "슬롯 봇의 종류가 사용자의 선택 모델과 다른가"로 한다. 별도 상태를
+        저장하지 않으므로 재시작에도 안전하다(사실이 곧 상태).
+
+        Returns:
+            ``{"switched": int, "held": int}`` 통계.
+        """
+        from aurora_ict.bot.bot_trend_instance import BotTrendInstance  # noqa: PLC0415
+        from aurora_ict.config.settings import AVAILABLE_MODELS  # noqa: PLC0415
+
+        stats = {"switched": 0, "held": 0}
+        for user in {u for (u, _s) in list(self._slots.keys())}:
+            try:
+                model = users_db.get_last_model(self.db_path, user)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[%s] 모델 정합 — 모델 조회 실패: %s", user, e)
+                continue
+            want_cursus = AVAILABLE_MODELS.get(model or "") == "cursus"
+            for sym in [s for (u, s) in list(self._slots.keys()) if u == user]:
+                slot = self._slots.get((user, sym))
+                bot = getattr(slot, "bot", None) if slot else None
+                if bot is None:
+                    continue
+                if isinstance(bot, BotTrendInstance) == want_cursus:
+                    continue                      # 이미 선택 모델 — 할 일 없음
+                if await self._has_live_exposure(user, sym) is not False:
+                    stats["held"] += 1
+                    continue                      # 거래 진행 중 — 다음 주기에
+                running = getattr(getattr(bot, "state", None), "value", "") == "running"
+                try:
+                    await self.stop(user, sym, forget_preference=False)
+                    if running:
+                        await self.start(user, sym)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("[%s/%s] 유예 모델 전환 실패: %s", user, sym, e)
+                    continue
+                stats["switched"] += 1
+                logger.info(
+                    "[%s/%s] 유예 모델 전환 완료 — %s 로 교체", user, sym, model,
+                )
+        return stats
+
     def _pair_migration_marker(self, user_code: str) -> Path:
         """신규 고정 페어 자동 가동을 이미 수행했는지 표시하는 파일 경로."""
         return self._user_data_dir(user_code) / ".fixed_pairs_migrated"

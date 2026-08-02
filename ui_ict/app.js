@@ -667,6 +667,55 @@ function tsToTimeSec(ts_ms) { return Math.floor(ts_ms / 1000); }
 // ============================================================
 const $ = (id) => document.getElementById(id);
 
+// 2026-08-01 #MODEL-SWITCH-POS — 포지션 보유 중 모델 변경 선택 창.
+//
+// 모델마다 청산 구조가 다르다(Origo: 구조 기반 SL + 2R 익절 / Cursus: 고정 2% SL
+// + 1~4% 4분할). 새 모델이 옛 포지션을 입양하면 SL/TP 를 자기 방식으로 덮어써,
+// 계획과 다른 자리에서 청산된다. 그래서 사용자에게 처리 방식을 묻는다.
+function askModelSwitch(model, positions, revert) {
+  const ov = document.getElementById("model-switch-overlay");
+  if (!ov) { if (revert) revert(); return; }
+  const n = positions.length;
+  document.getElementById("model-switch-title").textContent = model + " 로 변경";
+  document.getElementById("model-switch-msg").innerHTML =
+    "현재 <b>" + n + "개 종목</b>에 포지션이 열려 있습니다.<br>" +
+    "모델마다 손절·익절 방식이 달라서, 새 모델이 이 포지션을 이어받으면 " +
+    "<b>손절·익절 자리가 바뀝니다.</b> 어떻게 할까요?";
+  document.getElementById("model-switch-list").innerHTML = positions.map((p) => {
+    const sym = String(p.symbol || "").split("/")[0];
+    const dir = p.direction === "long" ? "롱" : (p.direction === "short" ? "숏" : "");
+    const sl = p.stop_loss ? " · 손절 " + p.stop_loss : "";
+    return '<div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--line)">'
+      + "<b>" + sym + "</b> " + dir + (p.qty ? " " + p.qty : "") + sl + "</div>";
+  }).join("");
+
+  // 취소·실패는 드롭다운 표시를 되돌린다 — 표시와 실제가 어긋나면 안 된다.
+  const cancel = () => { ov.hidden = true; if (revert) revert(); };
+  const send = async (mode) => {
+    ov.hidden = true;
+    try {
+      const r = await api("/ict/model", "POST", { model, on_position: mode });
+      const dn = (r && r.deferred) ? r.deferred.length : 0;
+      toast(dn > 0
+        ? "모델 변경: " + model + " — " + dn + "개 종목은 거래 종료 후 자동 적용"
+        : "모델 변경: " + model);
+    } catch (e) {
+      console.warn("모델 전환 실패", e);
+      if (revert) revert();
+      toast("모델 변경 실패 — 잠시 후 다시 시도해 주세요");
+    }
+  };
+  // 이전 핸들러가 쌓이지 않게 onclick 으로 덮어쓴다(창은 재사용된다).
+  document.getElementById("model-switch-defer").onclick = () => send("defer");
+  document.getElementById("model-switch-close-pos").onclick = () => {
+    if (!confirm("보유 포지션 " + n + "개를 지금 시장가로 청산하고 변경합니다.\n계속할까요?")) return;
+    send("close");
+  };
+  document.getElementById("model-switch-cancel").onclick = cancel;
+  document.getElementById("model-switch-close").onclick = cancel;
+  ov.hidden = false;
+}
+
 function toast(msg, error = false) {
   const t = $("toast");
   t.textContent = msg;
@@ -1779,6 +1828,10 @@ _updateVizButtons();
     opt.addEventListener("click", async () => {
       menu.querySelectorAll(".model-dd-opt").forEach((o) => o.classList.remove("is-selected"));
       opt.classList.add("is-selected");
+      // 되돌리기용 이전 표시값 — 확인 창에서 취소하면 라벨이 새 모델로 남아
+      // "바뀐 줄 알았는데 안 바뀐" 혼란이 생긴다(#MODEL-SWITCH-POS).
+      const _prevLabel = label.textContent;
+      const _prevValue = dd.dataset.value;
       label.textContent = opt.dataset.model || opt.textContent;
       dd.dataset.value = opt.dataset.value;
       dd.classList.remove("open");
@@ -1787,8 +1840,19 @@ _updateVizButtons();
       const model = opt.dataset.model;
       if (model) {
         try {
-          await api("/ict/model", "POST", { model });
-          toast("모델 변경: " + model);
+          const r = await api("/ict/model", "POST", { model });
+          // 2026-08-01 #MODEL-SWITCH-POS: 포지션이 있으면 서버가 전환하지 않고
+          // 되묻는다 — 선택 창을 띄우고, 사용자가 고른 방식으로 다시 요청.
+          if (r && r.needs_choice) {
+            askModelSwitch(model, r.positions || [], () => {
+              label.textContent = _prevLabel;
+              dd.dataset.value = _prevValue;
+            });
+          } else if (r && r.unchanged) {
+            // 같은 모델 재선택 — 조용히 넘어간다.
+          } else {
+            toast("모델 변경: " + model);
+          }
         } catch (e) {
           // 2026-07-27 #MODEL-SWITCH-FIX: 조용한 실패가 "전환 안 됨" 혼란 유발 —
           // 사용자에게 실패를 보이게.
