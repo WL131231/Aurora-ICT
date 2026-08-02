@@ -2595,6 +2595,41 @@
 
 <div id="toast" class="toast"></div>
 
+<!-- 2026-08-01 #MODEL-SWITCH-POS 모델 전환 확인 창 — 포지션 보유 시에만 뜬다.
+     모델마다 청산 구조가 달라 새 모델이 옛 포지션을 입양하면 SL/TP 가 덮어써진다.
+     그래서 "거래를 끝내고 바꿀지 / 지금 정리하고 바꿀지" 를 사용자가 고른다. -->
+<div id="model-switch-overlay" class="pair-picker-overlay" hidden>
+  <div class="pair-picker" style="width:440px">
+    <div class="pair-picker-head">
+      <div style="flex:1;font-weight:600" id="model-switch-title">모델 변경</div>
+      <button type="button" id="model-switch-close" class="pair-picker-close">×</button>
+    </div>
+    <div style="padding:14px 16px;overflow-y:auto">
+      <div id="model-switch-msg" style="font-size:13px;line-height:1.6;color:var(--text-2)"></div>
+      <div id="model-switch-list" style="margin:12px 0"></div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px">
+        <button type="button" id="model-switch-defer" class="btn"
+                style="text-align:left;padding:10px 12px">
+          <div style="font-weight:600">거래를 끝내고 바꾸기 <span style="opacity:.7;font-weight:400">(권장)</span></div>
+          <div style="font-size:12px;opacity:.75;margin-top:3px">
+            포지션 없는 종목은 바로 바뀝니다. 보유 중인 종목은 그 거래가
+            끝나면 자동으로 바뀝니다 — 따로 하실 일은 없습니다.
+          </div>
+        </button>
+        <button type="button" id="model-switch-close-pos" class="btn"
+                style="text-align:left;padding:10px 12px">
+          <div style="font-weight:600">지금 정리하고 바꾸기</div>
+          <div style="font-size:12px;opacity:.75;margin-top:3px">
+            보유 포지션을 시장가로 청산한 뒤 전부 새 모델로 바꿉니다.
+          </div>
+        </button>
+        <button type="button" id="model-switch-cancel" class="btn"
+                style="padding:8px 12px;opacity:.8">그대로 두기</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- 2026-06-06 페어 선택기 모달 — 가격/24H%/거래량 + 검색(Bybit 스타일). -->
 <div id="pair-picker-overlay" class="pair-picker-overlay" hidden>
   <div class="pair-picker">

@@ -63,6 +63,17 @@ async def _reconcile_pairs_once(mu: MultiUserBotManager) -> None:
             "고정 페어 정합 — 정지 %d · 가동 %d · 보류 %d",
             st.get("stopped", 0), st.get("started", 0), st.get("held", 0),
         )
+    # #MODEL-SWITCH-POS: 포지션 때문에 유예됐던 모델 전환을 거래 종료 후 완료.
+    try:
+        ms = await mu.reconcile_models()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("모델 정합 오류 (다음 주기 계속): %s", e)
+        return
+    if ms.get("switched") or ms.get("held"):
+        logger.info(
+            "유예 모델 전환 — 완료 %d · 대기 %d",
+            ms.get("switched", 0), ms.get("held", 0),
+        )
 
 
 async def auto_resume_running_bots(

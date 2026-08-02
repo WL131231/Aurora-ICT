@@ -238,6 +238,11 @@ class RunModeRequest(BaseModel):
 
 class ModelRequest(BaseModel):
     model: str  # settings.AVAILABLE_MODELS 의 key (예 "Origo 1.2" | "Cursus 1.0")
+    # #MODEL-SWITCH-POS 2026-08-01: 열린 포지션이 있을 때의 처리 선택.
+    #   None   — 미선택. 포지션이 있으면 전환하지 않고 needs_choice 로 되묻는다.
+    #   "defer" — 포지션 없는 페어만 즉시 전환. 나머지는 그 거래가 끝나면 자동 전환.
+    #   "close" — 지금 시장가 청산하고 전부 전환.
+    on_position: str | None = None
 
 
 class EnabledRequest(BaseModel):
@@ -854,11 +859,22 @@ def _register_multi_user_routes(
     ) -> dict[str, Any]:
         """봇 모델 전환(Origo↔Cursus) — 봇 클래스가 바뀌므로 run-mode 와 동일하게
         슬롯 폐기 후 재가동(다음 빌드가 새 모델로 봇 생성). 미선택은 Origo fallback.
+
+        #MODEL-SWITCH-POS 2026-08-01: **열린 포지션이 있으면 되묻는다.**
+        모델마다 청산 구조가 달라, 새 모델이 옛 포지션을 입양하면 SL/TP 를 자기
+        방식으로 덮어쓴다(Origo 구조SL·2R TP → Cursus 고정 2%·4분할 그리드).
+        SL 이 더 타이트해지면 즉시 손절, 느슨해지면 계획보다 큰 손실이 된다.
+        그래서 포지션 보유 시 ``on_position`` 선택 없이는 전환하지 않는다.
         """
         from aurora_ict.auth import users_db as _users_db
         _canon = _normalize_model_name(req.model)
         if _canon is None:
             raise HTTPException(status_code=400, detail=f"알 수 없는 모델: {req.model}")
+        if req.on_position not in (None, "defer", "close"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"on_position 은 defer|close 만 허용 — 받은 값: {req.on_position}",
+            )
         req.model = _canon
         # 2026-06-26 #MULTIPAIR-MODEL: 사용자의 모든 페어 슬롯을 폐기 후 재가동 —
         # _DEFAULT_SYMBOL(BTC) 만 바꾸면 HYPE/SOL 등 다른 페어가 기존 모델로 남아
@@ -867,13 +883,69 @@ def _register_multi_user_routes(
         # 슬롯 폐기·재가동(거래소 set_leverage/복원 호출 多)은 백그라운드 task 로 빼서 API
         # 가 즉시 응답한다(UI 토글 체감 개선). 재가동은 뒤에서 돌고 status 가 따라잡음.
         user_syms = [sym for (u, sym) in list(mu_manager._slots.keys()) if u == user_code]
+        # 같은 모델 재선택은 아무것도 하지 않는다(불필요한 슬롯 재생성 방지).
+        try:
+            if _users_db.get_last_model(mu_manager.db_path, user_code) == _canon:
+                return {"ok": True, "model": _canon, "unchanged": True}
+        except Exception as e:  # noqa: BLE001
+            logger.debug("현재 모델 조회 실패(계속 진행): %s", e)
+
+        # ── 열린 포지션 조사 — 있으면 사용자 선택 없이는 전환하지 않는다 ──
+        held: list[dict[str, Any]] = []
+        for sym in user_syms:
+            try:
+                exposed = await mu_manager._has_live_exposure(user_code, sym)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[%s/%s] 전환 전 포지션 확인 실패: %s", user_code, sym, e)
+                exposed = None          # 판정 불가 → 보수적으로 '있음' 취급
+            if exposed is False:
+                continue
+            _slot = mu_manager._slots.get((user_code, sym))
+            _bot = getattr(_slot, "bot", None) if _slot else None
+            _ap = getattr(_bot, "active_position", None)
+            held.append({
+                "symbol": sym,
+                "direction": getattr(getattr(_ap, "direction", None), "value", None),
+                "qty": float(getattr(_ap, "qty", 0.0) or 0.0),
+                "entry": float(getattr(_ap, "entry", 0.0) or 0.0),
+                "stop_loss": float(getattr(_ap, "stop_loss", 0.0) or 0.0),
+                "take_profit": float(getattr(_ap, "take_profit", 0.0) or 0.0),
+            })
+        if held and req.on_position is None:
+            # UI 가 선택 창을 띄우도록 되묻는다. 상태 변경 없음 — 모델도 그대로.
+            return {
+                "ok": False, "needs_choice": True, "model": _canon,
+                "positions": held,
+            }
+
         try:
             _users_db.set_last_model(mu_manager.db_path, user_code, req.model)
         except Exception as e:  # noqa: BLE001
             logger.warning("사용자 %s last_model 박기 실패 (무시): %s", user_code, e)
 
+        held_syms = {h["symbol"] for h in held}
+        if req.on_position == "close":
+            # 지금 정리하고 전환 — 실패한 페어는 유예로 넘겨(방치보다 안전).
+            for h in list(held):
+                _slot = mu_manager._slots.get((user_code, h["symbol"]))
+                _bot = getattr(_slot, "bot", None) if _slot else None
+                if _bot is None or getattr(_bot, "active_position", None) is None:
+                    held_syms.discard(h["symbol"])
+                    continue
+                try:
+                    await _bot._emergency_close("모델 전환 — 사용자 선택 청산")
+                    held_syms.discard(h["symbol"])
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "[%s/%s] 모델 전환 청산 실패 — 유예로 전환: %s",
+                        user_code, h["symbol"], e,
+                    )
+        # 유예분은 슬롯을 건드리지 않는다 — 옛 모델 봇이 그 포지션을 끝까지 관리하고,
+        # 거래가 끝나면 10분 주기 reconcile_models 가 새 모델로 교체한다.
+        switch_syms = [s for s in user_syms if s not in held_syms]
+
         async def _switch_models_bg() -> None:
-            for sym in user_syms:
+            for sym in switch_syms:
                 # #MODEL-HEAL 2026-07-27: 페어별 예외 격리 — 기존엔 ValueError 외
                 # 예외가 루프를 죽여 나머지 페어가 옛 모델로 남았다(모델 혼재 —
                 # Cursus 계정에 ICT 판단 표시). 실패 페어는 get_or_create 의
@@ -900,7 +972,11 @@ def _register_multi_user_routes(
             app.state._switch_tasks = _bg
         _bg.add(_t)
         _t.add_done_callback(_bg.discard)
-        return {"ok": True, "model": req.model}
+        return {
+            "ok": True, "model": req.model,
+            "switched": switch_syms,
+            "deferred": sorted(held_syms),   # 포지션 정리 후 자동 전환될 페어
+        }
 
     @app.post("/ict/enabled")
     async def set_enabled_mu(
