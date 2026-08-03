@@ -42,7 +42,11 @@ from pathlib import Path
 from aurora_ict.auth import users_db
 
 _ALGO = "pbkdf2_sha256"
-_ITERATIONS = 100_000
+# #SEC 2026-08-03 (상용화 보안점검): 100k → 600k (OWASP 2023 PBKDF2-SHA256 권장).
+# 하위 호환 — verify 는 저장된 해시의 iter 값을 쓰므로 기존 사용자 로그인은 그대로
+# 동작한다(옛 해시는 100k 로 검증). 새로 설정하는 PIN 부터 600k.
+# 비용: 해시 1회 약 0.2초. 로그인은 드물고 rate limit 이 5회/분/IP 라 DoS 증폭 없음.
+_ITERATIONS = 600_000
 _SALT_BYTES = 16
 
 # PIN 정책 — 8자리+ 영/숫/특수 혼합

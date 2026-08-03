@@ -36,7 +36,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: flyctl 설치
-        uses: superfly/flyctl-actions/setup-flyctl@master
+        # #SEC 2026-08-03 (상용화 보안점검): @master → 커밋 SHA 핀.
+        # 브랜치 참조는 그 브랜치가 오염되면 **다음 배포에서 임의 코드가 실행**되고,
+        # 이 job 은 FLY_API_TOKEN 을 갖고 있어 서버 전체 장악으로 이어진다.
+        # SHA 는 v1 / 1.6 태그와 동일 커밋(태그는 이동 가능하므로 SHA 로 고정).
+        # 갱신 시: gh api repos/superfly/flyctl-actions/tags 로 확인 후 교체.
+        uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
 
       - name: 배포 (--remote-only, Fly builders)
         run: flyctl deploy --remote-only
