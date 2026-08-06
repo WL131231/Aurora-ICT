@@ -45,17 +45,26 @@ def _df(n: int = 300, seed: int = 0) -> pd.DataFrame:
 # ---- ③ 페어 분리 --------------------------------------------------------
 
 def test_cursus_pairs_swap_link_to_trx() -> None:
-    """Cursus 목록 = TRX 포함 · LINK 제외. 나머지 6종은 Origo 와 동일."""
+    """Cursus 목록 = TRX 포함 · LINK 제외 (개발자 지정).
+
+    "나머지는 Origo 와 동일" 조건은 뺐다 — 2026-08-06 Origo 가 BTC+ETH 로 축소되며
+    두 목록이 갈렸다. 남는 불변식은 **Origo 고정이 Cursus 의 부분집합**이라는 것
+    (둘 다 메이저를 포함한다).
+    """
     assert "TRX/USDT:USDT" in CURSUS_FIXED_PAIRS
     assert "LINK/USDT:USDT" not in CURSUS_FIXED_PAIRS
-    assert set(CURSUS_FIXED_PAIRS) - {"TRX/USDT:USDT"} == \
-        set(FIXED_PAIRS) - {"LINK/USDT:USDT"}
+    assert set(FIXED_PAIRS) <= set(CURSUS_FIXED_PAIRS)
 
 
 def test_origo_pairs_unchanged() -> None:
-    """★ Origo 목록은 건드리지 않는다 — 백테로 확정된 7페어 유지."""
-    assert "LINK/USDT:USDT" in FIXED_PAIRS
+    """★ 두 모델 목록이 **분리**돼 있다 — Cursus 변경이 Origo 로 새지 않는다.
+
+    구체적 종목 구성에 기대지 않는다(2026-08-06 Origo 는 BTC+ETH 로 축소됐다).
+    검증 대상은 "TRX 는 Cursus 전용" 이라는 분리 자체다.
+    """
+    assert "TRX/USDT:USDT" in CURSUS_FIXED_PAIRS
     assert "TRX/USDT:USDT" not in FIXED_PAIRS
+    assert FIXED_PAIRS != CURSUS_FIXED_PAIRS
 
 
 def test_fixed_pairs_for_model_routing() -> None:

@@ -26,12 +26,34 @@ logger = logging.getLogger(__name__)
 # (레버리지 정책 분기에도 사용 — 알트는 _ALT_LEVERAGE 고정)
 MAJOR_PAIRS = ("BTC/USDT:USDT", "ETH/USDT:USDT")
 
-# 고정 페어 7 — 2026-06-11~12 흑자엣지 v2 백테스트로 확정 (IN +2.40 / OUT +0.96,
-# ~2.1회/일). 서비스가 항상 가동하는 기본 포트폴리오. 사용자는 이 외에
-# MAX_CHOICE_PAIRS(3)개까지 추가 선택 가능 (총 10).
+# Origo 고정 페어 — 2026-08-06 **7개 → BTC·ETH 2개로 축소** (#PAIR-MAJOR).
+#
+# 근거: 낙폭 해부에서 최대 낙폭 85.6%(2년 지속) 구간을 뜯어보니 알트가 원인이었다.
+#   · 최악 손실 10건 중 LINK 가 5건. 정상 구간엔 LINK 5건인데 낙폭 구간엔 10건.
+#   · **알트 5개만 돌리면 5년에 0.86배** — 원금이 줄고 파산확률 19%.
+# 복리 시뮬(7x · 동시보유 반영 · DD 스로틀 · 거래 복원추출):
+#     조합            거래   자산(중앙)  낙폭    최악5%   파산
+#     기존 7페어      126     2.43배   85.6%   0.20배   6.2%
+#     BTC+ETH          45    10.07배   36.7%   1.80배   0.0%
+#     LINK 만 제외     108     8.27배   65.3%   0.97배   0.5%
+#     알트만(5)         81     0.86배   85.7%   0.18배  19.0%
+# "2개라서 좋은 것"이 아니다 — 2페어 조합 21개를 전수 비교했더니 상위 3개가 전부
+# BTC 포함(BTC+XRP 9.11 / BTC+ETH 8.89 / BTC+DOGE 6.96)이고 하위 3개는 전부 알트
+# 조합(SOL+HYPE 0.62 / SOL+LINK 0.38 / LINK+HYPE 0.37)이었다. **메이저라서**다.
+#
+# 빈도 감소(126→45건)는 MMBM 2번째 진입모델 배선(#MMBM-WIRE)으로 상쇄한다
+# — 결합 시 월 15.3건으로 오히려 기존보다 늘어난다.
 FIXED_PAIRS = (
     "BTC/USDT:USDT",
     "ETH/USDT:USDT",
+)
+
+# 과거 고정 페어였다가 빠진 것들 — 자동 정합(reconcile_fixed_pairs)의 정리 대상.
+# 이 목록이 없으면 "양쪽 모델 어디에도 없는" 페어(예: Origo 축소 후의 LINK)가
+# 정리 대상에서 누락돼 계속 돌아간다.
+# ⚠️ 정리는 **포지션이 없을 때만** 이뤄진다 — 열린 거래는 SL/TP 로 끝난 뒤 빠진다
+#    (강제 청산 안 함. 손실을 확정시키고 되돌릴 수 없기 때문).
+LEGACY_FIXED_PAIRS = (
     "SOL/USDT:USDT",
     "XRP/USDT:USDT",
     "DOGE/USDT:USDT",
@@ -118,7 +140,9 @@ class PairRegistry:
         # 첫 조회 전 폴백 — 고정 페어는 거래소 응답 없이도 항상 가동 가능해야 함.
         # 두 모델 모두 포함(#CURSUS-PAIRS): Origo 목록만 넣으면 조회 전 TRX 가동이
         # 거부된다.
-        self._cache: list[str] = list(dict.fromkeys((*FIXED_PAIRS, *CURSUS_FIXED_PAIRS)))
+        self._cache: list[str] = list(dict.fromkeys(
+            (*FIXED_PAIRS, *CURSUS_FIXED_PAIRS, *LEGACY_FIXED_PAIRS),
+        ))
         self._fetched_at: float | None = None
 
     async def get_allowed(
@@ -143,7 +167,11 @@ class PairRegistry:
                 # FIXED_PAIRS 만 보던 탓에 Cursus 전용 TRX 가 화이트리스트에 없어
                 # 가동이 거부됐다("거래대금 상위 30 에 없습니다" — 라이브 실측).
                 # 고정 페어는 정의상 거래대금 순위와 무관하게 허용돼야 한다.
-                for fixed in (*FIXED_PAIRS, *CURSUS_FIXED_PAIRS):
+                # #PAIR-MAJOR 2026-08-06: 레거시(고정에서 빠진 알트)도 보장한다.
+                # 고정에서 뺀 것은 "자동으로 안 켜질 뿐" 금지가 아니다 — 사용자가
+                # 직접 선택하는 길은 열어둔다(LINK 는 거래대금 30위 밖이라 보장이
+                # 없으면 선택조차 거부된다).
+                for fixed in (*FIXED_PAIRS, *CURSUS_FIXED_PAIRS, *LEGACY_FIXED_PAIRS):
                     if fixed not in merged:
                         merged.append(fixed)
                 self._cache = merged
@@ -162,6 +190,7 @@ class PairRegistry:
 
 __all__ = [
     "CURSUS_FIXED_PAIRS",
+    "LEGACY_FIXED_PAIRS",
     "EXCLUDED_PAIRS",
     "FIXED_PAIRS",
     "MAJOR_PAIRS",

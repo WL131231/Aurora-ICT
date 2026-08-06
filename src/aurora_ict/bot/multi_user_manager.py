@@ -44,6 +44,7 @@ from aurora_ict.bot.pair_registry import (
     CURSUS_FIXED_PAIRS,
     EXCLUDED_PAIRS,
     FIXED_PAIRS,
+    LEGACY_FIXED_PAIRS,
     MAJOR_PAIRS,
     PairRegistry,
     fixed_pairs_for_model,
@@ -932,7 +933,10 @@ class MultiUserBotManager:
             ``{"stopped": int, "started": int, "held": int}`` 통계.
         """
         stats = {"stopped": 0, "started": 0, "held": 0}
-        both = (*FIXED_PAIRS, *CURSUS_FIXED_PAIRS)
+        # #PAIR-MAJOR 2026-08-06: 과거 고정이었다가 빠진 페어(LEGACY)도 정리 대상.
+        # 이게 없으면 **양쪽 모델 어디에도 없는** 페어(Origo 축소 후의 LINK 등)가
+        # 누락돼 계속 돌아간다.
+        both = (*FIXED_PAIRS, *CURSUS_FIXED_PAIRS, *LEGACY_FIXED_PAIRS)
         for user in {u for (u, _s) in list(self._slots.keys())}:
             fixed = self._fixed_pairs(user)
             legacy = {s for s in both if s not in fixed}

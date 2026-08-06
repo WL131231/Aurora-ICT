@@ -51,15 +51,18 @@ def test_cursus_user_gets_trx_not_link(mu: MultiUserBotManager) -> None:
     assert pairs == CURSUS_FIXED_PAIRS
 
 
-def test_origo_user_keeps_link(mu: MultiUserBotManager) -> None:
-    """Origo 목록은 백테로 확정된 것 — 건드리면 안 된다."""
+def test_origo_user_gets_origo_list(mu: MultiUserBotManager) -> None:
+    """Origo 사용자는 Origo 목록을 받는다 — Cursus 변경이 새지 않는다.
+
+    구체적 종목에 기대지 않는다(2026-08-06 Origo 는 BTC+ETH 로 축소됐다).
+    검증 대상은 모델별 분기이지 목록 내용이 아니다.
+    """
     users_db.set_last_model(mu.db_path, CODE, ORIGO_MODEL_NAME)
 
     pairs = mu._fixed_pairs(CODE)
 
-    assert LINK in pairs
-    assert TRX not in pairs
     assert pairs == FIXED_PAIRS
+    assert TRX not in pairs          # TRX 는 Cursus 전용
 
 
 def test_unset_model_falls_back_to_origo(mu: MultiUserBotManager) -> None:
