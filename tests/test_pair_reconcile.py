@@ -21,10 +21,15 @@ from cryptography.fernet import Fernet
 
 from aurora_ict.auth import users_db
 from aurora_ict.bot.multi_user_manager import MultiUserBotManager
+from aurora_ict.bot.pair_registry import CURSUS_FIXED_PAIRS, FIXED_PAIRS
 from aurora_ict.config.settings import CURSUS_MODEL_NAME, IctSettings
 
 CODE = "AICT-RECO-TEST-0001"
 LINK, TRX, BTC = "LINK/USDT:USDT", "TRX/USDT:USDT", "BTC/USDT:USDT"
+
+# Cursus 에만 있는 고정 페어 수 = 정합이 새로 켜는 대상 수.
+# 하드코딩하지 않는다 — 2026-08-06 Origo 가 7→2 로 축소되며 1개에서 5개가 됐다.
+_CURSUS_ONLY = len(set(CURSUS_FIXED_PAIRS) - set(FIXED_PAIRS))
 
 
 @dataclass
@@ -109,7 +114,7 @@ async def test_idle_legacy_pair_swapped(mu: tuple) -> None:
 
     assert (CODE, LINK) in rec.stopped
     assert (CODE, TRX) in rec.started
-    assert st == {"stopped": 1, "started": 1, "held": 0}
+    assert st == {"stopped": 1, "started": _CURSUS_ONLY, "held": 0}
 
 
 @pytest.mark.asyncio
@@ -219,7 +224,7 @@ async def test_new_pair_started_even_without_legacy(mu: tuple) -> None:
     st = await m.reconcile_fixed_pairs()
 
     assert (CODE, TRX) in rec.started
-    assert st == {"stopped": 0, "started": 1, "held": 0}
+    assert st == {"stopped": 0, "started": _CURSUS_ONLY, "held": 0}
 
 
 @pytest.mark.asyncio

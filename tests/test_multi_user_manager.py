@@ -942,7 +942,12 @@ async def test_alt_pair_forces_15x_leverage(
 async def test_max_pairs_per_user_enforced(
     db_path, base_settings, master_key,
 ) -> None:
-    """고정7 구도 — 고정 7 + 선택 3 = 총 10. 선택 4개째·BNB·총 상한 초과 거부."""
+    """고정 + 선택 상한 구도. 선택 초과·BNB·총 상한 거부.
+
+    고정 페어 **개수에 기대지 않는다** — 2026-08-06 Origo 가 7→2 로 축소되며
+    하드코딩 10 이 깨졌다. 검증 대상은 상한 규칙이지 목록 길이가 아니다.
+    """
+    from aurora_ict.bot.multi_user_manager import MAX_CHOICE_PAIRS
     from aurora_ict.bot.pair_registry import FIXED_PAIRS
 
     clients: list[FakeExchangeClient] = []
@@ -954,13 +959,14 @@ async def test_max_pairs_per_user_enforced(
     users_db.create_user(db_path, code)
     enc = keystore.encrypt_secret("plain", key=master_key)
     users_db.set_api_keys(db_path, code, "pub", enc)
-    # 고정 7 전부 + 선택 3 (ADA/AVAX/LTC) = 10 가득.
+    # 고정 전부 + 선택 상한(ADA/AVAX/LTC)까지 채운다.
     for s in FIXED_PAIRS:
         await mu.get_or_create_bot(code, s)
     for s in ["ADA/USDT:USDT", "AVAX/USDT:USDT", "LTC/USDT:USDT"]:
         await mu.get_or_create_bot(code, s)
-    assert len([1 for (u, _s) in mu._slots if u == code]) == 10
-    # 총 상한(10) 초과 → 거부.
+    assert (len([1 for (u, _s) in mu._slots if u == code])
+            == len(FIXED_PAIRS) + MAX_CHOICE_PAIRS)
+    # 총 상한 초과 → 거부.
     with pytest.raises(ValueError, match="최대"):
         await mu.get_or_create_bot(code, "FIL/USDT:USDT")
     # 이미 슬롯 있는 페어 재호출은 통과(카운트 안 늘림).
@@ -972,7 +978,12 @@ async def test_max_pairs_per_user_enforced(
 async def test_choice_pairs_capped_and_bnb_rejected(
     db_path, base_settings, master_key,
 ) -> None:
-    """고정7 구도 — 선택 페어는 3개까지, 검증 탈락(BNB)은 즉시 거부."""
+    """선택 페어는 상한까지만, 검증 탈락(BNB)은 즉시 거부.
+
+    고정 페어를 이름으로 박지 않는다 — 2026-08-06 Origo 축소로 HYPE 가
+    고정에서 빠지며 "고정이라 추가 가능" 전제가 깨졌다.
+    """
+    from aurora_ict.bot.pair_registry import FIXED_PAIRS
     clients: list[FakeExchangeClient] = []
     mu = MultiUserBotManager(
         client_factory=_factory_factory(clients),
@@ -985,11 +996,11 @@ async def test_choice_pairs_capped_and_bnb_rejected(
     # 선택 3개(고정 외) — 통과.
     for s in ["ADA/USDT:USDT", "AVAX/USDT:USDT", "LTC/USDT:USDT"]:
         await mu.get_or_create_bot(code, s)
-    # 선택 4개째 → 총 상한(10) 한참 전이어도 거부.
+    # 선택 상한 초과 → 총 상한 한참 전이어도 거부.
     with pytest.raises(ValueError, match="선택 페어"):
         await mu.get_or_create_bot(code, "FIL/USDT:USDT")
-    # 고정 페어는 선택 3개 가득 차도 추가 가능.
-    bot = await mu.get_or_create_bot(code, "HYPE/USDT:USDT")
+    # 고정 페어는 선택이 가득 차도 추가 가능.
+    bot = await mu.get_or_create_bot(code, FIXED_PAIRS[-1])
     assert bot is not None
     # BNB — 백테스트 양면 마이너스 탈락 페어는 거부.
     with pytest.raises(ValueError, match="제외"):
