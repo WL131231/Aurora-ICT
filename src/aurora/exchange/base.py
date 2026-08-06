@@ -19,6 +19,34 @@ from typing import Literal, Protocol
 import pandas as pd
 
 
+def normalize_side(raw: object) -> Literal["long", "short"] | None:
+    """거래소 응답의 side 값을 방향으로 정규화 — 인식 실패 시 **None**.
+
+    #CLOSE-500 후속 2026-08-06: 방향 판정이 코드 곳곳에 흩어져 제각각이었고,
+    일부는 **인식 실패를 임의 방향으로 단정**했다(예: ``"short" if s=="short"
+    else "long"`` → ``"sell"`` 이 오면 숏을 롱으로 읽는다). 방향을 잘못 잡으면
+    손절을 반대편에 걸거나 엉뚱한 방향으로 청산 주문을 낸다.
+
+    거래소·엔드포인트마다 표기가 다르다:
+        ccxt position   long / short
+        Bybit 주문      Buy / Sell
+        일부 응답       buy / sell (소문자)
+
+    Args:
+        raw: side 필드 값(문자열이 아니어도 안전).
+
+    Returns:
+        ``"long"`` / ``"short"``, 또는 인식 실패 시 ``None``.
+        **None 을 임의 방향으로 대체하지 말 것** — 호출측이 판단을 보류해야 한다.
+    """
+    s = str(raw or "").strip().lower()
+    if s in ("long", "buy"):
+        return "long"
+    if s in ("short", "sell"):
+        return "short"
+    return None
+
+
 @dataclass(slots=True)
 class Order:
     """주문 결과."""
