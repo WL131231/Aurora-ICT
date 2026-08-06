@@ -30,7 +30,13 @@ from tenacity import (
 
 from aurora.backtest.tf import normalize_to_ccxt
 from aurora.config import settings
-from aurora.exchange.base import Balance, ClosedPosition, Order, Position
+from aurora.exchange.base import (
+    Balance,
+    ClosedPosition,
+    Order,
+    Position,
+    normalize_side,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -357,8 +363,18 @@ class CcxtClient:
             - entryPrice / leverage / unrealizedPnl
             - marginMode: "isolated" / "cross"
         """
-        side_raw = raw.get("side", "long")
-        side: Literal["long", "short"] = "short" if side_raw == "short" else "long"
+        # #SIDE 2026-08-06: 예전엔 `"short" if side_raw == "short" else "long"` 이라
+        # **"sell" 이 오면 숏을 롱으로** 읽었다(청산 방향이 뒤집힐 수 있는 버그).
+        # normalize_side 는 long/buy · short/sell 을 모두 인식한다.
+        _side = normalize_side(raw.get("side"))
+        if _side is None:
+            # 인식 불가 — 임의 단정은 위험하지만 Position.side 는 필수 필드다.
+            # 크게 로그를 남기고 기존 기본값을 유지한다(호출측이 qty/entry 로 교차 확인).
+            logger.error(
+                "position side 인식 실패 (symbol=%s side=%r) — long 으로 가정",
+                raw.get("symbol"), raw.get("side"),
+            )
+        side: Literal["long", "short"] = _side or "long"
         margin_raw = raw.get("marginMode", "isolated")
         margin_mode: Literal["isolated", "cross"] = (
             "cross" if margin_raw == "cross" else "isolated"
@@ -771,8 +787,16 @@ class CcxtClient:
         else:
             symbol = raw_symbol
 
-        side_raw = str(raw.get("side") or "Sell")
-        direction: Literal["long", "short"] = "long" if side_raw == "Sell" else "short"
+        # closed-pnl 의 side 는 **청산 주문의 방향**이다 — 롱을 닫으려면 Sell 이므로
+        # 원 포지션 방향은 그 반대. 예전엔 대문자 "Sell" 만 비교해서 소문자·다른
+        # 표기가 오면 전부 short 로 뒤집혔다(#SIDE 2026-08-06).
+        _closing = normalize_side(raw.get("side"))
+        if _closing is None:
+            logger.warning(
+                "closed-pnl side 인식 실패 (symbol=%s side=%r) — long 으로 가정",
+                raw.get("symbol"), raw.get("side"),
+            )
+        direction: Literal["long", "short"] = "short" if _closing == "long" else "long"
 
         qty = float(raw.get("closedSize") or 0)
         entry_price = float(raw.get("avgEntryPrice") or 0)
