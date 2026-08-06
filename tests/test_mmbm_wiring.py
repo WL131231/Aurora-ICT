@@ -152,3 +152,36 @@ def test_htf_bias_sign() -> None:
     short = pd.DataFrame({"close": np.linspace(100, 110, 30)},
                          index=pd.date_range("2026-01-01", periods=30, freq="5min", tz="UTC"))
     assert bot._mmbm_htf_bias_sign(short) == 0.0  # 1h 봉 <21 → 데이터부족
+
+
+# ---- #MMBM-WIRE 2026-08-06: 배선 자체가 빠져 있던 문제 ----
+
+def test_settings_enforces_mmbm_on() -> None:
+    """★ 구독 모드에서 MMBM 이 강제로 켜진다.
+
+    7/21 에 "Origo 2.2 = 2.1 + MMBM 활성화" 로 배포했으나 **플래그를 봇에 넘기는
+    코드가 없어 2주간 한 번도 돌지 않았다.** 구현·테스트·모델명은 다 있었고
+    배선 한 줄만 빠진 케이스라, 여기서 설정 레벨로 못박는다.
+    """
+    from aurora_ict.config.settings import IctSettings
+
+    s = IctSettings(license_type="sub_30d")
+    assert s.origo_mmbm_enabled is True
+    # 비구독(referral)은 강제하지 않는다 — 정책 분리 유지
+    assert IctSettings(license_type="referral").origo_mmbm_enabled is False
+
+
+def test_manager_passes_mmbm_flag() -> None:
+    """★ 매니저가 봇에 플래그를 실제로 전달하는지 — 누락됐던 그 한 줄.
+
+    설정만 켜져도 봇 생성 시 넘기지 않으면 의미가 없다(기본 False).
+    """
+    import inspect
+
+    from aurora_ict.bot import multi_user_manager as mum
+
+    src = inspect.getsource(mum)
+    assert "mmbm_enabled=settings.origo_mmbm_enabled" in src, (
+        "매니저가 BotIctInstance 에 mmbm_enabled 를 넘기지 않는다 — "
+        "설정이 켜져도 봇은 기본 False 로 돈다"
+    )
