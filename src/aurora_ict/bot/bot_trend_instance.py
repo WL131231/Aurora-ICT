@@ -610,6 +610,29 @@ class BotTrendInstance:
             return
         await self._open(new_dir, price, bar=bar)
 
+    @staticmethod
+    def _exchange_position_direction(pos: dict[str, Any]) -> Direction | None:
+        """거래소 fetch_position 응답에서 포지션 방향 추출.
+
+        #CLOSE-500 2026-08-06: UI 수동청산(`/ict/position/close`)이 이 메서드를
+        부르는데 Cursus 에만 없어서 **AttributeError → 500** 이 났다(파트너 제보 —
+        Cursus 포지션 보유 중 CLOSE 버튼). Origo 와 같은 시그니처로 맞춘다.
+
+        Args:
+            pos: fetch_position 응답 dict.
+
+        Returns:
+            Direction.LONG / SHORT, 또는 side 인식 실패 시 **None**.
+            None 을 반환하는 것이 중요하다 — 인식 실패를 임의 방향으로 단정하면
+            반대편에 SL 을 걸거나 잘못된 방향으로 청산 주문을 낼 수 있다.
+        """
+        side = str((pos or {}).get("side", "") or "").lower()
+        if side in ("long", "buy"):
+            return Direction.LONG
+        if side in ("short", "sell"):
+            return Direction.SHORT
+        return None
+
     async def _sync_position_state(self, price: float) -> None:
         """거래소 포지션 동기화 — active 인데 qty 0 이면 트레일 SL 체결(거래소 자동청산) 인지."""
         if self.active_position is None:
@@ -637,9 +660,8 @@ class BotTrendInstance:
         # 방향 불일치 감지 — 거래소 실제 방향 vs 봇이 믿는 방향. REVERSE 부분실패·입양
         # 오류 등으로 어긋나면 봇의 SL 이 엉뚱한 방향에 걸려 무방비 → 즉시 비상청산.
         pos = self.active_position
-        side_raw = str((ex or {}).get("side", "") or "").lower()
-        ex_dir = Direction.LONG if side_raw in ("long", "buy") else Direction.SHORT
-        if side_raw and pos is not None and ex_dir is not pos.direction:
+        ex_dir = self._exchange_position_direction(ex or {})
+        if ex_dir is not None and pos is not None and ex_dir is not pos.direction:
             logger.error(
                 "[%s] Cursus 방향 불일치 — 봇=%s 거래소=%s. 비상청산.",
                 self.symbol, pos.direction.value, ex_dir.value,
@@ -660,8 +682,15 @@ class BotTrendInstance:
         contracts = float((ex or {}).get("contracts", 0) or 0)
         if contracts <= 0:
             return
-        side_raw = str((ex or {}).get("side", "") or "").lower()
-        direction = Direction.LONG if side_raw in ("long", "buy") else Direction.SHORT
+        # 방향 인식 실패 시 **입양하지 않는다**. 예전엔 실패를 SHORT 로 단정해서,
+        # side 필드가 비면 롱 포지션에 숏 기준 SL(진입가 위)을 걸 수 있었다.
+        direction = self._exchange_position_direction(ex or {})
+        if direction is None:
+            logger.error(
+                "[%s] Cursus 복원 — 거래소 방향 인식 실패(side=%r) → 입양 보류",
+                self.symbol, (ex or {}).get("side"),
+            )
+            return
         entry = float((ex or {}).get("entryPrice") or (ex or {}).get("entry_price") or 0)
         sl = float((ex or {}).get("stopLossPrice") or (ex or {}).get("stop_loss") or 0)
         # 원본 엔진 복원: SL 은 거래소 값 우선, 없으면 고정 2%(entry 기준). TP 그리드도

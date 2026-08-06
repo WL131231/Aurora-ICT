@@ -1280,7 +1280,11 @@ def _register_multi_user_routes(
                     user_code,
                 )
                 return {"closed_qty": 0.0, "remaining_qty": 0.0, "active": False}
-            d = bot._exchange_position_direction(ex_pos)
+            # #CLOSE-500 2026-08-06: 봇 타입마다 이 헬퍼가 있으리라 가정하고 직접
+            # 부르다가, Cursus 에 없어서 AttributeError → 500 이 났다(사용자가 청산
+            # 자체를 못 함). 헬퍼가 없어도 청산은 되어야 하므로 방어적으로 부른다.
+            _dirfn = getattr(bot, "_exchange_position_direction", None)
+            d = _dirfn(ex_pos) if callable(_dirfn) else None
             if d is not None:
                 ex_dir = d
             ex_qty = contracts
@@ -2697,7 +2701,11 @@ def create_app(
                 bot.active_position = None
                 logger.info("청산 불필요 — 거래소 포지션 없음, 상태 정리")
                 return {"closed_qty": 0.0, "remaining_qty": 0.0, "active": False}
-            d = bot._exchange_position_direction(ex_pos)
+            # #CLOSE-500 2026-08-06: 봇 타입마다 이 헬퍼가 있으리라 가정하고 직접
+            # 부르다가, Cursus 에 없어서 AttributeError → 500 이 났다(사용자가 청산
+            # 자체를 못 함). 헬퍼가 없어도 청산은 되어야 하므로 방어적으로 부른다.
+            _dirfn = getattr(bot, "_exchange_position_direction", None)
+            d = _dirfn(ex_pos) if callable(_dirfn) else None
             if d is not None:
                 ex_dir = d
             ex_qty = contracts
