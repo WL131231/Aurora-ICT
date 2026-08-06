@@ -174,7 +174,21 @@ class IctSettings(BaseSettings):
     # 기본 40% / score+1 마다 ↑ / 최대 90%. equity * pct / 100 = margin, leveraged.
     # ICT 정통 risk-based (qty=risk/SL_dist) 박지 않고 notional 박는 방향.
     # 단점: SL 거리 가변 → 실제 손실 폭도 가변. min_rr 2.0 / FVG / bias 필터로 보완.
-    leverage: int = Field(default=20, ge=1, le=50)
+    # 2026-08-06 #LEV-7 (파트너 결정): 기본 20 → 7.
+    # 근거 — 라이브 정합 126거래를 **복리**로 다시 굴린 결과(단리 백테는 배율에
+    # 정비례해 net/MDD 가 불변이라 비교가 무의미하다). 동시보유로 자본이 나뉘는
+    # 것과 DD 스로틀까지 반영한 수치:
+    #     배율   자산(중앙)   최대낙폭   파산확률(시드 20% 이하)
+    #      3x      2.2~2.4배   54~63%      0.0%
+    #      5x      2.5~3.0배   73~84%      0~1.2%
+    #      7x      2.7~3.8배   86~94%      0.9~4.9%
+    #     10x      1.8~2.3배   94~98%      9~28%
+    #     20x      0.14배      98~99%      **94~100%**
+    # 7x 를 넘으면 기대 자산이 **꺾인다**(켈리 우변) — 배율을 올릴수록 한 번의
+    # 손실이 이후 모든 거래의 원금을 깎기 때문. 기존 20x 는 전 시뮬에서 파산했다.
+    # ⚠️ 최대낙폭은 배율로 해결되지 않는다(3x 에서도 54~63%). 낙폭은 로직으로
+    #    잡는 것이 파트너 방침 — origo_drawdown_anatomy.py 참조.
+    leverage: int = Field(default=7, ge=1, le=50)
     position_pct_base: float = Field(default=40.0, ge=1.0, le=100.0)
     # 2026-06-05 파트너 결정: 90→80. margin=equity*90% 면 Bybit 개시수수료+
     # 청산버퍼(남은 10%)를 못 감당해 110007 "ab not enough" 거부됨. 80% 로
@@ -511,6 +525,13 @@ class IctSettings(BaseSettings):
                 self.daily_loss_limit_pct = 15
             if self.origo_dd_throttle_pct <= 0:
                 self.origo_dd_throttle_pct = 25.0
+            # #LEV-7 2026-08-06: 레버리지 상한 7 강제.
+            # 복리 시뮬에서 7x 를 넘으면 기대 자산이 꺾이고(켈리 우변) 파산확률이
+            # 급등한다 — 10x 9~28% / 15x 46~67% / **20x 94~100%**.
+            # 사용자가 더 낮게 쓰는 것은 존중하되(더 안전), 위로는 막는다.
+            # 상세 근거는 leverage 필드 주석 참조.
+            if self.leverage > 7:
+                self.leverage = 7
             # #CT-SL: 역추세(되돌림) 진입은 x4 (robust). 순추세/횡보는 위 x3 유지.
             self.sl_dist_mult_ct = 4.0
             self.ct_trend_threshold = 0.0

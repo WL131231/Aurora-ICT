@@ -834,6 +834,11 @@ def test_admin_all_positions_lists_and_flags_risky(
     """2026-06-12 파트너 요청: 전 사용자 포지션 한눈에 + SL>청산가 경고.
 
     20x 청산 거리 ≈ 4.75% — SL 6% 밖이면 sl_beyond_liq=True (#LIQ-CAP 사고 탐지).
+
+    레버리지를 **테스트 안에서 명시**한다(2026-08-06). 기본값에 기대면 설정이
+    바뀔 때 같이 깨진다 — 실제로 기본 20x→7x(#LEV-7) 로 낮추자 청산가가 멀어져
+    같은 SL 이 더는 위험이 아니게 되어 이 테스트가 실패했다. 검증 대상은
+    "SL 이 청산가 밖이면 표시하는가"이지 기본 레버리지 값이 아니다.
     """
     from aurora_ict.strategy.silver_bullet import Direction
     monkeypatch.setenv("AURORA_ICT_ADMIN_TOKEN", "admin-tok")
@@ -843,6 +848,7 @@ def test_admin_all_positions_lists_and_flags_risky(
     client.post("/ict/start?symbol=ETH/USDT:USDT")
     btc = mu._slots[(code, "BTC/USDT:USDT")].bot
     eth = mu._slots[(code, "ETH/USDT:USDT")].bot
+    btc.leverage = eth.leverage = 20      # 청산 거리 4.75% 고정 — 아래 SL 값의 전제
     # BTC: 안전한 SL (1% — 청산 4.75% 안쪽). ETH: 위험한 SL (숏인데 +6% 위).
     _inject_active(btc, Direction.LONG, 100.0, 1.0)
     btc.active_position.stop_loss = 99.0
