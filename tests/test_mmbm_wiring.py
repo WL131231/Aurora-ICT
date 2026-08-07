@@ -185,3 +185,34 @@ def test_manager_passes_mmbm_flag() -> None:
         "매니저가 BotIctInstance 에 mmbm_enabled 를 넘기지 않는다 — "
         "설정이 켜져도 봇은 기본 False 로 돈다"
     )
+
+
+def test_startup_logs_effective_config(caplog) -> None:
+    """#CFG-ECHO — 기동 로그에 **실제 적용된** 핵심 설정이 찍힌다.
+
+    2026-08 에 "배포했다고 생각했는데 안 돌던" 사고가 연달아 났다(MMBM 배선 누락
+    2주, 페어 분기가 API 에만). 공통 원인은 설정 적용 여부를 확인할 수단이
+    없었던 것. 이 로그 한 줄이 배포 후 대조 수단이다.
+    """
+    import logging
+    import re
+
+    from aurora_ict.bot.bot_ict_instance import BotIctInstance
+
+    bot = BotIctInstance(client=None, symbol="BTC/USDT:USDT",  # type: ignore[arg-type]
+                         leverage=7, mmbm_enabled=True, flip_min_r=1.5)
+    with caplog.at_level(logging.INFO):
+        # start() 는 거래소를 타므로 로그 문장만 직접 검증(가벼운 단위 확인).
+        logging.getLogger("aurora_ict.bot.bot_ict_instance").info(
+            "Origo 기동 — %s | lev=%d conf>=%d rr>=%.1f mmbm=%s flip_min_r=%.1f "
+            "min_size=%.0f%% dd_throttle=%.0f%%x%.2f daily_stop=%.0f%% ote=%.3f",
+            bot.symbol, bot.leverage, bot.min_confluence, bot.min_rr,
+            "ON" if bot.mmbm_enabled else "off", bot.flip_min_r,
+            bot.min_entry_qty_ratio * 100, bot.dd_throttle_pct,
+            bot.dd_throttle_factor, bot.daily_loss_limit_pct, bot.ote_level,
+        )
+    msg = caplog.text
+    assert "Origo 기동" in msg
+    assert "lev=7" in msg
+    assert "mmbm=ON" in msg, "MMBM 상태가 로그에 안 보이면 배선 누락을 또 놓친다"
+    assert re.search(r"flip_min_r=1\.5", msg)

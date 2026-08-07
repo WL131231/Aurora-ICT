@@ -210,9 +210,16 @@ class BotTrendInstance:
             await self._cancel_entry_orders()
         self.state = BotState.RUNNING
         self._task = asyncio.create_task(self._run_loop())
+        # #CFG-ECHO 2026-08-06: Origo 와 동일하게 실제 적용 설정을 한 줄로 남긴다.
+        # (개발자 변경 4종이 정말 반영됐는지 로그로 대조 가능해야 한다.)
         logger.info(
-            "BotTrendInstance(Cursus) %s 시작 (원본 엔진: SL %.0f%% + 4분할TP 래더)",
-            self.symbol, self.cfg.sl_pct * 100,
+            "Cursus 기동 — %s | lev=%d size=%.0f%% SL=%.0f%% HA=%s limit=%s(TTL %d봉) "
+            "daily_stop=%.0f%%",
+            self.symbol, self.leverage, self.size_pct * 100,
+            self.cfg.sl_pct * 100,
+            "ON" if getattr(self.cfg, "use_heikin_ashi", False) else "off",
+            "ON" if self.limit_entry else "off", self.limit_entry_ttl_bars,
+            self.daily_loss_limit_pct,
         )
 
     async def stop(self) -> None:

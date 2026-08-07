@@ -794,7 +794,20 @@ class BotIctInstance:
         # 2026-05-27: 시작 직후 background 로 모든 UI TF 차트 데이터 prefetch.
         # UI 가 TF 토글할 때 cache hit 으로 즉시 응답. await 안 함 (시작 차단 X).
         self._prefetch_task = asyncio.create_task(self._prefetch_all_ohlcv_tfs())
-        logger.info("BotIctInstance %s 시작", self.symbol)
+        # #CFG-ECHO 2026-08-06: 기동 시 **실제 적용된** 핵심 설정을 한 줄로 남긴다.
+        # 2026-08 에 "배포했다고 생각했는데 안 돌던" 사고가 연달아 났다 —
+        # MMBM 은 매니저 배선 누락으로 2주간 꺼진 채였고(모델명·주석·테스트는 다
+        # 있었다), 페어 모델 분기는 API 에만 걸려 봇 기동 경로가 옛 목록을 썼다.
+        # 공통 원인은 "설정이 실제로 적용됐는지 확인할 수단이 없었던 것".
+        # 이제 배포 후 `fly logs | grep "Origo 기동"` 한 번으로 전부 대조된다.
+        logger.info(
+            "Origo 기동 — %s | lev=%d conf>=%d rr>=%.1f mmbm=%s flip_min_r=%.1f "
+            "min_size=%.0f%% dd_throttle=%.0f%%x%.2f daily_stop=%.0f%% ote=%.3f",
+            self.symbol, self.leverage, self.min_confluence, self.min_rr,
+            "ON" if self.mmbm_enabled else "off", self.flip_min_r,
+            self.min_entry_qty_ratio * 100, self.dd_throttle_pct,
+            self.dd_throttle_factor, self.daily_loss_limit_pct, self.ote_level,
+        )
 
     def ensure_prefetch_started(self) -> None:
         """봇 가동 안 해도 OHLCV cache prefetch 시작 (idempotent).
