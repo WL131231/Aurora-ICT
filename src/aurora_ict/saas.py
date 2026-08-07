@@ -46,6 +46,32 @@ from aurora_ict.paths import data_dir
 logger = logging.getLogger(__name__)
 
 
+async def _notify_pair_dropped(
+    mu: MultiUserBotManager, code: str, symbol: str, reason: str,
+) -> None:
+    """가동 불가 페어를 선택 해제했음을 사용자에게 안내 (#PAIR-DROP).
+
+    조용히 빼면 "왜 이 종목이 사라졌지?" 가 된다. 이유와 재선택 방법을 함께 준다.
+    알림 실패는 무시 — 정리 자체는 이미 끝났고, 알림 때문에 복구를 막을 이유가 없다.
+    """
+    alerter = getattr(mu, "alerter", None)
+    if alerter is None:
+        return
+    base = symbol.split("/")[0]
+    why = ("검증에서 탈락한 종목이라" if "제외된 페어" in reason
+           else "거래대금이 상위권 밖으로 밀려")
+    try:
+        await alerter.send_user_text(
+            code,
+            f"⚠️ {base} 자동 해제\n\n"
+            f"{base} 는 {why} 현재 가동할 수 없어 선택에서 해제했습니다.\n"
+            f"다른 종목은 정상 가동 중입니다.\n\n"
+            f"거래대금이 회복되면 종목 선택 화면에서 다시 추가하실 수 있습니다.",
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("페어 해제 안내 실패 — %s/%s: %s", code, symbol, e)
+
+
 async def _reconcile_pairs_once(mu: MultiUserBotManager) -> None:
     """모델 고정 페어 정합 1회 — 실패해도 봇 운영에 영향 없게 삼킨다.
 
@@ -137,17 +163,28 @@ async def auto_resume_running_bots(
             # 2026-06-12 리뷰 #4: 검증 탈락(EXCLUDED) 페어를 돌리던 사용자는
             # 매 배포마다 같은 ValueError 가 반복된다 — 영속 플래그를 정리해
             # 재시도 루프를 끊는다 (정책 거부는 재시도해도 영원히 실패).
-            if "제외된 페어" in str(e):
+            # #PAIR-DROP 2026-08-07: 정책상 영원히 실패하는 페어는 선택을 해제한다.
+            #   · 제외된 페어(EXCLUDED) — 검증 탈락 (2026-06-12)
+            #   · 거래 가능 목록 밖 — 거래대금이 밀려 화이트리스트에서 빠진 종목.
+            #     사용자가 예전에 고른 뒤 순위가 떨어진 경우다(실측: BANK·BILL).
+            # 둘 다 재시도해도 결과가 같으므로 10분마다 경고만 쌓였다. 이제 가동
+            # 플래그와 **선호 페어에서 모두 제거**하고 사용자에게 이유를 알린다.
+            _msg = str(e)
+            _permanent = "제외된 페어" in _msg or "거래 가능 목록" in _msg
+            if _permanent:
                 try:
                     users_db.set_bot_running(db_path, code, False, symbol=sym)
+                    # 선호에서도 빼야 전체 START 때 같은 실패가 반복되지 않는다.
+                    users_db.set_last_active_pair(db_path, code, sym, False)
                     logger.warning(
-                        "bot 자동 재가동 — %s/%s 제외 페어: 가동 플래그 정리 (%s)",
+                        "bot 자동 재가동 — %s/%s 가동 불가 페어: 선택 해제 (%s)",
                         code, sym, e,
                     )
                 except Exception as e2:  # noqa: BLE001
                     logger.warning(
-                        "제외 페어 플래그 정리 실패 — %s/%s: %s", code, sym, e2,
+                        "가동 불가 페어 정리 실패 — %s/%s: %s", code, sym, e2,
                     )
+                await _notify_pair_dropped(mu, code, sym, _msg)
             else:
                 logger.warning("bot 자동 재가동 실패 — %s/%s: %s", code, sym, e)
             return False
