@@ -293,6 +293,7 @@ def detect_silver_bullet_setups(
     disable_time_filter: bool = False,
     min_sl_distance_pct: float = 0.0,
     ote_level: float = 0.5,
+    nyse_gate: bool = True,
 ) -> list[SilverBulletSetup]:
     """Silver Bullet setup 후보 검출.
 
@@ -364,8 +365,22 @@ def detect_silver_bullet_setups(
                 kz = classify_killzone(fvg.ts_ms)
                 window = kz.value if kz is not None else "any"
         else:
-            from aurora_ict.timing.killzone import in_trade_window_sub
-            if not in_trade_window_sub(fvg.ts_ms):
+            # #KZ-WIDE 2026-08-09 (연구 스위치): nyse_gate=False 면 미장 제약을
+            # 빼고 킬존/매크로/SB 이면 전부 허용한다. 2026-05-28 에 거래 #6
+            # (뉴욕 03:02 런던 킬존, -283 USDT) 한 건을 보고 미장 밖을 막았는데
+            # 그 결정은 이후 백테로 검증된 적이 없다.
+            from aurora_ict.timing.killzone import (
+                classify_killzone,
+                in_macro,
+                in_silver_bullet,
+                in_trade_window_sub,
+            )
+            if nyse_gate:
+                if not in_trade_window_sub(fvg.ts_ms):
+                    continue
+            elif not (classify_killzone(fvg.ts_ms) is not None
+                      or in_silver_bullet(fvg.ts_ms) is not None
+                      or in_macro(fvg.ts_ms) is not None):
                 continue
             # window label — SB → Killzone → Macro 우선순위
             sb_win = in_silver_bullet(fvg.ts_ms)
@@ -823,7 +838,9 @@ def _build_rejection_setup(
     )
 
 
-def _phase_b_in_time_window(ts_ms: int, disable_time_filter: bool) -> bool:
+def _phase_b_in_time_window(
+    ts_ms: int, disable_time_filter: bool, nyse_gate: bool = True,
+) -> bool:
     """Phase B 소스 시간 필터.
 
     2026-05-28 변경 — sub_* 정책 (disable_time_filter=False) 일 때 Phase A 와
@@ -836,8 +853,18 @@ def _phase_b_in_time_window(ts_ms: int, disable_time_filter: bool) -> bool:
     if disable_time_filter:
         return True
     # 2026-05-28: sub_* 정책 — 미장 안의 Killzone/Macro/SB 만. Phase A 와 정합.
-    from aurora_ict.timing.killzone import in_trade_window_sub
-    return in_trade_window_sub(ts_ms)
+    from aurora_ict.timing.killzone import (
+        classify_killzone,
+        in_macro,
+        in_silver_bullet,
+        in_trade_window_sub,
+    )
+    if nyse_gate:
+        return in_trade_window_sub(ts_ms)
+    # #KZ-WIDE: 미장 제약 없이 킬존/매크로/SB 전체 (Phase A 와 동일 규칙)
+    return (classify_killzone(ts_ms) is not None
+            or in_silver_bullet(ts_ms) is not None
+            or in_macro(ts_ms) is not None)
 
 
 def build_extra_source_setups(
@@ -846,6 +873,7 @@ def build_extra_source_setups(
     min_rr: float = 1.5,
     bias: TrendDirection | None = None,
     disable_time_filter: bool = True,
+    nyse_gate: bool = True,
 ) -> list[SilverBulletSetup]:
     """v0.4.71+ Phase B: 새 4 source 의 detect 호출 + setup 변환.
 
@@ -877,7 +905,7 @@ def build_extra_source_setups(
     def _accept(built: SilverBulletSetup | None) -> None:
         if built is None:
             return
-        if not _phase_b_in_time_window(built.ts_ms, disable_time_filter):
+        if not _phase_b_in_time_window(built.ts_ms, disable_time_filter, nyse_gate):
             return
         setups.append(built)
 

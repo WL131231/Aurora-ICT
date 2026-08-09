@@ -131,17 +131,11 @@ GAPS: dict[str, str] = {
         "강제하고 multi_user_manager.py:472 가 실제로 연결한다(#MMBM-WIRE 2026-08-06). "
         "SB 셋업이 없는 봉에서 별도 모델이 돌며 confluence 게이트를 전면 우회한다. "
         "라이브 56건 표본 밖이라 빈도 미상 — 별도 이식 과제.",
-    "risk_based_sizing / smart_size": "미구현 — 라이브는 건당 리스크가 score 연동 "
-        "3~6%, 여기에 품질 배수(0.4~1.4)까지 곱한다. 백테는 size_pct 고정. "
-        "거래 선별에는 영향 0(빈도·타점 불변), **복리 자산곡선에만** 영향.",
+
     "margin guard / min_entry_qty_ratio 0.2": "미구현 — 가용잔고 기반. 라이브 실측 "
         "진입의 5.3% 가 여기서 차단된다. 잔고 상태 시뮬이 필요.",
-    "daily_loss_limit 15% / daily_profit_limit / dd_throttle 25%": "미구현 — 계좌 "
-        "단위 서킷·스로틀. 페어별 독립 백테로는 표현 불가, 포트폴리오 복리 시뮬"
-        "(scripts/origo_leverage_verify.py)에서만 반영된다.",
-    "daily_pair_loss_limit_r 2.0": "미구현 — 기본값 2.0 이라 **항상 활성**인데 기존 "
-        "GAPS 목록에도 없던 누락. 페어당 하루 손실이 -2R 로 캡되므로 백테 낙폭은 "
-        "과대추정이다.",
+
+
     "detect 입력 길이 500 vs 라이브 1000": "미이식 — 라이브 settings.ohlcv_limit=1000 "
         "이라 generate_ict_signal 이 매번 1000봉을 본다. 백테 cfg.window 는 500. "
         "swing/OB/DOL/turtle 의 lookback 모집단이 달라 셋업 자체가 달라진다. "
@@ -156,6 +150,30 @@ GAPS: dict[str, str] = {
         "_recovery_failed / _ensure_protective_sl / 최소수량 skip. 전부 거래소·사용자 "
         "상호작용 의존이라 백테에 대응물이 없다.",
 }
+
+# [08-09] 이식 완료 — GAPS 에서 제거된 3건 (#LIVE-SIZING)
+#   · risk_based_sizing / smart_size — replay 가 Trade.smart_size_scale·risk_pct_used
+#     를 기록하고(라이브 공식 600회 대조 불일치 0), 실제 복리는 scripts/portfolio_sim.py
+#     가 계산한다. replay 에서 복리를 계산하지 않는 이유: 페어별 독립 실행이라
+#     자산 공유·동시보유를 표현할 수 없다.
+#   · daily_loss_limit 15% / dd_throttle 25% — portfolio_sim 에 구현(계좌 단위)
+#   · daily_pair_loss_limit_r 2.0 — portfolio_sim 에 구현(페어·일자 단위)
+# 효과: 백테 명목이 6.3배 고정 → 라이브 실측 평균 3.16배. **파산확률 95.5% → 64.0%**.
+# 복리·낙폭·파산이 "참고치"에서 **판단 근거**로 승격됐다.
+# 다만 실측 결과 안전장치 3종은 현재 빈도(2페어 월 6.77건)에서 거의 발동하지 않는다
+# — 페어 일일 -2R 차단 0건 · 계좌 일일캡 3/402건 · 낙폭 스로틀 0.3%p.
+
+# [08-10] 킬존 확대 검증 — **현행 유지 확정** (#KZ-WIDE)
+# 2026-05-28 "미장 안의 킬존/매크로/SB 만" 결정은 거래 한 건(#6, 뉴욕 03:02 런던
+# 킬존, -283 USDT)을 보고 내린 것이고 백테 검증이 없었다. 5년으로 재봤다:
+#     NYSE(현행) 402건 · 6.76/월 · -0.067R [-0.188 ~ +0.059]
+#     WIDE(확대)  380건 · 6.39/월 · -0.062R [-0.190 ~ +0.069]
+#     현행 대비 +0.005R · p=0.4801 — **차이 없음**
+# 아시아·런던·런던SB·NY AM 전체를 열었는데 거래가 오히려 **줄었다**(402→380).
+# 원인은 하루 한 창 1회 진입 규칙(seen_windows) — 이른 시간대가 열리면서 같은 날
+# 창이 먼저 소진돼 **미장 진입이 더 나쁜 시간대 진입으로 교체**됐다.
+# → 시간대는 SB 의 문제가 아니다. 넓히든 좁히든 -0.06R. 노이즈 적은 미장 유지.
+# 홀드아웃은 돌리지 않았다(본표본 개선 0). 스크립트: killzone_wide_2026-08-09.py
 
 # [08-09] 죽은 파라미터 — `expand_to_killzone`
 # docstring 은 "True 면 Silver Bullet 1시간 창 대신 Killzone 전체"라고 설명하지만

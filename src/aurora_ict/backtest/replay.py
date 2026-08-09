@@ -85,6 +85,11 @@ class BacktestConfig:
     # 시뮬이 계산한다(페어가 자산을 공유하므로 페어별 replay 에서는 표현 불가).
     # 라이브 기본값 출처: settings.py risk_per_trade_* / position_pct_max,
     # smart_size 는 bot_ict_instance._set_smart_size.
+    # #KZ-WIDE 2026-08-09: False 면 미장(NYSE) 제약 없이 킬존/매크로/SB 전체.
+    # 2026-05-28 에 거래 한 건(#6, 뉴욕 03:02 런던 킬존, -283)을 보고 미장 밖을
+    # 막은 결정을 백테로 처음 검증하기 위한 스위치. 셋업 집합이 바뀌므로
+    # 타임라인 캐시 키에도 반드시 포함해야 한다(bt_par.cached_setup_timeline).
+    nyse_gate: bool = True
     smart_size_enabled: bool = True
     risk_per_trade_base: float = 3.0
     risk_per_trade_step: float = 1.5
@@ -1644,6 +1649,7 @@ def _live_candidate_setups(
         disable_time_filter=cfg.disable_time_filter,
         min_sl_distance_pct=cfg.min_sl_distance_pct,
         ote_level=ote_level,
+        nyse_gate=cfg.nyse_gate,
     )
     if not cfg.phase_b_sources:
         return list(setups)
@@ -1653,6 +1659,7 @@ def _live_candidate_setups(
         bias=None,   # 라이브는 HTF bias 를 넘기지만 #BIAS-DIRECTION 이후 방향
                      # 강제에 쓰이지 않는다(GAPS "bias 주입" 참고).
         disable_time_filter=cfg.disable_time_filter,
+        nyse_gate=cfg.nyse_gate,
     )
     if extra:
         setups = list(setups) + list(extra)
@@ -1751,6 +1758,7 @@ def run_backtest(
             disable_time_filter=cfg.disable_time_filter,
             min_sl_distance_pct=cfg.min_sl_distance_pct,
             ote_level=cfg.ote_level,
+            nyse_gate=cfg.nyse_gate,
         )
         if not setups:
             i += 1
@@ -2705,6 +2713,7 @@ def run_backtest_multitf(
                 expand_to_killzone=cfg.expand_to_killzone,
                 disable_time_filter=cfg.disable_time_filter,
                 min_sl_distance_pct=cfg.min_sl_distance_pct,
+                nyse_gate=cfg.nyse_gate,
             )
             if not setups:
                 info["cached_setup"] = None
