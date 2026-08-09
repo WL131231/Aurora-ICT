@@ -63,6 +63,16 @@ class FVG:
         """Consequent Encroachment (50% 라인) — 진입 시 가장 sensitive한 level."""
         return (self.high + self.low) / 2.0
 
+    def ote_threshold(self, level: float) -> float:
+        """OTE 되돌림 레벨 진입가. level=0.5=mean(CE), 0.62~0.79=더 깊은 진입.
+
+        bullish FVG(롱)는 가격이 위로 갔다 gap 으로 되돌림 → level 클수록 low(깊은)
+        쪽. bearish 는 high(깊은) 쪽. level=0.5 면 mean_threshold 와 동일.
+        """
+        if self.type is FVGType.BULLISH:
+            return self.high - level * (self.high - self.low)
+        return self.low + level * (self.high - self.low)
+
     @property
     def size(self) -> float:
         """FVG 폭 (가격 단위)."""
@@ -259,6 +269,12 @@ class IFVG:
     @property
     def mean_threshold(self) -> float:
         return (self.high + self.low) / 2.0
+
+    def ote_threshold(self, level: float) -> float:
+        """OTE 되돌림 레벨 진입가 (FVG.ote_threshold 와 동일 규칙)."""
+        if self.type is FVGType.BULLISH:
+            return self.high - level * (self.high - self.low)
+        return self.low + level * (self.high - self.low)
 
     @property
     def size(self) -> float:

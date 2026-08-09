@@ -292,6 +292,7 @@ def detect_silver_bullet_setups(
     expand_to_killzone: bool = False,
     disable_time_filter: bool = False,
     min_sl_distance_pct: float = 0.0,
+    ote_level: float = 0.5,
 ) -> list[SilverBulletSetup]:
     """Silver Bullet setup 후보 검출.
 
@@ -382,7 +383,7 @@ def detect_silver_bullet_setups(
         if key in seen_windows:
             continue  # 같은 (day, window)에서 이미 valid setup 채택됨
 
-        entry = fvg.mean_threshold
+        entry = fvg.ote_threshold(ote_level)
 
         # 정통 ICT: SL = FVG 영역 가장자리 (단순). 추가 버퍼 없음.
         # Why: Silver Bullet PDF / Practical 모두 wick 너머 단순 정의.
