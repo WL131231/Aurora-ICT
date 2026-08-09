@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+import numpy as np
 import pandas as pd
 
 from aurora_ict.indicators.swing_points import SwingPoint, SwingType
@@ -97,16 +98,29 @@ def detect_smt_divergence(
     corr_highs = corr_df["high"].to_numpy()
     corr_lows = corr_df["low"].to_numpy()
 
+    # 2026-08-09 #SMT-PERF: 최근접 봉 탐색이 호출마다 전체 배열을 훑어 O(스윙수 × 봉수)
+    # 였다. 라이브(200~1000봉)에서는 체감이 없지만 백테 5년(52만 봉)에서 이 함수가
+    # 단독으로 4.5시간을 잡아먹었다(py-spy 로 특정). OHLCV 인덱스는 시간 오름차순이라
+    # 이진 탐색이면 19회면 끝난다. 정렬이 깨진 입력에서는 기존 전수 탐색으로 폴백해
+    # 결과를 보존한다. 동점(양쪽 거리 같음) 시 **왼쪽 우선** — 기존 `d < nearest_diff`
+    # 가 먼저 만난 인덱스를 유지하던 것과 같은 선택이다.
+    _ts = np.asarray(corr_ts, dtype=np.int64)
+    _sorted = bool(_ts.size < 2 or np.all(_ts[1:] >= _ts[:-1]))
+
+    def _nearest_idx(ts_ms: int) -> int:
+        if not _sorted:
+            return int(np.argmin(np.abs(_ts - ts_ms)))
+        j = int(np.searchsorted(_ts, ts_ms))
+        if j <= 0:
+            return 0
+        if j >= _ts.size:
+            return _ts.size - 1
+        return j if (_ts[j] - ts_ms) < (ts_ms - _ts[j - 1]) else j - 1
+
     def _corr_price_at(ts_ms: int, *, is_high: bool) -> float | None:
         """주어진 ts_ms 에 가장 가까운 corr 봉의 high/low. drift 초과 시 None."""
-        nearest_i = 0
-        nearest_diff = abs(corr_ts[0] - ts_ms)
-        for i, t in enumerate(corr_ts[1:], start=1):
-            d = abs(t - ts_ms)
-            if d < nearest_diff:
-                nearest_diff = d
-                nearest_i = i
-        if nearest_diff > _MAX_TS_DRIFT_MS:
+        nearest_i = _nearest_idx(ts_ms)
+        if abs(int(_ts[nearest_i]) - ts_ms) > _MAX_TS_DRIFT_MS:
             return None
         return float(corr_highs[nearest_i] if is_high else corr_lows[nearest_i])
 

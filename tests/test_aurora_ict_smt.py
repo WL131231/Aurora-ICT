@@ -287,3 +287,88 @@ async def test_apply_smt_boost_skips_unpaired_symbol() -> None:
     await bot._apply_smt_boost(setup, _main_df_ll())
     assert setup.confluence_score == 0
     client.fetch_ohlcv.assert_not_awaited()
+
+
+# ============================================================
+# #SMT-PERF 2026-08-09 — 최근접 봉 탐색을 이진 탐색으로 교체.
+# 라이브(200~1000봉)에서는 체감이 없었으나 백테 5년(52만 봉)에서 이 함수 하나가
+# 4.5시간을 잡아먹었다. 아래는 **결과가 바뀌지 않았음**을 고정하는 회귀 테스트다.
+# ============================================================
+
+
+def _corr_price_ref(corr_df: pd.DataFrame, ts_ms: int, *, is_high: bool) -> float | None:
+    """교체 전 구현 — 전수 선형 탐색. 동점이면 먼저 만난(왼쪽) 인덱스를 유지."""
+    ts = [int(v) for v in corr_df.index.tolist()]
+    nearest_i, nearest_diff = 0, abs(ts[0] - ts_ms)
+    for i, t in enumerate(ts[1:], start=1):
+        d = abs(t - ts_ms)
+        if d < nearest_diff:
+            nearest_diff, nearest_i = d, i
+    if nearest_diff > 3_600_000:
+        return None
+    col = "high" if is_high else "low"
+    return float(corr_df[col].to_numpy()[nearest_i])
+
+
+def _detect_via_pairs(corr_df: pd.DataFrame, ts_list: list[int]) -> list[float | None]:
+    """detect_smt_divergence 내부 최근접 조회를 swing 을 통해 간접 호출."""
+    out: list[float | None] = []
+    for ts in ts_list:
+        sw = [
+            SwingPoint(ts_ms=ts, type=SwingType.HIGH, price=100.0, idx=0),
+            SwingPoint(ts_ms=ts, type=SwingType.HIGH, price=200.0, idx=1),
+        ]
+        ev = detect_smt_divergence(sw, corr_df)
+        out.append(ev[0].corr_price if ev else None)
+    return out
+
+
+def test_smt_nearest_matches_linear_scan() -> None:
+    """★ 이진 탐색이 전수 탐색과 같은 봉을 고른다 — 등간격 5분봉."""
+    bars = [(100 + i, 102 + i, 99 + i, 101 + i) for i in range(60)]
+    df = pd.DataFrame(
+        [{"open": o, "high": h, "low": lo, "close": c} for o, h, lo, c in bars],
+    )
+    df.index = [i * 300_000 for i in range(len(bars))]
+
+    # 봉 경계 / 봉 한가운데(동점 유발) / 범위 밖 — 세 종류를 모두 친다
+    probes = [0, 150_000, 300_000, 450_000, 1_234_567, 17_700_000, -60_000]
+    for ts in probes:
+        got = _detect_via_pairs(df, [ts])[0]
+        want = _corr_price_ref(df, ts, is_high=True)
+        assert got == want, f"ts={ts}: {got} != {want}"
+
+
+def test_smt_nearest_tie_prefers_left() -> None:
+    """동점(양쪽 거리가 같음)이면 왼쪽 봉 — 교체 전과 같은 선택."""
+    df = _make_df([(100, 110, 90, 105), (200, 210, 190, 205)])
+    df.index = [0, 600_000]          # 정확히 중간인 300_000 이 동점
+    sw = [
+        SwingPoint(ts_ms=300_000, type=SwingType.HIGH, price=100.0, idx=0),
+        SwingPoint(ts_ms=300_000, type=SwingType.HIGH, price=200.0, idx=1),
+    ]
+    ev = detect_smt_divergence(sw, df)
+    assert ev and ev[0].corr_price == 110.0     # 왼쪽 봉의 high
+
+
+def test_smt_nearest_unsorted_index_falls_back() -> None:
+    """인덱스가 정렬돼 있지 않으면 전수 탐색으로 폴백 — 결과가 깨지지 않는다."""
+    df = _make_df([(100, 110, 90, 105), (200, 210, 190, 205), (300, 310, 290, 305)])
+    df.index = [600_000, 0, 1_200_000]          # 일부러 뒤섞음
+    sw = [
+        SwingPoint(ts_ms=10_000, type=SwingType.HIGH, price=100.0, idx=0),
+        SwingPoint(ts_ms=10_000, type=SwingType.HIGH, price=200.0, idx=1),
+    ]
+    ev = detect_smt_divergence(sw, df)
+    assert ev and ev[0].corr_price == 210.0     # ts=0 인 두 번째 행이 최근접
+
+
+def test_smt_drift_over_limit_still_none() -> None:
+    """1시간 넘게 벌어지면 매칭하지 않는다 — 기존 가드 유지."""
+    df = _make_df([(100, 110, 90, 105)])
+    df.index = [0]
+    sw = [
+        SwingPoint(ts_ms=7_200_000, type=SwingType.HIGH, price=100.0, idx=0),
+        SwingPoint(ts_ms=7_200_000, type=SwingType.HIGH, price=200.0, idx=1),
+    ]
+    assert detect_smt_divergence(sw, df) == []
