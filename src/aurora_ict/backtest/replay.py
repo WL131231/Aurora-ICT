@@ -80,6 +80,16 @@ class BacktestConfig:
     entry_ttl_bars: int = 5  # limit 체결 대기 봉 수 (entry_limit_ttl_sec 300s / 60s @1m)
     leverage: float = 20.0
     size_pct: float = 0.3  # 시드 대비 포지션 (고정 — 상대 비교용)
+    # --- #LIVE-SIZING 2026-08-09: 라이브 진입 크기 계산 재현 (기록 전용) ---
+    # 손익 계산은 바꾸지 않는다. Trade 에 입력값만 남기고 실제 복리는 포트폴리오
+    # 시뮬이 계산한다(페어가 자산을 공유하므로 페어별 replay 에서는 표현 불가).
+    # 라이브 기본값 출처: settings.py risk_per_trade_* / position_pct_max,
+    # smart_size 는 bot_ict_instance._set_smart_size.
+    smart_size_enabled: bool = True
+    risk_per_trade_base: float = 3.0
+    risk_per_trade_step: float = 1.5
+    risk_per_trade_max: float = 6.0
+    position_pct_max: float = 80.0
     # 같은 봉 SL/TP 동시 도달 처리:
     #   False(기본) = 봉 경로 휴리스틱(bullish 봉 저점 먼저 / bearish 봉 고점 먼저)
     #   True = 무조건 SL 우선(worst-case 보수) — win 과소평가
@@ -354,6 +364,19 @@ class Trade:
     # raw_pnl_pct 는 **건드리지 않는다** — 기존 연구 결과와 직접 비교가 깨지지 않게.
     # 반영은 net_pnl_pct 와 이 필드로만 하고, R 환산은 사용측이 선택한다.
     funding_pct: float = 0.0
+    # 2026-08-09 #LIVE-SIZING: 라이브 진입 크기 계산 입력값.
+    # 라이브는 `qty = equity × risk_pct% × dd스로틀 × 품질배수 / 손절거리` 이고
+    # 명목이 `equity × leverage × position_pct_max%`(=5.6배) 를 넘지 않게 상한을 건다.
+    # 백테는 `notional = size_pct × leverage` 고정(0.9×7=6.3배)이라 **라이브 평균
+    # 2.46배의 2.6배**를 걸고 있었다. 복리·낙폭·파산이 못 믿을 숫자였던 실체다.
+    #
+    # 복리 자체는 여기서 계산하지 않는다 — replay 는 페어별로 독립 실행되는데
+    # 실제 계좌는 페어가 자산을 공유하므로, 동시보유·일일캡·서킷은 **포트폴리오
+    # 레벨**에서만 옳게 표현된다. 여기서는 그 시뮬이 필요로 하는 입력만 남긴다.
+    #   smart_size_scale : 품질 배수 (볼륨·NW중심선·RSI 정합 개수 → 0.7~1.3)
+    #   risk_pct_used    : 건당 리스크 % (문턱 5 때문에 실질 6.0 상수)
+    smart_size_scale: float = 1.0
+    risk_pct_used: float = 0.0
 
     @property
     def risk_pct(self) -> float:
@@ -2000,6 +2023,69 @@ def build_setup_timeline(df: pd.DataFrame, cfg: BacktestConfig) -> list:
     return timeline
 
 
+def _smart_size_scale(
+    closes: np.ndarray,
+    volumes: np.ndarray,
+    idx: int,
+    is_long: bool,
+) -> float:
+    """#SMART-SIZE 품질 배수 — 라이브 `_set_smart_size` 와 같은 식.
+
+    거래를 거르는 게 아니라(빈도 불변) 좋은 진입에 자금을 더 배분한다.
+    진입 방향과 정합하는 신호 개수 q(0~3) 를 세어 `clip(0.7 + q×0.2, 0.4, 1.4)`.
+
+    신호 셋 (출처: bot_ict_instance.py `_set_smart_size`):
+        · 볼륨    — 진입봉 거래량 >= 최근 20봉 평균
+        · NW 중심 — 가우시안 커널(bw=8, 최근 50봉) 중심선 대비 위치가 방향과 정합
+        · RSI(14) — 롱이면 >50, 숏이면 <50
+
+    Args:
+        closes: 종가 배열.
+        volumes: 거래량 배열.
+        idx: 진입 봉 인덱스 (이 봉까지만 본다 — 미래 참조 금지).
+        is_long: 롱 여부.
+
+    Returns:
+        0.4~1.4 배수. 데이터가 50봉 미만이면 1.0(중립).
+    """
+    if idx < 49:
+        return 1.0
+    c = closes[: idx + 1]
+    v = volumes[: idx + 1]
+
+    vol_ma = float(v[-20:].mean())
+    vol_ok = vol_ma > 0 and float(v[-1]) >= vol_ma
+
+    win = min(50, len(c))
+    seg = c[-win:]
+    ar = np.arange(win)
+    w = np.exp(-((win - 1 - ar) ** 2) / (2 * 8.0 ** 2))
+    nw_center = float(np.sum(seg * w) / np.sum(w))
+    nw_ok = (float(c[-1]) > nw_center) == is_long
+
+    d = np.diff(c[-15:])
+    up = float(np.sum(np.where(d > 0, d, 0.0)))
+    dn = float(np.sum(np.where(d < 0, -d, 0.0)))
+    rsi = 100.0 - 100.0 / (1.0 + up / (dn + 1e-9))
+    rsi_ok = (rsi > 50) == is_long
+
+    q = int(vol_ok) + int(nw_ok) + int(rsi_ok)
+    return float(np.clip(0.7 + q * 0.2, 0.4, 1.4))
+
+
+def _risk_pct_for(score: int, cfg: BacktestConfig) -> float:
+    """건당 리스크 % — 라이브 `_calc_qty_risk_based` 와 같은 식.
+
+    `min(base + step × score, max)`. 진입 문턱이 5 라 score>=5 이므로
+    3.0 + 1.5×5 = 10.5 → 상한 6.0 에 걸린다. **실질 상수**라는 뜻이고,
+    htf_supporting boost 가 상수 +3 이던 것과 같은 패턴이다.
+    """
+    return min(
+        cfg.risk_per_trade_base + cfg.risk_per_trade_step * max(0, score),
+        cfg.risk_per_trade_max,
+    )
+
+
 def _funding_cost(
     funding: pd.DataFrame | None,
     index: pd.Index,
@@ -2110,6 +2196,12 @@ def run_backtest_from_timeline(
     highs = df["high"].to_numpy()
     lows = df["low"].to_numpy()
     closes = df["close"].to_numpy()
+    # #LIVE-SIZING: 품질 배수의 볼륨 신호용. 컬럼이 없으면 0 배열
+    # (볼륨 신호가 항상 False → 배수가 최대 0.2 낮게 나온다).
+    volumes = (
+        df["volume"].to_numpy() if "volume" in df.columns
+        else np.zeros(len(df), dtype=float)
+    )
     # #SHORT-BIAS: HTF EMA bias 게이트용 1h EMA (off 면 계산 skip) — run_backtest 동일.
     htf_ema = (
         _precompute_htf_ema(df, cfg.htf_ema_period).to_numpy()
@@ -2423,11 +2515,19 @@ def run_backtest_from_timeline(
         fund_pct = _funding_cost(funding, df.index, fill_idx, exit_idx, is_long)
         if fund_pct:
             net_pnl_pct -= fund_pct * cfg.size_pct * cfg.leverage
+        # #LIVE-SIZING: 크기 계산 입력값 기록. 손익은 바꾸지 않는다 —
+        # 실제 복리는 이 값들을 받아 포트폴리오 시뮬이 계산한다.
+        ss = (
+            _smart_size_scale(closes, volumes, fill_idx, is_long)
+            if cfg.smart_size_enabled else 1.0
+        )
         trades.append(Trade(
             entry_idx=fill_idx, exit_idx=exit_idx, direction=d_val,
             entry=entry, exit_price=exit_price, outcome=outcome,
             raw_pnl_pct=raw_pnl_pct, net_pnl_pct=net_pnl_pct,
             funding_pct=fund_pct,
+            smart_size_scale=ss,
+            risk_pct_used=_risk_pct_for(int(score), cfg),
             confluence_score=score,
             entry_atr_pct=_entry_atr_pct(highs, lows, closes, fill_idx, entry),
             entry_trend_pct=(

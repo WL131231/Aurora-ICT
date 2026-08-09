@@ -155,13 +155,31 @@ GAPS: dict[str, str] = {
     "포지션 상태 경로": "미구현 — #MANUAL-POS-RESPECT / #REENTRY-BLOCK(4h 쿨다운) / "
         "_recovery_failed / _ensure_protective_sl / 최소수량 skip. 전부 거래소·사용자 "
         "상호작용 의존이라 백테에 대응물이 없다.",
-    "flip zone 재조회(진입 후 생성분)": "부분이식 — [08-09] replay 는 flip target 을 "
-        "**진입 시점에 한 번 고정**한다(replay.py:877-883). 라이브 _maybe_flip 은 매 "
-        "봉 HTF FVG map 을 다시 만들어 **진입 후 새로 생긴 zone 으로도** flip 한다. "
-        "그래서 백테 flip 청산 건수가 과소추정된다(BASE 402건 중 22건). 건당R 은 "
-        "flip_min_r 되돌림 실측에서 불변이었으므로(-0.067 vs -0.069) ΔR·순열 p 에는 "
-        "영향이 없고, **승률·RR·복리·MDD·파산만** 이 GAP 의 영향권이다.",
 }
+
+# [08-09] 죽은 파라미터 — `expand_to_killzone`
+# docstring 은 "True 면 Silver Bullet 1시간 창 대신 Killzone 전체"라고 설명하지만
+# `detect_silver_bullet_setups` 의 시간 분기(silver_bullet.py:366-389) 어디에서도
+# 이 값을 읽지 않는다. 라이브(True)와 백테(False)가 **같은 결과**를 내므로 정합
+# 문제는 아니나, 문서화된 기능이 작동하지 않는 상태다.
+# 구독(sub_*)의 실제 게이트는 `in_trade_window_sub` — 미장(09:30~16:00 ET) 안의
+# 킬존 OR 매크로 OR SB창. 즉 **정통 SB 3창은 그 일부일 뿐**이고 London SB(03-04)는
+# 미장 밖이라 제외된다. 우리가 "SB"라 불러온 402건의 구성도 이름과 다르다:
+#   Phase A(FVG) 141건(35%) · turtle_soup 234(58%) · implied_fvg 21 · rejection 6
+# → "Silver Bullet 모델"이 아니라 **미장 시간대 ICT 셋업 묶음**으로 읽어야 한다.
+
+# [08-09] 취소된 GAP — "flip zone 재조회(진입 후 생성분)"
+# 08-08 재판정이 이것을 GAP 으로 등록했으나 **코드 확인 결과 사실이 아니었다.**
+# 라이브 `_maybe_flip` 은 `pos.htf_flip_target`(진입 시 포지션에 저장된 값)만 검사하고,
+# `htf_flip_target` 을 쓰는 20개 참조 어디에도 **진입 후 갱신 경로가 없다**.
+# WS 감시 경로도 SaaS 에서는 `flip_watch_enabled=False` 라 돌지 않는다.
+# 즉 백테의 "진입 시점 고정"이 라이브와 동일하다.
+# 남아 있던 청산 격차도 재검정 결과 정합 문제가 아니었다:
+#   · 승률 38.3%(n=423) vs 라이브 46%(n=100) → p=0.157, **차이 없음**(표본오차)
+#   · 승리 중 1R 미만 53.7% vs 86% → p=0.0001 로 유의하나, 이 86% 는 7/30 에
+#     진단하고 #FLIP-MIN-R 로 이미 고친 그 지표다. 라이브 기준선이 수정 **이전**
+#     버전(2.2)이라 남은 것으로, **버전 차이지 정합 오류가 아니다.**
+# 교훈: 에이전트가 특정한 "원인"도 코드로 직접 확인할 것.
 
 
 def _dir_sign(t) -> float:
