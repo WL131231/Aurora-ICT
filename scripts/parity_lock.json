@@ -1,0 +1,65 @@
+{
+  "note": "셋업 생성 **후** 점수를 고치는 경로 대장. 새 경로가 생기면 CI 가 떨군다. status: ported(백테 이식됨) / gap(미이식·live_parity.GAPS 등록) / n-a(무관). 의도적 변경이면 scripts/parity_guard.py --update 로 갱신하고 status 를 채울 것.",
+  "paths": {
+    "src/aurora_ict/bot/bot_ict_instance.py::_apply_cisd_boost::append": {
+      "count": 1,
+      "backtest": "replay.py cfg.apply_cisd (+1)",
+      "status": "ported"
+    },
+    "src/aurora_ict/bot/bot_ict_instance.py::_apply_cisd_boost::score+=": {
+      "count": 1,
+      "backtest": "replay.py cfg.apply_cisd (+1)",
+      "status": "ported"
+    },
+    "src/aurora_ict/bot/bot_ict_instance.py::_apply_dol_bias::append": {
+      "count": 1,
+      "backtest": "replay.py cfg.apply_dol_counter / dol_counter_penalty=2 (역방향 -2)",
+      "status": "ported"
+    },
+    "src/aurora_ict/bot/bot_ict_instance.py::_apply_dol_bias::score+=": {
+      "count": 1,
+      "backtest": "replay.py cfg.apply_dol_counter / dol_counter_penalty=2 (역방향 -2)",
+      "status": "ported"
+    },
+    "src/aurora_ict/bot/bot_ict_instance.py::_apply_htf_supporting_boost::append": {
+      "count": 1,
+      "backtest": "replay.py _precompute_htf_fvg + _htf_support_boost (>=20/10/2 -> +3/+2/+1)",
+      "status": "ported"
+    },
+    "src/aurora_ict/bot/bot_ict_instance.py::_apply_htf_supporting_boost::score+=": {
+      "count": 1,
+      "backtest": "replay.py _precompute_htf_fvg + _htf_support_boost (>=20/10/2 -> +3/+2/+1)",
+      "status": "ported"
+    },
+    "src/aurora_ict/bot/bot_ict_instance.py::_apply_ote_boost::append": {
+      "count": 1,
+      "backtest": "replay.py cfg.apply_ote (+1)",
+      "status": "ported"
+    },
+    "src/aurora_ict/bot/bot_ict_instance.py::_apply_ote_boost::score+=": {
+      "count": 1,
+      "backtest": "replay.py cfg.apply_ote (+1)",
+      "status": "ported"
+    },
+    "src/aurora_ict/bot/bot_ict_instance.py::_apply_po3_boost::append": {
+      "count": 1,
+      "backtest": "replay.py cfg.apply_po3 (+1)",
+      "status": "ported"
+    },
+    "src/aurora_ict/bot/bot_ict_instance.py::_apply_po3_boost::score+=": {
+      "count": 1,
+      "backtest": "replay.py cfg.apply_po3 (+1)",
+      "status": "ported"
+    },
+    "src/aurora_ict/bot/bot_ict_instance.py::_apply_smt_boost::append": {
+      "count": 1,
+      "backtest": "replay.py cfg.apply_smt (+1) — 백테 표본에서 발동 0건",
+      "status": "ported"
+    },
+    "src/aurora_ict/bot/bot_ict_instance.py::_apply_smt_boost::score+=": {
+      "count": 1,
+      "backtest": "replay.py cfg.apply_smt (+1) — 백테 표본에서 발동 0건",
+      "status": "ported"
+    }
+  }
+}

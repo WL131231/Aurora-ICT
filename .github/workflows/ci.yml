@@ -43,5 +43,13 @@ jobs:
       - name: Ruff lint
         run: ruff check .
 
+      # 2026-08-09 #PARITY-GUARD: 셋업 생성 **후** 점수를 고치는 경로가 백테에
+      # 반영됐는지 확인한다. 2026-08-08 에 `_apply_htf_supporting_boost`(라이브
+      # 진입의 93% 에 붙는 +3)가 백테에 없는 채로 두 달을 굴러, 그 위에서 내린
+      # 진단이 통째로 무효가 된 적이 있다. 사람 기억으로 막을 종류가 아니라 기계가 센다.
+      # 실패하면 scripts/parity_lock.json 의 status 를 채우고 --update 로 갱신할 것.
+      - name: Parity guard (점수 변이 경로)
+        run: python scripts/parity_guard.py
+
       - name: Pytest
         run: pytest -v
