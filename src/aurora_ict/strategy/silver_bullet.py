@@ -75,6 +75,7 @@ class SetupSource(StrEnum):
     MITIGATION_BLOCK = "mitigation_block"   # mitigated OB 의 2차 retest
     IMPLIED_FVG = "implied_fvg"     # body gap (wick overlap)
     REJECTION_BLOCK = "rejection_block"     # wick 정밀 진입 zone
+    MMBM = "mmbm"                   # #FST7 마켓메이커 매수/매도 모델 — HTF정합 반전 셋업
 
 
 @dataclass(slots=True)
@@ -294,6 +295,8 @@ def detect_silver_bullet_setups(
     min_sl_distance_pct: float = 0.0,
     ote_level: float = 0.5,
     nyse_gate: bool = True,
+    window_once: bool = True,
+    max_per_fvg: int = 0,
 ) -> list[SilverBulletSetup]:
     """Silver Bullet setup 후보 검출.
 
@@ -348,6 +351,12 @@ def detect_silver_bullet_setups(
     # 각 (day, window) 조합에 대해 첫 valid FVG 한 건만 setup으로 채택
     setups: list[SilverBulletSetup] = []
     seen_windows: set[tuple[int, str]] = set()  # (day_ms, window_name) — 일자별 1회 제한
+    # [08-10] #FVG-REUSE 파트너 결정: 창당 1회 제한은 2026-05-12 첫 커밋부터
+    # 있었고 근거 기록이 없다(정통 SB '하루 세 발' 개념을 그대로 옮긴 것으로
+    # 보인다). 킬존·매크로까지 창을 넓힌 지금은 전제가 맞지 않고, 빈도가
+    # 최대 약점인데 상한을 걸고 있었다. 대신 **같은 FVG 재사용을 제한**한다 —
+    # FVG 는 채워질수록 힘이 빠지므로 2회까지가 합리적이라는 판단.
+    fvg_use: dict[int, int] = {}
 
     for fvg in fvgs:
         # 양방향 — FVG 타입으로 진입 방향 결정 (bias 강제 제거).
@@ -395,8 +404,10 @@ def detect_silver_bullet_setups(
                     window = mc if mc is not None else "any"
         day_ms = (fvg.ts_ms // 86_400_000) * 86_400_000
         key = (day_ms, window)
-        if key in seen_windows:
+        if window_once and key in seen_windows:
             continue  # 같은 (day, window)에서 이미 valid setup 채택됨
+        if max_per_fvg > 0 and fvg_use.get(int(fvg.idx), 0) >= max_per_fvg:
+            continue  # 같은 FVG 를 이미 max_per_fvg 회 썼다
 
         entry = fvg.ote_threshold(ote_level)
 
@@ -469,6 +480,7 @@ def detect_silver_bullet_setups(
 
         # valid setup 확정 — seen_windows에 추가해 같은 (day, window) 중복 차단
         seen_windows.add(key)
+        fvg_use[int(fvg.idx)] = fvg_use.get(int(fvg.idx), 0) + 1
 
         reasons = [
             f"window={window}",

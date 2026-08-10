@@ -64,6 +64,11 @@ def cached_setup_timeline(df, cfg, sym: str):
     # 재빌드(페어당 2시간)되는 걸 보고 조건부로 바꿨다.
     if not getattr(cfg, "nyse_gate", True):
         parts = parts + ("kzwide",)
+    # [08-10] #FVG-REUSE — 창/FVG 재사용 제한이 바뀌면 셋업 집합이 달라진다.
+    _wo = bool(getattr(cfg, "window_once", True))
+    _mf = int(getattr(cfg, "max_per_fvg", 0))
+    if not _wo or _mf:
+        parts = parts + (f"wo{int(_wo)}_mf{_mf}",)
     key = hashlib.md5(repr(parts).encode()).hexdigest()[:16]
     os.makedirs(_TL_CACHE_DIR, exist_ok=True)
     path = os.path.join(_TL_CACHE_DIR, f"{sym}_{key}.pkl")

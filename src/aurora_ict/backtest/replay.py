@@ -90,6 +90,16 @@ class BacktestConfig:
     # 막은 결정을 백테로 처음 검증하기 위한 스위치. 셋업 집합이 바뀌므로
     # 타임라인 캐시 키에도 반드시 포함해야 한다(bt_par.cached_setup_timeline).
     nyse_gate: bool = True
+    # #MMBM-BT 2026-08-10: 2번째 진입모델. 라이브는 SB 셋업이 없거나 게이트를 못
+    # 넘은 봉에서만 시도하고, **confluence 게이트를 전면 우회**한다(자체 조건으로
+    # 검증됨). 지금까지 백테는 이 경로가 없어 라이브의 일부만 보고 있었다.
+    # 라이브 출처: bot_ict_instance.py step() 1264-1295.
+    # #FVG-REUSE 2026-08-10: 창당 1회 제한(2026-05-12 첫 커밋, 근거 기록 없음)을
+    # 끄고 대신 같은 FVG 재사용 횟수를 제한한다. 빈도가 최대 약점인데 검증되지
+    # 않은 상한이 걸려 있었다. max_per_fvg=0 이면 무제한.
+    window_once: bool = True
+    max_per_fvg: int = 0
+    mmbm_enabled: bool = False
     smart_size_enabled: bool = True
     risk_per_trade_base: float = 3.0
     risk_per_trade_step: float = 1.5
@@ -1650,6 +1660,8 @@ def _live_candidate_setups(
         min_sl_distance_pct=cfg.min_sl_distance_pct,
         ote_level=ote_level,
         nyse_gate=cfg.nyse_gate,
+        window_once=cfg.window_once,
+        max_per_fvg=cfg.max_per_fvg,
     )
     if not cfg.phase_b_sources:
         return list(setups)
@@ -1759,6 +1771,8 @@ def run_backtest(
             min_sl_distance_pct=cfg.min_sl_distance_pct,
             ote_level=cfg.ote_level,
             nyse_gate=cfg.nyse_gate,
+            window_once=cfg.window_once,
+            max_per_fvg=cfg.max_per_fvg,
         )
         if not setups:
             i += 1
@@ -2029,6 +2043,199 @@ def build_setup_timeline(df: pd.DataFrame, cfg: BacktestConfig) -> list:
                 s_s, (last - s_s.anchor_idx) if s_s is not None else -1,
             )
     return timeline
+
+
+def _mmbm_bias_signs(df: pd.DataFrame, lookback: int = 20) -> np.ndarray:
+    """봉별 HTF 추세 부호 — 라이브 `_mmbm_htf_bias_sign` 과 같은 식.
+
+    라이브는 매 step 에서 5m df 를 1h 로 리샘플해 최근 20봉 종가 변화의 부호를 낸다.
+    백테는 그걸 봉마다 다시 계산하면 O(n²) 이 되므로, 1h 시리즈를 한 번 만들고
+    각 5m 봉을 **그 시점까지 닫힌 1h 봉**에 매핑해 미리 구한다(look-ahead 차단).
+
+    Returns:
+        길이 len(df) 의 +1/-1/0 배열.
+    """
+    out = np.zeros(len(df), dtype=float)
+    if not isinstance(df.index, pd.DatetimeIndex) or len(df) == 0:
+        return out
+    try:
+        h1 = df["close"].resample("1h").last().dropna()
+    except (TypeError, ValueError):
+        return out
+    if len(h1) < lookback + 1:
+        return out
+    delta = h1.to_numpy(float)[lookback:] - h1.to_numpy(float)[:-lookback]
+    sign = np.sign(delta)                       # +1 / -1 / 0
+    valid_ts = h1.index[lookback:]
+    # 각 5m 봉 → 그 시점 이하의 마지막 1h 봉 (searchsorted, 우측 배타)
+    pos = np.searchsorted(valid_ts.values, df.index.values, side="right") - 1
+    ok = pos >= 0
+    out[ok] = sign[pos[ok]]
+    return out
+
+
+def _precompute_mmbm(df: pd.DataFrame, cfg: BacktestConfig) -> dict[int, object]:
+    """#MMBM-BT 2026-08-10: 봉별 MMBM 셋업 — 라이브와 같은 진입점을 쓴다.
+
+    라이브는 매 봉 `detect_mmbm_setup(df, bias_sign, ...)` 을 부르는데, 그 함수는
+    **최근 `_FRESH`(2)봉 안에 형성된 CHoCH** 만 본다. 그래서 구조 이벤트 근처가
+    아닌 봉은 항상 None 이다. 52만 봉 전수 호출 대신 **CHoCH 이벤트 idx ~ idx+2**
+    만 평가해 같은 결과를 훨씬 싸게 얻는다.
+
+    Returns:
+        {봉 인덱스: SilverBulletSetup} — 그 봉에서 MMBM 이 잡은 셋업.
+    """
+    if not cfg.mmbm_enabled or len(df) < 60:
+        return {}
+    from aurora_ict.indicators.structure import StructureType, detect_structure_events
+    from aurora_ict.indicators.swing_points import detect_swing_points
+    from aurora_ict.strategy.mmbm import _FRESH, detect_mmbm_setup
+
+    signs = _mmbm_bias_signs(df)
+    swings = detect_swing_points(df, left=3, right=3)
+    events = detect_structure_events(df, swings)
+    cand: set[int] = set()
+    for ev in events:
+        if ev.type not in (StructureType.CHOCH_BULLISH, StructureType.CHOCH_BEARISH):
+            continue
+        for k in range(int(ev.idx), int(ev.idx) + _FRESH + 1):
+            if 0 <= k < len(df):
+                cand.add(k)
+
+    out: dict[int, object] = {}
+    for i in sorted(cand):
+        # 그 봉까지만 잘라 넘긴다 — 라이브가 보는 것과 같은 창(look-ahead 차단)
+        lo = max(0, i + 1 - cfg.window)
+        # 예외를 삼키지 않는다. 처음엔 `except Exception: continue` 로 감쌌다가
+        # `SetupSource.MMBM` 미정의(연구 사본이 구버전)로 **전 구간 0건**이 나왔고,
+        # 조용히 "MMBM 은 진입이 없다"는 결론이 될 뻔했다. 오늘 라이브 코드에서
+        # 같은 패턴(mmbm_full 의 SMT except)을 찾아낸 직후에 똑같이 반복한 것이다.
+        # 게이트를 끄는 except 는 로그가 아니라 **실패**여야 한다.
+        st = detect_mmbm_setup(
+            df.iloc[lo : i + 1],
+            float(signs[i]),
+            min_rr=cfg.min_rr,
+            fvg_min_size_pct=cfg.fvg_min_size_pct,
+        )
+        if st is not None:
+            out[i] = st
+    return out
+
+
+def _mmbm_fill_gaps(
+    df: pd.DataFrame,
+    sb_trades: list[Trade],
+    mmbm_map: dict[int, object],
+    cfg: BacktestConfig,
+    funding: pd.DataFrame | None = None,
+) -> list[Trade]:
+    """SB 가 비운 구간에 MMBM 진입을 채워 넣는다 — 라이브 순서 재현.
+
+    라이브는 봉마다 ① SB 셋업을 보고 ② 없거나 게이트를 못 넘으면 MMBM 을 시도하며,
+    **포지션이 있으면 어느 모델이든 신규 진입을 하지 않는다**. 그래서 SB 백테를
+    그대로 두고 그 보유 구간 밖에서만 MMBM 을 채우면 같은 결과가 된다.
+    재생 루프 안에 끼워 넣지 않는 이유: 루프에 조기 이탈 지점이 8곳이라 전부
+    고쳐야 하고, 하나라도 놓치면 조용히 어긋난다.
+
+    MMBM 은 confluence 게이트를 우회하지만(자체 조건으로 검증) 청산 규칙·비용·
+    사이징 기록은 SB 와 공유한다 — 라이브 `_execute_setup` 이 공통 경로인 것과 같다.
+
+    Args:
+        df: 5m OHLCV.
+        sb_trades: SB 경로 체결 목록 (시간순).
+        mmbm_map: `_precompute_mmbm` 결과 {봉 인덱스: 셋업}.
+        cfg: 백테 설정.
+        funding: 펀딩 요율 (있으면 net 에서 차감).
+
+    Returns:
+        MMBM 체결 목록. SB 것과 합쳐 시간순 정렬해 쓴다.
+    """
+    if not mmbm_map:
+        return []
+    opens = df["open"].to_numpy()
+    highs = df["high"].to_numpy()
+    lows = df["low"].to_numpy()
+    closes = df["close"].to_numpy()
+    volumes = (
+        df["volume"].to_numpy() if "volume" in df.columns
+        else np.zeros(len(df), dtype=float)
+    )
+    busy = sorted((int(t.entry_idx), int(t.exit_idx)) for t in sb_trades)
+
+    def _blocked(i: int) -> bool:
+        """i 봉에 SB 포지션이 열려 있나 (진입봉~청산봉 포함)."""
+        for a, b in busy:
+            if a <= i <= b:
+                return True
+            if a > i:
+                break
+        return False
+
+    out: list[Trade] = []
+    free_from = 0        # 직전 MMBM 청산 다음 봉부터 재진입 가능
+    for i in sorted(mmbm_map):
+        if i < free_from or i >= len(df) - 1 or _blocked(i):
+            continue
+        st = mmbm_map[i]
+        d_val = st.direction
+        is_long = d_val is Direction.LONG
+        entry = float(st.entry)
+        sl = float(st.stop_loss)
+        tp = float(st.take_profit)
+        if entry <= 0 or sl <= 0 or abs(entry - sl) <= 0:
+            continue
+        # ★ 체결 시뮬 — MMBM 진입가는 FVG mean(할인/프리미엄 자리)이라 **가격이
+        # 되돌아와야 체결된다**. 라이브도 지정가를 걸고 TTL 안에 안 닿으면 진입이
+        # 없다. 이걸 빼고 무조건 체결로 두면 유리한 자리만 골라 잡는 셈이 되어
+        # 건당 R 이 +0.87 까지 부풀었다(실제 mmbm_full 실측 +0.199R).
+        fill_idx = _simulate_fill(highs, lows, i, d_val, entry, cfg.entry_ttl_bars)
+        if fill_idx is None:
+            continue
+        if _blocked(fill_idx):
+            continue
+        exit_idx, exit_raw, outcome = _simulate_exit(
+            opens, highs, lows, closes, fill_idx, d_val, sl, tp, cfg, entry=entry,
+        )
+        # SB 가 잡고 있는 구간으로 넘어가면 그 앞에서 끊는다(동시보유 금지)
+        for a, b in busy:
+            if fill_idx < a <= exit_idx:
+                exit_idx = a - 1
+                exit_raw = float(closes[exit_idx])
+                outcome = "cut_sb"
+                break
+        if exit_idx <= fill_idx:
+            continue
+        exit_slip = slip_pct(
+            float(highs[exit_idx]), float(lows[exit_idx]), float(closes[exit_idx]),
+        )
+        exit_price = apply_slippage(exit_raw, d_val, "exit", exit_slip)
+        sign = 1.0 if is_long else -1.0
+        raw_pnl_pct = (exit_price - entry) / entry * sign
+        net_pnl_pct, _ = apply_costs(raw_pnl_pct, cfg.size_pct, cfg.leverage)
+        fund_pct = _funding_cost(funding, df.index, fill_idx, exit_idx, is_long)
+        if fund_pct:
+            net_pnl_pct -= fund_pct * cfg.size_pct * cfg.leverage
+        out.append(Trade(
+            entry_idx=fill_idx, exit_idx=exit_idx, direction=d_val,
+            entry=entry, exit_price=exit_price, outcome=outcome,
+            raw_pnl_pct=raw_pnl_pct, net_pnl_pct=net_pnl_pct,
+            funding_pct=fund_pct,
+            smart_size_scale=(
+                _smart_size_scale(closes, volumes, fill_idx, is_long)
+                if cfg.smart_size_enabled else 1.0
+            ),
+            # MMBM 은 confluence 게이트를 우회하므로 점수가 없다. 라이브
+            # `_calc_qty_risk_based` 는 setup.confluence_score 를 그대로 쓰는데
+            # MMBM 셋업의 기본값이 0 이라 리스크%가 base(3.0)로 들어간다.
+            risk_pct_used=_risk_pct_for(int(getattr(st, "confluence_score", 0)), cfg),
+            entry_sl=sl, entry_tp=tp,
+            # MMBM 은 confluence 게이트를 우회하므로 점수 개념이 없다. 0 으로 두면
+            # 분석 스크립트가 "저점수 진입"으로 오해할 수 있어 source 를 남긴다.
+            confluence_score=int(getattr(st, "confluence_score", 0)),
+            confluences=("mmbm",), base_score=0, boosts=(),
+        ))
+        free_from = exit_idx + 1
+    return out
 
 
 def _smart_size_scale(
@@ -2547,6 +2754,16 @@ def run_backtest_from_timeline(
             boosts=tuple(boost_names),
         ))
         i = exit_idx + 1  # 청산 후 다음 봉부터 재탐색 (동시 포지션 1개)
+
+    # ---------------- [#MMBM-BT] 2번째 진입모델 ----------------
+    # 라이브는 SB 셋업이 없거나 게이트를 못 넘은 봉에서 MMBM 을 시도한다
+    # (bot_ict_instance.py step() 1264-1295). SB 가 포지션을 들고 있는 동안에는
+    # 어느 모델도 신규 진입을 하지 않으므로, SB 결과를 그대로 두고 그 **보유 구간
+    # 밖만** 채우면 같은 결과가 된다.
+    if cfg.mmbm_enabled:
+        mm = _mmbm_fill_gaps(df, trades, _precompute_mmbm(df, cfg), cfg, funding)
+        if mm:
+            trades = sorted(trades + mm, key=lambda t: t.entry_idx)
     return _aggregate(cfg, trades)
 
 
@@ -2714,6 +2931,8 @@ def run_backtest_multitf(
                 disable_time_filter=cfg.disable_time_filter,
                 min_sl_distance_pct=cfg.min_sl_distance_pct,
                 nyse_gate=cfg.nyse_gate,
+            window_once=cfg.window_once,
+            max_per_fvg=cfg.max_per_fvg,
             )
             if not setups:
                 info["cached_setup"] = None
