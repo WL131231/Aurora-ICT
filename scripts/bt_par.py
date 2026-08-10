@@ -69,6 +69,10 @@ def cached_setup_timeline(df, cfg, sym: str):
     _mf = int(getattr(cfg, "max_per_fvg", 0))
     if not _wo or _mf:
         parts = parts + (f"wo{int(_wo)}_mf{_mf}",)
+    # [08-10] 연구 소스가 켜지면 셋업 집합이 완전히 달라진다.
+    _rs = tuple(getattr(cfg, "research_sources", ()) or ())
+    if _rs:
+        parts = parts + ("rs_" + "-".join(sorted(_rs)),)
     key = hashlib.md5(repr(parts).encode()).hexdigest()[:16]
     os.makedirs(_TL_CACHE_DIR, exist_ok=True)
     path = os.path.join(_TL_CACHE_DIR, f"{sym}_{key}.pkl")

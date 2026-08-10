@@ -76,6 +76,12 @@ class SetupSource(StrEnum):
     IMPLIED_FVG = "implied_fvg"     # body gap (wick overlap)
     REJECTION_BLOCK = "rejection_block"     # wick 정밀 진입 zone
     MMBM = "mmbm"                   # #FST7 마켓메이커 매수/매도 모델 — HTF정합 반전 셋업
+    # [08-10 연구] 정통 PD-array 중 미구현이던 것들. 프로덕션 미배포 —
+    # 홀드아웃 4관문 통과가 배포 조건이다.
+    INVERSE_FVG = "ifvg"            # 지지/저항 실패로 뒤집힌 FVG (모멘텀 첫 전환)
+    BREAKER = "breaker"             # 추세 반대 OB 가 깨진 것 (failed OB)
+    UNICORN = "unicorn"             # Breaker ∩ 같은 방향 FVG 겹침
+    BPR_ZONE = "bpr"                # 반대 방향 FVG 두 개의 overlap
 
 
 @dataclass(slots=True)
@@ -749,6 +755,67 @@ def _build_mitigation_setup(
     )
 
 
+def _build_zone_setup(
+    z,
+    df: pd.DataFrame,
+    swings: list[SwingPoint],
+    *,
+    min_rr: float,
+    atr_val: float = 0.0,
+):
+    """#SRC-ALL 2026-08-10: 연구용 Zone → SilverBulletSetup.
+
+    `indicators/research_sources.Zone`(ifvg/breaker/unicorn/bpr)을 기존 소스들과
+    **같은 규약**으로 셋업화한다 — 진입가 = 구간 중앙, SL = 구간 반대편 + 버퍼
+    (ATR 바닥 적용), TP = 다음 미스윕 스윙, min_rr 미달이면 버린다.
+    규약을 맞추는 게 중요한 이유: 소스마다 SL/TP 방식이 다르면 성적 차이가
+    소스 때문인지 청산 규칙 때문인지 갈리지 않는다.
+    """
+    direction = Direction.LONG if z.bullish else Direction.SHORT
+    entry = z.mean
+    if entry <= 0:
+        return None
+    sl = (z.low * (1 - _SL_BUFFER_RATIO) if direction is Direction.LONG
+          else z.high * (1 + _SL_BUFFER_RATIO))
+    sl = _widen_sl_to_atr(entry, sl, direction, atr_val)
+
+    target_swing = _find_target_swing(
+        swings, direction=direction, after_idx=z.idx, current_price=entry,
+    )
+    if target_swing is None:
+        return None
+    tp = target_swing.price
+    rr = _calc_rr(direction, entry, sl, tp)
+    if rr < min_rr:
+        return None
+
+    src_map = {
+        "ifvg": SetupSource.INVERSE_FVG,
+        "breaker": SetupSource.BREAKER,
+        "unicorn": SetupSource.UNICORN,
+        "bpr": SetupSource.BPR_ZONE,
+    }
+    return SilverBulletSetup(
+        ts_ms=z.ts_ms,
+        direction=direction,
+        window=z.kind,
+        entry=entry,
+        stop_loss=sl,
+        take_profit=tp,
+        risk_reward=rr,
+        fvg=None,
+        target_swing_idx=target_swing.idx,
+        confluence_score=1,
+        confluences=[z.kind],
+        reasons=[f"{z.kind} {direction.value}"],
+        retraced=True,
+        source=src_map.get(z.kind, SetupSource.FVG),
+        _zone_high=z.high,
+        _zone_low=z.low,
+        _anchor_idx=z.idx,
+    )
+
+
 def _build_implied_fvg_setup(
     ifvg: ImpliedFVG,
     df: pd.DataFrame,
@@ -886,6 +953,7 @@ def build_extra_source_setups(
     bias: TrendDirection | None = None,
     disable_time_filter: bool = True,
     nyse_gate: bool = True,
+    research_sources: tuple[str, ...] = (),
 ) -> list[SilverBulletSetup]:
     """v0.4.71+ Phase B: 새 4 source 의 detect 호출 + setup 변환.
 
@@ -944,5 +1012,17 @@ def build_extra_source_setups(
     rbs = detect_rejection_blocks(df)
     for rb in rbs[-3:]:
         _accept(_build_rejection_setup(rb, df, swings, min_rr=min_rr, atr_val=atr_val))
+
+    # [08-10 연구] 정통 PD-array 중 미구현이던 소스들 — 기본 off.
+    # 호출부가 명시적으로 켠 것만 돈다. 소스마다 검출 비용이 있어 전부 켜면 느리다.
+    if research_sources:
+        from aurora_ict.indicators.research_sources import ALL_DETECTORS
+        for kind in research_sources:
+            fn = ALL_DETECTORS.get(kind)
+            if fn is None:
+                continue
+            for z in fn(df, swings)[-3:]:      # 다른 소스와 같은 규약(최근 3개)
+                _accept(_build_zone_setup(z, df, swings,
+                                          min_rr=min_rr, atr_val=atr_val))
 
     return setups

@@ -99,6 +99,9 @@ class BacktestConfig:
     # 않은 상한이 걸려 있었다. max_per_fvg=0 이면 무제한.
     window_once: bool = True
     max_per_fvg: int = 0
+    # [08-10 연구] 정통 PD-array 추가 소스 (ifvg/breaker/unicorn/bpr/vacuum).
+    # 기본 빈 튜플 = 기존 동작 불변. 켜면 셋업 집합이 달라져 캐시도 분리된다.
+    research_sources: tuple[str, ...] = ()
     mmbm_enabled: bool = False
     smart_size_enabled: bool = True
     risk_per_trade_base: float = 3.0
@@ -1671,7 +1674,8 @@ def _live_candidate_setups(
         bias=None,   # 라이브는 HTF bias 를 넘기지만 #BIAS-DIRECTION 이후 방향
                      # 강제에 쓰이지 않는다(GAPS "bias 주입" 참고).
         disable_time_filter=cfg.disable_time_filter,
-        nyse_gate=cfg.nyse_gate,
+        research_sources=cfg.research_sources,
+            nyse_gate=cfg.nyse_gate,
     )
     if extra:
         setups = list(setups) + list(extra)
