@@ -396,6 +396,10 @@ class BotIctInstance:
     ohlcv_limit: int = 200
     fvg_min_size_pct: float = 0.0005
     # SMT divergence (BTC↔ETH 상관) confluence 가점 활성 — #SMT 2026-06-06.
+    # #DROP-TURTLE 2026-08-11: turtle_soup 진입 소스 비활성(기본).
+    # 5년·7심볼·3,478건에서 유일한 적자 확정 소스(-0.109~-0.248R)였고
+    # 제거가 3단 검증(홀드아웃·플라시보·다중비교·워크포워드)을 통과했다.
+    turtle_soup_enabled: bool = False
     smt_enabled: bool = True
     # FVG 이후 N 봉 안에 retest 없으면 진입 skip. 1h → 10시간.
     setup_stale_bars: int = 10
@@ -1242,6 +1246,7 @@ class BotIctInstance:
             min_sl_distance_pct=self.min_sl_distance_pct,
             prefer_direction=ema_dir,
             ote_level=await self._effective_ote(),  # #REGIME-OTE 상승 국면 0.786
+            enable_turtle_soup=self.turtle_soup_enabled,  # #DROP-TURTLE
         )
 
         # 추세 평가 캐시 갱신 (현재는 로깅용, 향후 가중치 확장 여지).

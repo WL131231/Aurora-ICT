@@ -235,6 +235,16 @@ class IctSettings(BaseSettings):
     # 두 상관 자산이 같은 시점 swing 에서 한쪽만 새 고/저점을 박으면 '기관 흐름
     # 누설' → 못 따라온 쪽 반전 신호. setup 방향과 일치 시 confluence +1.
     # 짝 없는 알트 심볼은 자동 skip. False 면 SMT 평가 자체 안 함.
+    # #DROP-TURTLE 2026-08-11: turtle_soup 진입 소스.
+    # 5년·7심볼·3,478건 실측에서 **유일하게 적자가 확정된 소스**다
+    #   본표본 BTC+ETH  245건 -0.248R [-0.390 ~ -0.100]
+    #   홀드아웃 알트5  495건 -0.109R (롱숏 양쪽 음수)
+    # 제거 시 본표본 +0.062→+0.152R · 홀드아웃 +0.030→+0.066R.
+    # 3단 검증 통과 — ①홀드아웃 재현 p=0.0034 ②플라시보(무작위 동수 제거
+    # +0.062R 대비 turtle 제거 +0.153R, p=0.0000) ③다중비교 보정(문턱
+    # 0.0125) ④워크포워드(앞 절반 판단 → 뒤 절반 검정 p=0.0002/0.0073).
+    # 되돌리려면 이 값을 True 로. 라이브 진입의 20~58%가 이 소스였다.
+    origo_turtle_soup_enabled: bool = Field(default=False)
     smt_enabled: bool = Field(default=True)
     # FVG 최소 % size — 지난 12거래 분석 결과 작은 FVG 노이즈 비중 커서 0.0004 → 0.0006 상향.
     fvg_min_size_pct: float = Field(default=0.0006, ge=0)
@@ -553,6 +563,8 @@ class IctSettings(BaseSettings):
             # (SB 단독 월 0.77건) 이것이 월 15.3건으로 20배 늘린다. 상세 근거는
             # origo_mmbm_enabled 필드 주석 참조.
             self.origo_mmbm_enabled = True
+            # #DROP-TURTLE: 적자 확정 소스 제거 강제 (사용자가 켜도 무시).
+            self.origo_turtle_soup_enabled = False
             # #CT-SL: 역추세(되돌림) 진입은 x4 (robust). 순추세/횡보는 위 x3 유지.
             self.sl_dist_mult_ct = 4.0
             self.ct_trend_threshold = 0.0

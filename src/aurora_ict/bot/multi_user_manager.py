@@ -470,6 +470,7 @@ class MultiUserBotManager:
             # #MMBM-WIRE 2026-08-06: 2번째 진입모델. 이 한 줄이 빠져 있어서
             # 7/21 "MMBM 활성화" 배포 이후 2주간 한 번도 돌지 않았다.
             mmbm_enabled=settings.origo_mmbm_enabled,
+            turtle_soup_enabled=settings.origo_turtle_soup_enabled,  # #DROP-TURTLE
             min_sl_distance_pct=settings.min_sl_distance_pct,
             max_sl_distance_pct=settings.max_sl_distance_pct,
             sl_dist_mult=settings.sl_dist_mult,
