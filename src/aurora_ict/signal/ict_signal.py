@@ -72,6 +72,7 @@ def generate_ict_signal(
     min_sl_distance_pct: float = 0.0,
     prefer_direction: Direction | None = None,
     ote_level: float = 0.5,
+    enable_turtle_soup: bool = True,
 ) -> ICTSignal:
     """OHLCV DataFrame으로부터 ICT signal을 한 건 생성.
 
@@ -118,6 +119,7 @@ def generate_ict_signal(
     extra_setups = build_extra_source_setups(
         df, min_rr=min_rr, bias=bias,
         disable_time_filter=disable_time_filter,
+        enable_turtle_soup=enable_turtle_soup,   # #DROP-TURTLE 2026-08-11
     )
     if extra_setups:
         setups = list(setups) + extra_setups
