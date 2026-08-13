@@ -954,6 +954,7 @@ def build_extra_source_setups(
     disable_time_filter: bool = True,
     nyse_gate: bool = True,
     research_sources: tuple[str, ...] = (),
+    enable_turtle_soup: bool = True,
 ) -> list[SilverBulletSetup]:
     """v0.4.71+ Phase B: 새 4 source 의 detect 호출 + setup 변환.
 
@@ -990,9 +991,13 @@ def build_extra_source_setups(
         setups.append(built)
 
     # 1) Turtle Soup
-    ts_setups = detect_turtle_soup_setups(df, lookback=20)
-    for ts in ts_setups[-3:]:   # 최근 3개만 (오래된 거 stale)
-        _accept(_build_turtle_setup(ts, df, swings, min_rr=min_rr, atr_val=atr_val))
+    # #DROP-TURTLE 2026-08-11 (프로덕션 #421 과 동기화) — 기본 비활성.
+    # 5년·7심볼·3,478건에서 유일한 적자 확정 소스(-0.109~-0.248R). 제거가 3단
+    # 검증(홀드아웃 p=0.0034 · 플라시보 p=0.0000 · 다중비교 · 워크포워드)을 통과했다.
+    if enable_turtle_soup:
+        ts_setups = detect_turtle_soup_setups(df, lookback=20)
+        for ts in ts_setups[-3:]:   # 최근 3개만 (오래된 거 stale)
+            _accept(_build_turtle_setup(ts, df, swings, min_rr=min_rr, atr_val=atr_val))
 
     # 2) Mitigation Block
     detect_liquidity_sweeps(df, swings)   # mitigated 마킹

@@ -26,8 +26,13 @@ import numpy as np
 sys.path.insert(0, "scripts")
 from live_parity import run_live_parity  # noqa: E402
 
-PAIRS = ["BTCUSDT", "ETHUSDT"]
-OUT = "data/axis/src_wide_rows.json"
+import os as _os
+# [2차] 홀드아웃 — 탐색에 안 쓴 알트. HOLDOUT=1 로 전환한다.
+_HO = _os.environ.get("HOLDOUT") == "1"
+PAIRS = (["SOLUSDT", "XRPUSDT", "DOGEUSDT", "LINKUSDT", "HYPEUSDT"]
+         if _HO else ["BTCUSDT", "ETHUSDT"])
+OUT = ("data/axis/src_wide_holdout.json" if _HO
+       else "data/axis/src_wide_rows.json")
 SOURCES = ("turtle_soup", "implied_fvg", "mitigation_block", "rejection_block")
 RNG = np.random.default_rng(20260810)
 N_BOOT, N_PERM, MIN_N = 20000, 20000, 30
@@ -81,7 +86,8 @@ def collect() -> list[dict]:
 
 
 def main() -> int:
-    print("=== 킬존 전면 개방 + 소스별 기여도 (본표본 BTC+ETH)", flush=True)
+    print(f"=== 킬존 전면 개방 + 소스별 기여도 "
+      f"({'홀드아웃 알트5' if _HO else '본표본 BTC+ETH'})", flush=True)
     rows = collect()
     if not rows:
         print("  거래 0건", flush=True)

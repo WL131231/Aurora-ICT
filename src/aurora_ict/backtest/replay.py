@@ -101,6 +101,8 @@ class BacktestConfig:
     max_per_fvg: int = 0
     # [08-10 연구] 정통 PD-array 추가 소스 (ifvg/breaker/unicorn/bpr/vacuum).
     # 기본 빈 튜플 = 기존 동작 불변. 켜면 셋업 집합이 달라져 캐시도 분리된다.
+    # #DROP-TURTLE 2026-08-11: 프로덕션 배포와 동기화. 라이브 기본 False.
+    turtle_soup_enabled: bool = True
     research_sources: tuple[str, ...] = ()
     mmbm_enabled: bool = False
     smart_size_enabled: bool = True
@@ -1675,6 +1677,7 @@ def _live_candidate_setups(
                      # 강제에 쓰이지 않는다(GAPS "bias 주입" 참고).
         disable_time_filter=cfg.disable_time_filter,
         research_sources=cfg.research_sources,
+            enable_turtle_soup=cfg.turtle_soup_enabled,
             nyse_gate=cfg.nyse_gate,
     )
     if extra:
