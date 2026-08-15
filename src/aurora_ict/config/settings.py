@@ -565,6 +565,19 @@ class IctSettings(BaseSettings):
             self.origo_mmbm_enabled = True
             # #DROP-TURTLE: 적자 확정 소스 제거 강제 (사용자가 켜도 무시).
             self.origo_turtle_soup_enabled = False
+            # #PAIR7 2026-08-15: 7페어 복원에 맞춰 건당 리스크를 **절반**으로.
+            # 페어가 2→7 이면 동시 노출이 3.5배가 된다. 크기를 그대로 두면
+            # 낙폭 54.2%→80.9%, 파산확률 0.0%→5.3% 로 나빠진다(시뮬 실측).
+            # 절반이면 빈도 3.3배를 얻으면서 위험이 현행 수준으로 유지된다.
+            #     BTC+ETH x1.0  월 14건 · 자산 14.12x · 낙폭 48.3% · 파산 0.1%
+            #     7페어  x0.5   월 46건 · 자산 10.69x · 낙폭 54.2% · 파산 0.0%
+            # 민감도 확인 — x0.35~0.70 전 구간에서 파산 0~1.1% 로 절벽이 아니다.
+            if self.risk_per_trade_base > 1.5:
+                self.risk_per_trade_base = 1.5
+            if self.risk_per_trade_max > 3.0:
+                self.risk_per_trade_max = 3.0
+            if self.risk_per_trade_step > 0.75:
+                self.risk_per_trade_step = 0.75
             # #CT-SL: 역추세(되돌림) 진입은 x4 (robust). 순추세/횡보는 위 x3 유지.
             self.sl_dist_mult_ct = 4.0
             self.ct_trend_threshold = 0.0

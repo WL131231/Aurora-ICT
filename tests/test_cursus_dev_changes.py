@@ -47,13 +47,19 @@ def _df(n: int = 300, seed: int = 0) -> pd.DataFrame:
 def test_cursus_pairs_swap_link_to_trx() -> None:
     """Cursus 목록 = TRX 포함 · LINK 제외 (개발자 지정).
 
-    "나머지는 Origo 와 동일" 조건은 뺐다 — 2026-08-06 Origo 가 BTC+ETH 로 축소되며
-    두 목록이 갈렸다. 남는 불변식은 **Origo 고정이 Cursus 의 부분집합**이라는 것
-    (둘 다 메이저를 포함한다).
+    부분집합 불변식은 **뺐다**(2026-08-15). 그건 Origo 가 BTC+ETH 였을 때 우연히
+    성립한 것이고, 개발자가 Cursus 에서 LINK 를 빼라고 한 시점부터 두 목록은
+    독립이다. #PAIR7 로 Origo 가 LINK 를 포함한 7페어로 돌아오면서 원리상 성립할
+    수 없게 됐다.
+
+    남는 불변식은 두 가지다 — Cursus 의 개발자 지정(TRX 포함·LINK 제외)과,
+    **양쪽 다 메이저(BTC·ETH)를 포함**한다는 것.
     """
     assert "TRX/USDT:USDT" in CURSUS_FIXED_PAIRS
     assert "LINK/USDT:USDT" not in CURSUS_FIXED_PAIRS
-    assert set(FIXED_PAIRS) <= set(CURSUS_FIXED_PAIRS)
+    for major in ("BTC/USDT:USDT", "ETH/USDT:USDT"):
+        assert major in FIXED_PAIRS
+        assert major in CURSUS_FIXED_PAIRS
 
 
 def test_origo_pairs_unchanged() -> None:
