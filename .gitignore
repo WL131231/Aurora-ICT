@@ -85,3 +85,4 @@ android/app/build/
 
 .commit_msg.txt
 
+src/aurora_ict/indicators/chop_state.py
