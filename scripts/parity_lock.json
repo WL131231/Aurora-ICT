@@ -131,6 +131,18 @@
    "value": "False",
    "live_base": "turtle_soup_enabled"
   },
+  "risk_per_trade_base": {
+   "value": "1.5",
+   "live_base": "risk_per_trade_base"
+  },
+  "risk_per_trade_max": {
+   "value": "3.0",
+   "live_base": "risk_per_trade_max"
+  },
+  "risk_per_trade_step": {
+   "value": "0.75",
+   "live_base": "risk_per_trade_step"
+  },
   "setup_stale_bars": {
    "value": "fresh_bars",
    "live_base": "setup_stale_bars"
