@@ -30,7 +30,8 @@ const _chartCache = new Map();
 // 2026-05-27 파트너 요청: 거래소 시작부터 현재까지 가능한 만큼.
 // 2026-07-22: 백엔드 _UI_OHLCV_TF_LIMITS 와 정합 (15m·1h 만, 각 10000봉).
 const CANDLE_LIMIT = {
-  "15m": 10000, "1h": 10000,
+  // 2026-08-18: 3m 은 백엔드 캐시가 5,000봉(15m 의 절반)이라 요청량도 맞춘다.
+  "3m": 5000, "15m": 10000, "1h": 10000,
 };
 const MARKER_LIMIT = 2000;
 
@@ -1217,18 +1218,22 @@ async function fetchAndRender() {
     // 사용자는 멀티페어 포지션이 영영 안 보였다. 어느 페어든 가동 중이면 진행.
     const anyRunning = status.state === "running"
       || (Array.isArray(status.running_symbols) && status.running_symbols.length > 0);
-    if (!anyRunning) {
-      renderPositions(null);
-      return;
-    }
+    // 2026-08-18(파트너 요청): 봇이 STOP 이어도 차트는 계속 그린다. 예전엔 여기서
+    // 곧장 return 해 /ict/ohlcv 요청 자체가 안 나갔고, 화면엔 직전 렌더 잔상이
+    // 남거나(가동 중이던 페어가 있던 경우) 아예 빈 차트였다. 백엔드는 STOP 이어도
+    // 캔들을 준다(ensure_bot_ready → prefetch, cache miss 면 동기 fetch).
+    // 포지션·PnL 은 가동 중에만 의미가 있으니 그때만 부른다.
+    if (!anyRunning) renderPositions(null);
 
     const tf = encodeURIComponent(currentTimeframe);
     const candleLimit = CANDLE_LIMIT[currentTimeframe] || 5000;
     const cacheKey = `${currentChartSymbol}|${currentTimeframe}`;
     // 포지션/PnL 은 차트 심볼 봇과 무관 — 차트(ohlcv/markers)가 404 여도
     // (보고 있는 심볼 봇만 정지 등) 포지션 표는 그려지게 분리 fetch.
-    const positionP = api("/ict/position").catch(() => null);
-    const pnlP = api("/ict/closed_pnl?limit=200").catch(() => null);
+    const positionP = anyRunning
+      ? api("/ict/position").catch(() => null) : Promise.resolve(null);
+    const pnlP = anyRunning
+      ? api("/ict/closed_pnl?limit=200").catch(() => null) : Promise.resolve(null);
     let ohlcv = null;
     let markers = null;
     try {
