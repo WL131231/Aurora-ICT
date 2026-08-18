@@ -88,3 +88,20 @@ def test_levels_2468_direction_filter(direction: str, expect: tuple[int, int]) -
     levels = cycle_levels.levels_2468(90_500.0, direction)
     offsets = {int(round(v)) % 1000 for v in levels}
     assert offsets == set(expect)
+
+
+def test_chart_markers_bundle_carries_cycle_touches() -> None:
+    """UI 는 /ict/markers 응답만 보고 별을 그린다 — 필드가 빠지면 조용히 안 나온다."""
+    from aurora_ict.api.markers import ChartMarkers, to_chart_markers
+
+    assert "cycle_touches" in ChartMarkers().to_dict()
+
+    df = _sample_frame()
+    df.index = pd.date_range("2026-01-01", periods=len(df), freq="3min", tz="UTC")
+    df["open"] = df["close"]
+    payload = to_chart_markers(df).to_dict()["cycle_touches"]
+    assert payload, "표본에 터치가 있는데 번들에 안 실렸다"
+    first = payload[0]
+    assert set(first) == {"ts", "price", "kind", "source", "count"}
+    # 프론트가 ms → 초로 나누므로 ms 단위여야 한다(초로 주면 1970년에 찍힌다).
+    assert first["ts"] > 10**12

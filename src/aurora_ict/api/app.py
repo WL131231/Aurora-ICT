@@ -610,6 +610,12 @@ def _register_multi_user_routes(
             logger.info("/ict/start 전체 — code=%s 선호 페어 복원", user_code)
             try:
                 restored = await mu_manager.start_preferred(user_code)
+            except ValueError as e:
+                # 차트 전용 모델 선택 등 — 사용자가 고칠 수 있는 상황이라 400 안내.
+                logger.warning(
+                    "/ict/start 복원 거부 — code=%s detail=%s", user_code, e,
+                )
+                raise HTTPException(status_code=400, detail=str(e)) from e
             except Exception as e:  # noqa: BLE001
                 logger.exception("/ict/start 복원 예외 — code=%s", user_code)
                 raise HTTPException(
