@@ -31,6 +31,17 @@ CONV, BASE, SPANB, DISP = 9, 26, 52, 26
 # 같은 가격대 재터치를 다시 표시하기까지 기다리는 봉 수 (차트 표시 전용).
 COOLDOWN = 20
 
+# 얇은 구름은 지지/저항으로 안 친다 (파트너 2026-08-18: "저런 데는 뚫리기 쉽다").
+# 정통 일목도 얇은 구름을 약한 지지/저항으로 본다. 스팬 A/B 가 교차하는 근처가
+# 그런 구간이다.
+#
+# 임계는 **그 TF 자기 두께 대비 비율**로 잡는다. 고정 % 로 하면 못 쓴다 — 실측
+# 두께 중앙값이 3m 0.13% / 1h 0.75% / 4h 1.63% / 1D 6.10% 로 TF 마다 자릿수가
+# 달라서, 0.1% 같은 값을 쓰면 3m 은 절반이 잘리고 1D 는 하나도 안 잘린다.
+# 중앙값은 rolling 으로 구한다(전체 표본 백분위는 미래참조).
+THIN_RATIO = 0.35
+THIN_WINDOW = 200
+
 # 나뇨띠가 보는 TF — 라벨: 분. 차트 TF 의 정수배만 실제로 계산된다.
 TF_MINUTES: dict[str, int] = {
     "3m": 3, "5m": 5, "15m": 15, "1h": 60,
@@ -68,9 +79,10 @@ def base_tf_minutes(df: pd.DataFrame) -> int:
 def multi_tf_clouds(df: pd.DataFrame) -> dict[str, tuple[np.ndarray, np.ndarray]]:
     """차트 df 에서 만들 수 있는 TF 별 구름 스팬 — df 인덱스에 정렬해 반환.
 
-    상위 TF 봉은 **닫힌 뒤에야** 값이 확정되므로 ``shift(1)`` 로 한 봉 미룬 뒤
-    forward-fill 한다. 이걸 빼먹으면 진행 중인 봉의 값이 그 봉 시작 시점부터
-    보여 미래참조가 된다.
+    한 봉 미루지 **않는다**. 선행스팬은 이미 25봉 전 데이터로 만들어져 진행 중인
+    봉의 고저를 안 쓰므로 미래참조가 아니다. 안전하겠거니 하고 ``shift(1)`` 을
+    걸었더니 상위 TF 한 봉만큼(4h 면 4시간) 레벨이 통째로 밀려, 화면 구름과 안
+    맞는 자리에 터치가 찍혔다(트뷰 대조로 확인).
     """
     base_m = base_tf_minutes(df)
     if base_m <= 0:
@@ -88,8 +100,16 @@ def multi_tf_clouds(df: pd.DataFrame) -> dict[str, tuple[np.ndarray, np.ndarray]
         a, b = cloud_spans(res)
         sa = pd.Series(a, index=res.index)
         sb = pd.Series(b, index=res.index)
-        if minutes != base_m:
-            sa, sb = sa.shift(1), sb.shift(1)
+        # 얇은 구간은 아예 NaN 으로 지운다 — find_touches 가 유한값만 보므로
+        # 그 구간 구름은 후보 레벨에서 자동으로 빠진다.
+        thick = (sa - sb).abs() / res["close"]
+        # 중앙값 창은 표본에 맞춘다. 창이 표본보다 길면(3분 차트의 1D 처럼) 중앙값이
+        # 사실상 전체 평균이 돼 47% 가 잘려나갔다.
+        win = min(THIN_WINDOW, max(30, len(res) // 3))
+        med = thick.rolling(win, min_periods=min(30, win)).median()
+        thin = thick < med * THIN_RATIO
+        sa = sa.mask(thin)
+        sb = sb.mask(thin)
         out[label] = (
             sa.reindex(df.index, method="ffill").to_numpy(),
             sb.reindex(df.index, method="ffill").to_numpy(),
