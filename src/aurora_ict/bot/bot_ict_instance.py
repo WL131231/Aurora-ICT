@@ -4987,7 +4987,11 @@ class BotIctInstance:
     # 을 안전하게 확대(메모리 여유 확보). 트레이드(5m)는 이 캐시와 무관한 별도 fetch.
     # app.js CANDLE_LIMIT 와 정합 유지 필수. 값=합리적 스크롤 여유(기본뷰는 ~300봉).
     _UI_OHLCV_TF_LIMITS: ClassVar[dict[str, int]] = {
-        "15m": 10000, "1h": 10000,
+        # 2026-08-18: 3m 추가 (Cycle 모델 메인 TF). 파트너 지시 — "3m 은 15m 의 절반만
+        # 로딩하면 된다". #384 에서 차트캐시가 심볼당 RAM 병목이라 TF 를 15m·1h 로
+        # 줄인 이력이 있어, 3m 은 봉 수를 절반(5,000봉 = 약 10일치)으로 잡는다.
+        # UI 는 최대 500봉만 그리므로 표시엔 넉넉하고, 캐시 총량은 오히려 준다.
+        "3m": 5000, "15m": 10000, "1h": 10000,
     }
     # /ict/ohlcv 가 cache 갱신 트리거할 때 받을 봉 수 (마지막 N봉만 refresh).
     _UI_OHLCV_REFRESH_TAIL: ClassVar[int] = 200
