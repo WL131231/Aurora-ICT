@@ -11,7 +11,8 @@ const API = "";  // same-origin — fetch("/auth/status") 처럼 동작
 // 2026-05-28: 파트너 결정 — default 1h → 5m (settings.timeframe 정합)
 let currentTimeframe = localStorage.getItem("aurora_ict_tf") || "1h";
 // 2026-07-22 파트너 지시: 차트 TF 를 15m·1h 만 유지(메모리 절감 — 봇당 캐시 ~9배↓).
-const VALID_TFS = ["15m", "1h"];
+// 2026-08-18: 3m 추가(Cycle 메인 분봉). 캐시는 15m 의 절반 봉수라 부담 없음.
+const VALID_TFS = ["3m", "15m", "1h"];
 if (!VALID_TFS.includes(currentTimeframe)) currentTimeframe = "1h";
 
 // 현재 보고 있는 차트 페어(ccxt symbol) — 좌측 TRADING PAIR(매매)와 별개로
@@ -242,6 +243,12 @@ function _isCursusModel(model) {
   return !!model && String(model).toLowerCase().startsWith("cursus");
 }
 
+// 2026-08-18 #CYCLE: 순환매 모델(차트 관찰 전용) 판정. 지지/저항 터치 별은 이
+// 모델을 골랐을 때만 그린다 — 항상 그리면 Origo 차트가 별로 뒤덮인다.
+function _isCycleModel(model) {
+  return !!model && String(model).toLowerCase().startsWith("cycle");
+}
+
 // #MODEL-UI 2026-07-27 (파트너): Cursus 는 FVG/OB/PD존/BOS/스윕/강저·약고 등 ICT
 // 개념을 안 쓰므로 차트에서 전부 제거 — 각 렌더러를 빈 값으로 호출해 기존 잔상까지 청소.
 function _clearIctOverlays() {
@@ -272,11 +279,13 @@ function _applyChartModel(model) {
   if (legCur) legCur.classList.toggle("legend-hidden", !isCursus);
   _chartModel = model;
   // 항목5: Cursus 차트 기본 TF = 1h (봇 운영 TF). 1회·사용자 수동변경 전에만.
-  if (isCursus && !_modelTfApplied && !_userPickedTf
-      && currentTimeframe !== "1h" && VALID_TFS.includes("1h")) {
+  // 2026-08-18: Cycle 은 같은 방식으로 3m (연구 메인 분봉).
+  const _wantTf = isCursus ? "1h" : (_isCycleModel(model) ? "3m" : null);
+  if (_wantTf && !_modelTfApplied && !_userPickedTf
+      && currentTimeframe !== _wantTf && VALID_TFS.includes(_wantTf)) {
     _modelTfApplied = true;
-    currentTimeframe = "1h";
-    localStorage.setItem("aurora_ict_tf", "1h");
+    currentTimeframe = _wantTf;
+    localStorage.setItem("aurora_ict_tf", _wantTf);
     if (typeof _updateTfButtons === "function") _updateTfButtons();
     _chartViewInitialized = false;
     fetchAndRender();
@@ -972,6 +981,23 @@ function renderMarkers(payload) {
 
   // Premium/Discount Zone — AreaSeries 박스 (마지막 봉 ts 까지 채움)
   renderPdZones(m.trailing ?? null);
+
+  // 2026-08-18 #CYCLE: 지지/저항 터치 별. Origo 셋업 마커도 ★N(confluence 점수)을
+  // 쓰므로 헷갈리지 않게 화살표가 아닌 **원형 + 숫자 없는 별**로 구분한다.
+  // 지지는 봉 아래 초록, 저항은 봉 위 빨강. 별 개수 = 겹친 출처 종류(1~3).
+  if (_isCycleModel(_chartModel)) {
+    (m.cycle_touches ?? []).forEach((t) => {
+      const sup = t.kind === "support";
+      const n = Math.max(1, Math.min(3, Number(t.count) || 1));
+      markers.push({
+        time: Math.floor(Number(t.ts) / 1000),
+        position: sup ? "belowBar" : "aboveBar",
+        color: sup ? "#22c55e" : "#ef4444",
+        shape: "circle",
+        text: "★".repeat(n),
+      });
+    });
+  }
 
   // 시간순 정렬
   markers.sort((a, b) => a.time - b.time);

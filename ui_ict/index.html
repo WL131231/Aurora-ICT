@@ -2255,6 +2255,12 @@
           <span class="model-dd-opt-name">Cursus 1.0</span>
           <span class="model-dd-desc">Dual SuperTrend · 추세추종</span>
         </div>
+        <!-- 2026-08-18 #CYCLE: 순환매. 아직 **차트 관찰 전용** — 체결 현실화에서
+             흑자를 못 내 매매 배선을 안 붙였고, START 는 서버가 거부한다. -->
+        <div class="model-dd-opt" data-value="cycle" data-model="Cycle 1.0" role="option">
+          <span class="model-dd-opt-name">Cycle 1.0</span>
+          <span class="model-dd-desc">순환매 지지/저항 · 차트 관찰 전용 (매매 미지원)</span>
+        </div>
       </div>
     </div>
     <p class="trade-tf-hint">검증된 모델 — 봉·전략·진입대기가 자동으로 고정됩니다.</p>
@@ -2366,6 +2372,7 @@
       <button type="button" id="chart-pair-btn" class="pair-select-btn">BTC ▾</button>
       <div class="tf-toggle" id="tf-toggle">
         <!-- 2026-07-22 파트너 지시: 차트 TF 15m·1h 만 (메모리 절감 — 봇당 캐시 ~9배↓). -->
+        <button data-tf="3m">3m</button>
         <button data-tf="15m">15m</button>
         <button data-tf="1h" class="active">1h</button>
       </div>

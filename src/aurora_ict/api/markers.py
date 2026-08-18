@@ -19,6 +19,7 @@ from typing import Any
 
 import pandas as pd
 
+from aurora_ict.indicators import cycle_levels
 from aurora_ict.indicators.dol import compute_dol
 from aurora_ict.indicators.fvg import (
     detect_fvgs,
@@ -203,6 +204,22 @@ class EqualLevelMarker:
 
 
 @dataclass(slots=True)
+class CycleTouchMarker:
+    """Cycle(순환매) 지지/저항 터치 — 차트 별(★) 표시용.
+
+    2026-08-18 파트너 요청 "지지 저항 터치가 됐다는 봉·위치에 별 표시".
+    ``count`` 는 그 가격대에 겹친 **출처 종류 수**(구름/매물대/2468, 1~3)라
+    별 개수로 그대로 쓴다 — 여러 종류가 겹칠수록 연구에서 강한 자리였다.
+    """
+
+    ts: int                         # 터치 봉 timestamp (ms)
+    price: float                    # 터치한 레벨 가격
+    kind: str                       # "support" | "resistance"
+    source: str                     # "cloud" | "profile" | "2468"
+    count: int                      # 겹친 출처 종류 수 (1~3)
+
+
+@dataclass(slots=True)
 class ChartMarkers:
     """전체 marker bundle — UI 한 번 호출로 받아갈 결과 묶음."""
 
@@ -227,6 +244,8 @@ class ChartMarkers:
     large_sweeps: list[SweepMarker] = field(default_factory=list)
     # Large OB (50봉 swing 기반) — 1d/1w 차트용 (internal OB 는 너무 많이 잡힘)
     large_order_blocks: list[OrderBlockMarker] = field(default_factory=list)
+    # Cycle 지지/저항 터치 (★) — 모델과 무관하게 항상 계산해 내려준다
+    cycle_touches: list[CycleTouchMarker] = field(default_factory=list)
     # Equal Highs / Equal Lows (같은 가격대 swing 클러스터)
     equal_levels: list[EqualLevelMarker] = field(default_factory=list)
 
@@ -252,6 +271,7 @@ class ChartMarkers:
             "large_sweeps": [asdict(s) for s in self.large_sweeps],
             "large_order_blocks": [asdict(o) for o in self.large_order_blocks],
             "equal_levels": [asdict(e) for e in self.equal_levels],
+            "cycle_touches": [asdict(t) for t in self.cycle_touches],
         }
 
 
@@ -286,6 +306,17 @@ def to_chart_markers(
         return ChartMarkers()
 
     markers = ChartMarkers()
+
+    # 0. Cycle 지지/저항 터치 — 구름 스팬 · 매물대 · 2468 에 닿아 버틴 봉.
+    #    500봉당 20~46건(같은 가격대 20봉 쿨다운) · 10ms 수준이라 항상 계산한다.
+    for _t in cycle_levels.find_touches(df):
+        markers.cycle_touches.append(CycleTouchMarker(
+            ts=_ts_at_idx(df, int(_t["idx"])),
+            price=float(_t["price"]),
+            kind=str(_t["kind"]),
+            source=str(_t["source"]),
+            count=int(_t["count"]),
+        ))
 
     # 1. FVG + IFVG (Inversion FVG — invalidated FVG 반전 zone)
     fvgs = detect_fvgs(df, min_size_pct=fvg_min_size_pct)

@@ -1089,6 +1089,21 @@ class MultiUserBotManager:
         Returns:
             가동된 symbol 목록.
         """
+        # 2026-08-18 #CYCLE: 차트 전용 모델은 여기서 먼저 막는다. 아래 루프는
+        # 페어별 예외를 잡고 넘어가므로, 그냥 두면 started=[] 를 반환해 "켜졌다"
+        # 처럼 보이면서 아무것도 안 도는 조용한 실패가 된다.
+        from aurora_ict.config.settings import (  # noqa: PLC0415
+            DEFAULT_MODEL_NAME,
+            is_chart_only_model,
+        )
+        _sel = (
+            users_db.get_last_model(self.db_path, user_code) or DEFAULT_MODEL_NAME
+        )
+        if is_chart_only_model(_sel):
+            raise ValueError(
+                f"{_sel} 은 아직 차트 관찰 전용 모델입니다 — "
+                "매매를 시작하려면 Origo 나 Cursus 를 선택하세요.",
+            )
         last = users_db.get_last_active_pairs(self.db_path, user_code)
         fixed = self._fixed_pairs(user_code)   # #CURSUS-PAIRS: 모델별 고정 페어
         choice = [
