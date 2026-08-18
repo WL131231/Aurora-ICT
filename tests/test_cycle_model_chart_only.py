@@ -44,8 +44,12 @@ def test_chart_only_ids_are_unwired() -> None:
     assert CHART_ONLY_MODELS.isdisjoint({"origo", "cursus"})
 
 
-def _sample_frame(n: int = 400) -> pd.DataFrame:
-    """구름·매물대·2468 이 모두 잡히도록 1K 대역을 오르내리는 봉을 만든다."""
+def _sample_frame(n: int = 400, freq: str = "3min") -> pd.DataFrame:
+    """구름·매물대·2468 이 모두 잡히도록 1K 대역을 오르내리는 봉을 만든다.
+
+    상위 TF 구름은 리샘플로 만들므로 DatetimeIndex 가 필수다 — 인덱스가 없으면
+    ``base_tf_minutes`` 가 0 을 돌려 구름이 통째로 빠진다.
+    """
     base = 90_000.0
     rows = []
     for i in range(n):
@@ -57,7 +61,9 @@ def _sample_frame(n: int = 400) -> pd.DataFrame:
             "close": mid + (10.0 if i % 2 else -10.0),
             "volume": 100.0 + (i % 7),
         })
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    df.index = pd.date_range("2026-01-01", periods=n, freq=freq, tz="UTC")
+    return df
 
 
 def test_find_touches_shape_and_cooldown() -> None:
@@ -66,7 +72,7 @@ def test_find_touches_shape_and_cooldown() -> None:
     touches = cycle_levels.find_touches(df)
     assert touches, "왕복 표본에서 터치가 하나도 안 나오면 판정이 죽은 것"
     for t in touches:
-        assert set(t) == {"idx", "price", "kind", "source", "count"}
+        assert set(t) == {"idx", "price", "kind", "source", "tf", "count"}
         assert t["kind"] in ("support", "resistance")
         assert 1 <= t["count"] <= 3, "겹침은 출처 3종 기준이라 3 을 넘을 수 없다"
         assert 0 <= t["idx"] < len(df)
@@ -97,11 +103,35 @@ def test_chart_markers_bundle_carries_cycle_touches() -> None:
     assert "cycle_touches" in ChartMarkers().to_dict()
 
     df = _sample_frame()
-    df.index = pd.date_range("2026-01-01", periods=len(df), freq="3min", tz="UTC")
     df["open"] = df["close"]
     payload = to_chart_markers(df).to_dict()["cycle_touches"]
     assert payload, "표본에 터치가 있는데 번들에 안 실렸다"
     first = payload[0]
-    assert set(first) == {"ts", "price", "kind", "source", "count"}
+    assert set(first) == {"ts", "price", "kind", "source", "tf", "count"}
     # 프론트가 ms → 초로 나누므로 ms 단위여야 한다(초로 주면 1970년에 찍힌다).
     assert first["ts"] > 10**12
+
+
+def test_multi_tf_clouds_only_integer_multiples_with_enough_bars() -> None:
+    """상위 TF 는 (a) 차트 TF 의 정수배 (b) 표본 충분 일 때만 생긴다.
+
+    3분봉으로 5분봉은 만들 수 없고, 표본이 짧으면 1D·1W 는 구름 자체가 안 나온다 —
+    그런데도 넣으면 forward-fill 이 상수 하나를 전 구간에 깔아 가짜 레벨이 된다.
+    """
+    df = _sample_frame(600, freq="3min")
+    tfs = set(cycle_levels.multi_tf_clouds(df))
+    assert "5m" not in tfs, "3분봉에서 5분봉은 만들 수 없다"
+    assert "1W" not in tfs, "표본이 모자라면 빠져야 한다"
+    assert tfs <= {"3m", "15m", "1h", "2h", "4h", "1D"}
+    for label in tfs:
+        assert cycle_levels.TF_MINUTES[label] % 3 == 0
+
+
+def test_cloud_series_is_chart_ready() -> None:
+    """구름 시계열은 프론트가 바로 setData 할 수 있어야 한다(ms · NaN 제거)."""
+    cloud = cycle_levels.cloud_series(_sample_frame(600))
+    assert cloud["a"] and cloud["b"]
+    pt = cloud["a"][0]
+    assert set(pt) == {"time", "value"}
+    assert pt["time"] > 10**12, "ms 단위여야 한다"
+    assert all(p["value"] == p["value"] for p in cloud["a"]), "NaN 이 남았다"

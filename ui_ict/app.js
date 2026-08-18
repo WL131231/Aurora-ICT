@@ -161,6 +161,27 @@ const st2Series = chart.addLineSeries({
   lastValueVisible: false, crosshairMarkerVisible: false,
 });
 
+// 2026-08-18 #CYCLE: 일목 구름 — 선행스팬 A/B. Cycle 모델일 때만 값이 들어간다.
+// 두 선 사이를 실제로 칠하려면 시리즈 하나로는 안 되고, 라이브러리에 밴드 타입이
+// 없어 라인 두 개로 둔다(색으로 A/B 구분).
+const cloudASeries = chart.addLineSeries({
+  color: "rgba(34,211,238,0.55)", lineWidth: 1, priceLineVisible: false,
+  lastValueVisible: false, crosshairMarkerVisible: false,
+});
+const cloudBSeries = chart.addLineSeries({
+  color: "rgba(245,158,11,0.55)", lineWidth: 1, priceLineVisible: false,
+  lastValueVisible: false, crosshairMarkerVisible: false,
+});
+
+// 구름 적용 — 없으면 비워 숨긴다. 백엔드가 ms 로 주므로 초로 바꾼다.
+function _applyCycleCloud(cloud) {
+  const toSec = (arr) => (arr || []).map((p) => ({
+    time: Math.floor(Number(p.time) / 1000), value: Number(p.value),
+  }));
+  cloudASeries.setData(toSec(cloud && cloud.a));
+  cloudBSeries.setData(toSec(cloud && cloud.b));
+}
+
 // Cursus ST 오버레이 적용(없으면 전부 비워 숨김). _applyChartData 가 호출.
 function _applyStOverlay(stOverlay) {
   if (!stOverlay || !stOverlay.trail || stOverlay.trail.length === 0) {
@@ -271,12 +292,16 @@ function _applyChartModel(model) {
   if (!model) return;
   const isCursus = _isCursusModel(model);
   // 킬존바·세션배지·viz 토글(BOS/EQH/PD) 등 ICT 전용 UI 를 CSS 로 일괄 숨김.
+  const isCycle = _isCycleModel(model);
   document.body.classList.toggle("model-cursus", isCursus);
+  document.body.classList.toggle("model-cycle", isCycle);
   const legIct = document.querySelector(".legend-ict");
   const legCur = document.querySelector(".legend-cursus");
+  const legCyc = document.querySelector(".legend-cycle");
+  if (legCyc) legCyc.classList.toggle("legend-hidden", !isCycle);
   // 클래스 토글로 숨김 — 인라인 display 는 모바일 미디어쿼리(.legend{display:none})를
   // 덮어 모델 전환 후 모바일 가로에서 범례가 차트를 가리던 문제 방지.
-  if (legIct) legIct.classList.toggle("legend-hidden", isCursus);
+  if (legIct) legIct.classList.toggle("legend-hidden", isCursus || isCycle);
   if (legCur) legCur.classList.toggle("legend-hidden", !isCursus);
   _chartModel = model;
   // 항목5: Cursus 차트 기본 TF = 1h (봇 운영 TF). 1회·사용자 수동변경 전에만.
@@ -885,6 +910,40 @@ function _filterMarkersByFirstBar(payload, firstTsSec) {
   });
 }
 
+// 2026-08-18 #CYCLE: Cycle 차트 전용 마커 — 지지/저항 터치를 다이아 ◆ 로 찍고
+// 그 바깥에 레벨 출처 라벨을 붙인다. ICT 마커/박스는 일절 그리지 않는다
+// (renderMarkers 는 FVG·OB·BOS 박스까지 통째로 그리는 함수라 Cycle 에선 못 쓴다).
+//
+// lightweight-charts 의 shape 은 circle/square/arrow 뿐이라 다이아는 텍스트로
+// 그린다. 마커 두 개를 같은 봉·같은 방향에 쌓아 바깥이 라벨, 안쪽이 ◆ 가 되게
+// 하는데, 정렬이 stable 이라 배열 순서가 그대로 유지된다.
+// 라벨 = 그 자리를 만든 레벨의 출처. 상위 TF 구름이면 "1h", 그 외 "매물"/"2468".
+function renderCycleMarkers(payload) {
+  const m = (payload && payload.markers) || null;
+  if (!m) {
+    candleSeries.setMarkers([]);
+    return;
+  }
+  const out = [];
+  (m.cycle_touches || []).forEach((t) => {
+    const sup = t.kind === "support";
+    const time = Math.floor(Number(t.ts) / 1000);
+    const position = sup ? "belowBar" : "aboveBar";
+    const color = sup ? "#22c55e" : "#ef4444";
+    // 겹친 출처가 많을수록 강한 자리 — ◆ 개수로 표시(최대 3).
+    const n = Math.max(1, Math.min(3, Number(t.count) || 1));
+    const label = { time, position, color: "#94a3b8", shape: "circle",
+      text: String(t.tf || "") };
+    const dia = { time, position, color, shape: "circle",
+      text: "◆".repeat(n) };
+    // aboveBar 는 봉에서 멀어질수록 뒤에 쌓이고, belowBar 는 그 반대.
+    if (sup) out.push(label, dia);
+    else out.push(dia, label);
+  });
+  out.sort((a, b) => a.time - b.time);
+  candleSeries.setMarkers(out);
+}
+
 function renderMarkers(payload) {
   // Cursus 등 markers/count 없는(또는 구조 다른) 응답에 throw 로 차트 전체가 안
   // 그려지던 것 방지 — null 가드. markers 없으면 ICT 마커 비우고 종료(빈 차트 방지).
@@ -982,23 +1041,6 @@ function renderMarkers(payload) {
 
   // Premium/Discount Zone — AreaSeries 박스 (마지막 봉 ts 까지 채움)
   renderPdZones(m.trailing ?? null);
-
-  // 2026-08-18 #CYCLE: 지지/저항 터치 별. Origo 셋업 마커도 ★N(confluence 점수)을
-  // 쓰므로 헷갈리지 않게 화살표가 아닌 **원형 + 숫자 없는 별**로 구분한다.
-  // 지지는 봉 아래 초록, 저항은 봉 위 빨강. 별 개수 = 겹친 출처 종류(1~3).
-  if (_isCycleModel(_chartModel)) {
-    (m.cycle_touches ?? []).forEach((t) => {
-      const sup = t.kind === "support";
-      const n = Math.max(1, Math.min(3, Number(t.count) || 1));
-      markers.push({
-        time: Math.floor(Number(t.ts) / 1000),
-        position: sup ? "belowBar" : "aboveBar",
-        color: sup ? "#22c55e" : "#ef4444",
-        shape: "circle",
-        text: "★".repeat(n),
-      });
-    });
-  }
 
   // 시간순 정렬
   markers.sort((a, b) => a.time - b.time);
@@ -1164,9 +1206,17 @@ function _applyChartData(candles, markers, stOverlay, model) {
   }
   // #MODEL-UI 2026-07-27: Cursus 차트는 ICT 마커/존 미표시(개념 무관) — 전체 클리어.
   // Cursus 진입/청산 마커는 _applyCursusTradeMarkers(closed_pnl 기반)가 별도 담당.
+  // 2026-08-18 #CYCLE: 순환매도 ICT 개념(FVG/OB/BOS/PD존)을 안 쓴다 — 같이 비우고
+  // 구름 + 터치 마커만 남긴다. renderMarkers 가 setMarkers 로 터치 ◆ 를 그린다.
   if (_isCursusModel(model)) {
     _clearIctOverlays();
+    _applyCycleCloud(null);
+  } else if (_isCycleModel(model)) {
+    _clearIctOverlays();
+    _applyCycleCloud(markers && markers.markers && markers.markers.cycle_cloud);
+    renderCycleMarkers(markers);
   } else {
+    _applyCycleCloud(null);
     renderMarkers(markers);
   }
 }
