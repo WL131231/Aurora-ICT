@@ -1,0 +1,198 @@
+// Cycle(순환매) 지지/저항 — TradingView 검증용
+// 2026-08-18. Aurora-ICT 의 src/aurora_ict/indicators/cycle_levels.py 와 같은 규칙.
+//
+// 파이썬 쪽과 맞춘 것
+//   · 구름대  : 일목 9/26/52. 선행스팬 A/B 를 displacement-1(=25)만큼 앞으로 민 값,
+//               즉 "지금 화면에 그려져 있는 구름"을 판정에 쓴다.
+//               상위 TF 는 request.security + lookahead_off + [1] 로 **마감된 봉**만
+//               본다. 이걸 빼면 진행 중인 상위 봉 값이 새어 미래참조가 된다.
+//   · 매물대  : 최근 300봉을 40구간으로 쪼갠 가격대별 거래량 상위 5개 중심가.
+//               (시간대별이 아니라 가격대별 — 나뇨띠 매물대 자료의 강조점)
+//   · 2468    : 1K 단위 안의 +200/+400(상방) · +600/+800(하방). 방향 필터 적용.
+//   · 터치판정: 지지 = 위에서 내려와 레벨에 닿고 그 위에서 마감
+//               저항 = 아래서 올라가 레벨에 닿고 그 아래로 마감
+//   · 쿨다운  : 같은 가격대(±0.4%) 재터치는 20봉 동안 다시 안 찍는다.
+//               (없으면 한 자리를 스칠 때마다 봉마다 찍혀 차트가 뭉갠다)
+//   · 라벨    : 겹친 자리는 **상위 TF 구름**을 우선 표기(상위 프레임 우선 원칙).
+//               ◆ 개수 = 그 자리에 겹친 출처 **종류** 수(구름/매물/2468, 최대 3).
+//
+// 보는 법: 지지 = 봉 아래 초록 ◆ / 저항 = 봉 위 빨강 ◆.
+//          ◆ 아래(지지) 또는 위(저항)에 출처 라벨 — 1h · 매물 · 2468.
+
+//@version=5
+indicator("Cycle 지지/저항 (Aurora)", overlay = true, max_labels_count = 500)
+
+// ── 입력 ─────────────────────────────────────────────────────────────────
+grpL = "레벨 소스"
+useCloud = input.bool(true, "구름대(일목 선행스팬 A/B)", group = grpL)
+useVP    = input.bool(true, "매물대(가격대별 거래량)", group = grpL)
+use2468  = input.bool(true, "2468 (1K 안 200/400/600/800)", group = grpL)
+
+grpT = "상위 TF 구름"
+tf1 = input.timeframe("15",  "TF 1", group = grpT)
+tf2 = input.timeframe("60",  "TF 2", group = grpT)
+tf3 = input.timeframe("120", "TF 3", group = grpT)
+tf4 = input.timeframe("240", "TF 4", group = grpT)
+
+grpD = "판정"
+tolPct   = input.float(0.2, "터치 허용폭 %", minval = 0.01, step = 0.01, group = grpD)
+cooldown = input.int(20, "같은 자리 재표시 대기(봉)", minval = 0, group = grpD)
+vpLook   = input.int(300, "매물대 관찰 봉수", minval = 50, group = grpD)
+vpBins   = input.int(40, "매물대 구간 수", minval = 10, group = grpD)
+vpTop    = input.int(5, "매물대 상위 N", minval = 1, group = grpD)
+showCloud = input.bool(true, "구름 선 그리기", group = grpD)
+
+tol = tolPct / 100.0
+
+// ── 일목 구름 (파이썬 cloud_spans 와 동일) ───────────────────────────────
+f_mid(len) =>
+    (ta.highest(high, len) + ta.lowest(low, len)) / 2.0
+
+spanA_raw = (f_mid(9) + f_mid(26)) / 2.0
+spanB_raw = f_mid(52)
+// 파이썬의 shift(DISP-1). 25봉 전 계산값 = 지금 자리에 그려져 있는 구름.
+spanA = spanA_raw[25]
+spanB = spanB_raw[25]
+
+// 상위 TF — [1] 로 마감된 봉만. 함수 안에서 부르면 안 되므로 최상위에서 호출한다.
+a1 = request.security(syminfo.tickerid, tf1, spanA[1], lookahead = barmerge.lookahead_off)
+b1 = request.security(syminfo.tickerid, tf1, spanB[1], lookahead = barmerge.lookahead_off)
+a2 = request.security(syminfo.tickerid, tf2, spanA[1], lookahead = barmerge.lookahead_off)
+b2 = request.security(syminfo.tickerid, tf2, spanB[1], lookahead = barmerge.lookahead_off)
+a3 = request.security(syminfo.tickerid, tf3, spanA[1], lookahead = barmerge.lookahead_off)
+b3 = request.security(syminfo.tickerid, tf3, spanB[1], lookahead = barmerge.lookahead_off)
+a4 = request.security(syminfo.tickerid, tf4, spanA[1], lookahead = barmerge.lookahead_off)
+b4 = request.security(syminfo.tickerid, tf4, spanB[1], lookahead = barmerge.lookahead_off)
+
+// TF 우선순위(분) — 겹치면 상위 TF 라벨을 쓴다.
+m0 = math.round(timeframe.in_seconds(timeframe.period) / 60)
+m1 = math.round(timeframe.in_seconds(tf1) / 60)
+m2 = math.round(timeframe.in_seconds(tf2) / 60)
+m3 = math.round(timeframe.in_seconds(tf3) / 60)
+m4 = math.round(timeframe.in_seconds(tf4) / 60)
+
+// ── 매물대 (파이썬 volume_profile_levels 와 동일) ────────────────────────
+// 가격대별 거래량 상위 N 구간의 중심가. 봉마다 전 구간을 다시 도는 건 비싸서
+// 파이썬과 같이 20봉마다만 갱신한다(300봉 창이라 그 사이 값이 거의 안 변한다).
+var float[] vpLevels = array.new_float()
+
+f_rebuildVP() =>
+    out = array.new_float()
+    hi = ta.highest(high, vpLook)
+    lo = ta.lowest(low, vpLook)
+    if not na(hi) and not na(lo) and hi > lo
+        step = (hi - lo) / vpBins
+        vols = array.new_float(vpBins, 0.0)
+        for i = 0 to vpLook - 1
+            mid = (high[i] + low[i]) / 2.0
+            bi = math.min(vpBins - 1, math.max(0, int((mid - lo) / step)))
+            array.set(vols, bi, array.get(vols, bi) + nz(volume[i]))
+        for n = 1 to vpTop
+            mx = array.max(vols)
+            bi = array.indexof(vols, mx)
+            if bi >= 0 and mx > 0
+                array.push(out, lo + step * (bi + 0.5))
+                array.set(vols, bi, -1.0)
+    out
+
+if useVP and bar_index % 20 == 0 and bar_index >= vpLook
+    vpLevels := f_rebuildVP()
+
+// ── 후보 레벨 담기 ───────────────────────────────────────────────────────
+// 세 배열을 나란히 쓴다: 가격 / 출처(0=구름 1=매물 2=2468) / TF 분
+f_push(arrP, arrS, arrT, v, s, t) =>
+    if not na(v)
+        array.push(arrP, v)
+        array.push(arrS, s)
+        array.push(arrT, t)
+
+// 2468 — PDF 원문: 1K 안의 200/400(상방) · 600/800(하방)
+f_push2468(arrP, arrS, arrT, price, isUp) =>
+    k = math.floor(price / 1000)
+    o1 = isUp ? 200 : 600
+    o2 = isUp ? 400 : 800
+    for d = -2 to 2
+        b = (k + d) * 1000
+        f_push(arrP, arrS, arrT, b + o1, 2, 0)
+        f_push(arrP, arrS, arrT, b + o2, 2, 0)
+
+// 터치 판정 (파이썬 touched 와 동일)
+f_touch(level, isSup) =>
+    band = level * tol
+    isSup ? (close[1] > level and low <= level + band and close >= level - band) : (close[1] < level and high >= level - band and close <= level + band)
+
+// 출처 라벨
+f_label(srcCode, tfMin) =>
+    srcCode == 1 ? "매물" : srcCode == 2 ? "2468" : tfMin >= 10080 ? "1W" : tfMin >= 1440 ? "1D" : tfMin >= 60 ? str.tostring(math.round(tfMin / 60)) + "h" : str.tostring(tfMin) + "m"
+
+// ── 본 판정 ──────────────────────────────────────────────────────────────
+var float lastPx  = na
+var int   lastBar = -9999
+
+// 지지를 먼저 보고, 없으면 저항. 파이썬도 한 봉에 하나만 찍는다.
+for pass = 0 to 1
+    isSup = pass == 0
+    cPx = array.new_float()
+    cSrc = array.new_int()
+    cTf = array.new_int()
+
+    if useCloud
+        f_push(cPx, cSrc, cTf, spanA, 0, m0)
+        f_push(cPx, cSrc, cTf, spanB, 0, m0)
+        f_push(cPx, cSrc, cTf, a1, 0, m1)
+        f_push(cPx, cSrc, cTf, b1, 0, m1)
+        f_push(cPx, cSrc, cTf, a2, 0, m2)
+        f_push(cPx, cSrc, cTf, b2, 0, m2)
+        f_push(cPx, cSrc, cTf, a3, 0, m3)
+        f_push(cPx, cSrc, cTf, b3, 0, m3)
+        f_push(cPx, cSrc, cTf, a4, 0, m4)
+        f_push(cPx, cSrc, cTf, b4, 0, m4)
+    if useVP and array.size(vpLevels) > 0
+        for i = 0 to array.size(vpLevels) - 1
+            f_push(cPx, cSrc, cTf, array.get(vpLevels, i), 1, 0)
+    if use2468
+        f_push2468(cPx, cSrc, cTf, close, isSup)
+
+    // 닿은 것 중 상위 TF 우선, 동률이면 현재가에 가까운 것
+    bestPx = float(na)
+    bestSrc = 0
+    bestTf = -1
+    if array.size(cPx) > 0
+        for i = 0 to array.size(cPx) - 1
+            v = array.get(cPx, i)
+            if f_touch(v, isSup)
+                t = array.get(cTf, i)
+                better = na(bestPx) or t > bestTf or (t == bestTf and math.abs(v - close) < math.abs(bestPx - close))
+                if better
+                    bestPx := v
+                    bestSrc := array.get(cSrc, i)
+                    bestTf := t
+
+    if not na(bestPx)
+        // 겹친 출처 **종류** 수 (±0.4%) — 개수로 세면 매물대가 한 자리에 여럿
+        // 몰려 늘 2 이상이 나와 변별력이 없다.
+        hasCloud = false
+        hasVP = false
+        has24 = false
+        for i = 0 to array.size(cPx) - 1
+            if math.abs(array.get(cPx, i) - bestPx) / bestPx <= 0.004
+                s = array.get(cSrc, i)
+                hasCloud := hasCloud or s == 0
+                hasVP := hasVP or s == 1
+                has24 := has24 or s == 2
+        cnt = (hasCloud ? 1 : 0) + (hasVP ? 1 : 0) + (has24 ? 1 : 0)
+
+        cooled = na(lastPx) or (bar_index - lastBar) > cooldown or math.abs(bestPx - lastPx) / bestPx > 0.004
+        if cooled
+            lastPx := bestPx
+            lastBar := bar_index
+            dia = str.repeat("◆", math.max(1, math.min(3, cnt)))
+            // 지지는 ◆ 아래에, 저항은 ◆ 위에 라벨이 오도록 줄 순서를 뒤집는다.
+            txt = isSup ? dia + "\n" + f_label(bestSrc, bestTf) : f_label(bestSrc, bestTf) + "\n" + dia
+            label.new(bar_index, isSup ? low : high, txt, style = isSup ? label.style_label_up : label.style_label_down, color = color.new(color.black, 100), textcolor = isSup ? color.new(#22c55e, 0) : color.new(#ef4444, 0), size = size.small)
+            break
+
+// ── 구름 선 ──────────────────────────────────────────────────────────────
+pA = plot(showCloud and useCloud ? spanA : na, "선행스팬 A", color = color.new(#22d3ee, 45))
+pB = plot(showCloud and useCloud ? spanB : na, "선행스팬 B", color = color.new(#f59e0b, 45))
+fill(pA, pB, color = spanA >= spanB ? color.new(#22d3ee, 88) : color.new(#f59e0b, 88))

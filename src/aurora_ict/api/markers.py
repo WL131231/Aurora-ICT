@@ -216,6 +216,7 @@ class CycleTouchMarker:
     price: float                    # 터치한 레벨 가격
     kind: str                       # "support" | "resistance"
     source: str                     # "cloud" | "profile" | "2468"
+    tf: str                         # 마커에 붙일 라벨 — "1h" | "매물" | "2468"
     count: int                      # 겹친 출처 종류 수 (1~3)
 
 
@@ -244,8 +245,9 @@ class ChartMarkers:
     large_sweeps: list[SweepMarker] = field(default_factory=list)
     # Large OB (50봉 swing 기반) — 1d/1w 차트용 (internal OB 는 너무 많이 잡힘)
     large_order_blocks: list[OrderBlockMarker] = field(default_factory=list)
-    # Cycle 지지/저항 터치 (★) — 모델과 무관하게 항상 계산해 내려준다
+    # Cycle 지지/저항 터치 (◆) + 차트 TF 구름(선행스팬 A/B) — Cycle 모델 화면용
     cycle_touches: list[CycleTouchMarker] = field(default_factory=list)
+    cycle_cloud: dict[str, Any] = field(default_factory=dict)
     # Equal Highs / Equal Lows (같은 가격대 swing 클러스터)
     equal_levels: list[EqualLevelMarker] = field(default_factory=list)
 
@@ -272,6 +274,7 @@ class ChartMarkers:
             "large_order_blocks": [asdict(o) for o in self.large_order_blocks],
             "equal_levels": [asdict(e) for e in self.equal_levels],
             "cycle_touches": [asdict(t) for t in self.cycle_touches],
+            "cycle_cloud": self.cycle_cloud,
         }
 
 
@@ -315,8 +318,10 @@ def to_chart_markers(
             price=float(_t["price"]),
             kind=str(_t["kind"]),
             source=str(_t["source"]),
+            tf=str(_t["tf"]),
             count=int(_t["count"]),
         ))
+    markers.cycle_cloud = cycle_levels.cloud_series(df)
 
     # 1. FVG + IFVG (Inversion FVG — invalidated FVG 반전 zone)
     fvgs = detect_fvgs(df, min_size_pct=fvg_min_size_pct)

@@ -1450,6 +1450,18 @@
   body.model-cursus .killzone-bar,
   body.model-cursus .session-badge,
   body.model-cursus .viz-toggle { display: none !important; }
+  /* 2026-08-18 #CYCLE: 순환매도 ICT 개념(킬존/BOS/PD존)을 안 쓴다 — 같이 숨긴다.
+     판단 패널(bot-judgment)은 Origo 전용 해설이라 Cycle 에선 오해를 부른다. */
+  body.model-cycle .killzone-bar,
+  body.model-cycle .session-badge,
+  body.model-cycle .viz-toggle,
+  body.model-cycle #judgment-panel,
+  body.model-cycle .judgment-fab { display: none !important; }
+  .leg-cloud-a::before { background: #22d3ee; }
+  .leg-cloud-b::before { background: #f59e0b; }
+  .leg-touch-sup::before { background: #22c55e; }
+  .leg-touch-res::before { background: #ef4444; }
+  .leg-touch-tf::before { background: #94a3b8; }
 
   /* killzone 배지(5개) — 화면 넘치면 가로 스크롤 (잘림 방지). */
     .killzone-bar {
@@ -2522,6 +2534,14 @@
       <span class="leg-st-trail">트레일 스탑 (ATR×6)</span>
       <span class="leg-st1">SuperTrend1 (ATR×2)</span>
       <span class="leg-st2">SuperTrend2 (ATR×3)</span>
+    </div>
+    <!-- Cycle(순환매) 범례 — 구름대 + 지지/저항 터치. 기본 숨김, Cycle 일 때만 -->
+    <div class="legend legend-cycle legend-hidden">
+      <span class="leg-cloud-a">선행스팬 A</span>
+      <span class="leg-cloud-b">선행스팬 B</span>
+      <span class="leg-touch-sup">지지 터치 ◆</span>
+      <span class="leg-touch-res">저항 터치 ◆</span>
+      <span class="leg-touch-tf">◆ 위 라벨 = 레벨 출처 (TF · 매물 · 2468)</span>
     </div>
   </main>
 

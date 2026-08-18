@@ -2,14 +2,22 @@
 
 2026-08-18 파트너 요청: 순환매가 보는 지지/저항을 차트에서 눈으로 확인.
 
-레벨 소스 3종
-  ① 구름대 스팬 — 일목 선행스팬 A/B (9/26/52, offset = displacement-1)
+레벨 소스
+  ① 구름대 스팬 — 일목 선행스팬 A/B (9/26/52, offset = displacement-1).
+                   **여러 TF** 를 본다. 나뇨띠 매물대 자료의 "상위 프레임일수록
+                   지지/저항이 훨씬 강력하다"가 근거 — 어느 TF 구름인지가
+                   그 자체로 정보라서 터치 마커에 TF 라벨을 함께 실어 보낸다.
   ② 매물대      — 가격대별 거래량 상위 구간 (시간대별이 아니라 **가격대별**)
   ③ 2468        — 1K 단위 안의 200/400(상방) · 600/800(하방). 방향 필터 적용
                    (2,4,6,8 타점매매 PDF: "추세가 상방이면 2·4, 하방이면 6·8")
 
 터치 판정은 봉이 레벨을 스치고 그 방향으로 버텼는지로 본다.
 지지 터치(아래에서 받침) / 저항 터치(위에서 눌림)를 구분해 반환한다.
+
+상위 TF 는 차트 봉을 리샘플해 만든다. 두 가지를 지킨다.
+  · 차트 TF 의 **정수배** 만 (3분봉으로 5분봉은 못 만든다)
+  · 리샘플 결과가 구름 계산에 필요한 표본(52+26봉)을 넘을 때만
+그래서 3분 차트(5,000봉 = 약 10일)에서는 1D·1W 가 자동으로 빠진다.
 
 담당: 연구 공용
 """
@@ -23,6 +31,19 @@ CONV, BASE, SPANB, DISP = 9, 26, 52, 26
 # 같은 가격대 재터치를 다시 표시하기까지 기다리는 봉 수 (차트 표시 전용).
 COOLDOWN = 20
 
+# 나뇨띠가 보는 TF — 라벨: 분. 차트 TF 의 정수배만 실제로 계산된다.
+TF_MINUTES: dict[str, int] = {
+    "3m": 3, "5m": 5, "15m": 15, "1h": 60,
+    "2h": 120, "4h": 240, "1D": 1440, "1W": 10080,
+}
+# 리샘플 규칙. volume 이 없는 df 로도 불리므로(마커 테스트·일부 호출부) 있는
+# 컬럼만 골라 쓴다 — 없는 컬럼을 넣으면 pandas 가 KeyError 로 차트를 통째로 깬다.
+_AGG = {"high": "max", "low": "min", "close": "last", "volume": "sum"}
+
+
+def _agg_for(df: pd.DataFrame) -> dict[str, str]:
+    return {k: v for k, v in _AGG.items() if k in df.columns}
+
 
 def cloud_spans(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     """차트에 그려져 있는 선행스팬 A/B (이미 시프트 적용된 값)."""
@@ -34,49 +55,78 @@ def cloud_spans(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     return a.to_numpy(), b.to_numpy()
 
 
+def base_tf_minutes(df: pd.DataFrame) -> int:
+    """차트 df 의 봉 간격(분) 추정 — 중앙값이라 결측 한두 개엔 안 흔들린다."""
+    if not isinstance(df.index, pd.DatetimeIndex) or len(df) < 3:
+        return 0
+    diffs = pd.Series(df.index).diff().dropna()
+    if diffs.empty:
+        return 0
+    return max(int(round(diffs.median().total_seconds() / 60)), 1)
+
+
+def multi_tf_clouds(df: pd.DataFrame) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """차트 df 에서 만들 수 있는 TF 별 구름 스팬 — df 인덱스에 정렬해 반환.
+
+    상위 TF 봉은 **닫힌 뒤에야** 값이 확정되므로 ``shift(1)`` 로 한 봉 미룬 뒤
+    forward-fill 한다. 이걸 빼먹으면 진행 중인 봉의 값이 그 봉 시작 시점부터
+    보여 미래참조가 된다.
+    """
+    base_m = base_tf_minutes(df)
+    if base_m <= 0:
+        return {}
+    out: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    need = SPANB + DISP + 5
+    for label, minutes in TF_MINUTES.items():
+        if minutes < base_m or minutes % base_m != 0:
+            continue
+        res = df if minutes == base_m else df.resample(
+            f"{minutes}min",
+        ).agg(_agg_for(df)).dropna()
+        if len(res) < need:
+            continue
+        a, b = cloud_spans(res)
+        sa = pd.Series(a, index=res.index)
+        sb = pd.Series(b, index=res.index)
+        if minutes != base_m:
+            sa, sb = sa.shift(1), sb.shift(1)
+        out[label] = (
+            sa.reindex(df.index, method="ffill").to_numpy(),
+            sb.reindex(df.index, method="ffill").to_numpy(),
+        )
+    return out
+
+
 def volume_profile_levels(df: pd.DataFrame, lookback: int = 300,
-                          bins: int = 40, top: int = 3) -> list[float]:
-    """최근 lookback 봉의 가격대별 거래량 상위 top 구간 중심가."""
-    if len(df) < 20:
+                          bins: int = 40, top: int = 5) -> list[float]:
+    """매물대 — 최근 lookback 봉을 가격대로 쪼개 거래량 상위 구간 중심가."""
+    if "volume" not in df.columns:
+        return []          # 거래량 없는 df — 매물대는 계산할 수 없다(구름·2468 만).
+    w = df.iloc[-lookback:]
+    if len(w) < 20:
         return []
-    w = df.iloc[-min(lookback, len(df)):]
-    px = w["close"].to_numpy()
-    vol = w["volume"].to_numpy() if "volume" in w else np.ones(len(w))
-    lo, hi = float(px.min()), float(px.max())
-    if not np.isfinite(lo) or hi <= lo:
+    lo, hi = float(w["low"].min()), float(w["high"].max())
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
         return []
-    idx = np.clip(((px - lo) / (hi - lo) * bins).astype(int), 0, bins - 1)
-    agg = np.bincount(idx, weights=vol, minlength=bins)
     edges = np.linspace(lo, hi, bins + 1)
     centers = (edges[:-1] + edges[1:]) / 2
+    mid = ((w["high"] + w["low"]) / 2).to_numpy()
+    vol = w["volume"].to_numpy()
+    idx = np.clip(np.digitize(mid, edges) - 1, 0, bins - 1)
+    agg = np.zeros(bins)
+    np.add.at(agg, idx, vol)
     return [float(centers[b]) for b in np.argsort(agg)[-top:]]
 
 
 def levels_2468(price: float, direction: str, span: int = 2) -> list[float]:
-    """1K 단위 안의 2·4(상방) / 6·8(하방). PDF 원문 기준."""
+    """2468 — PDF 원문 기준. 1K 단위 안의 200/400(상방) · 600/800(하방)."""
     k = int(price // 1000)
     offs = (200, 400) if direction == "up" else (600, 800)
     out: list[float] = []
     for d in range(-span, span + 1):
         b = (k + d) * 1000
-        if b > 0:
-            out.extend(float(b + o) for o in offs)
+        out.extend(float(b + o) for o in offs)
     return sorted(out)
-
-
-def collect_levels(df: pd.DataFrame, i: int, direction: str) -> list[tuple[float, str]]:
-    """i 시점에서 유효한 레벨 목록 — (가격, 출처)."""
-    out: list[tuple[float, str]] = []
-    a, b = cloud_spans(df)
-    for arr, nm in ((a, "cloud_a"), (b, "cloud_b")):
-        if i < len(arr) and np.isfinite(arr[i]):
-            out.append((float(arr[i]), nm))
-    for p in volume_profile_levels(df.iloc[: i + 1]):
-        out.append((p, "profile"))
-    px = float(df["close"].iloc[i])
-    for p in levels_2468(px, direction):
-        out.append((p, "2468"))
-    return out
 
 
 def touched(prev_close: float, high: float, low: float, close: float,
@@ -98,12 +148,14 @@ def find_touches(df: pd.DataFrame, tol: float = 0.002,
 
     Returns:
         [{"idx": int, "price": float, "kind": "support"|"resistance",
-          "source": str, "count": int}] — count 는 그 자리에 겹친 레벨 수.
+          "source": str, "tf": str, "count": int}]
+        ``tf`` 는 마커에 붙일 라벨 — 구름이면 TF 이름("1h"), 매물대는 "매물",
+        2468 은 "2468". ``count`` 는 그 자리에 겹친 **출처 종류** 수(1~3).
     """
     n = len(df)
     if n < BASE + DISP + 5:
         return []
-    a, b = cloud_spans(df)
+    clouds = multi_tf_clouds(df)
     h = df["high"].to_numpy()
     lo = df["low"].to_numpy()
     c = df["close"].to_numpy()
@@ -120,33 +172,71 @@ def find_touches(df: pd.DataFrame, tol: float = 0.002,
         if not prof or (i - start) % 20 == 0:
             prof = volume_profile_levels(df.iloc[: i + 1])
         for direction, kind in (("long", "support"), ("short", "resistance")):
-            lvls = []
-            for arr, nm in ((a, "cloud"), (b, "cloud")):
-                if np.isfinite(arr[i]):
-                    lvls.append((float(arr[i]), nm))
+            lvls: list[tuple[float, str, str]] = []   # (가격, 출처, TF라벨)
+            for tf_label, (a, b) in clouds.items():
+                for arr in (a, b):
+                    if i < len(arr) and np.isfinite(arr[i]):
+                        lvls.append((float(arr[i]), "cloud", tf_label))
             for p in prof:
-                lvls.append((p, "profile"))
+                lvls.append((p, "profile", "매물"))
             for p in levels_2468(px, "up" if direction == "long" else "down"):
-                lvls.append((p, "2468"))
-            hits = [(p, s) for p, s in lvls
-                    if touched(c[i - 1], h[i], lo[i], px, p, tol, direction)]
+                lvls.append((p, "2468", "2468"))
+            hits = [x for x in lvls
+                    if touched(c[i - 1], h[i], lo[i], px, x[0], tol, direction)]
             if not hits:
                 continue
-            best = min(hits, key=lambda x: abs(x[0] - px))
+            # 같은 자리를 여럿이 잡으면 **상위 TF 구름**을 라벨로 쓴다 — 나뇨띠
+            # 자료가 상위 프레임 지지/저항을 더 강하게 보기 때문. 동률이면 현재가에
+            # 가까운 쪽.
+            best = max(
+                hits,
+                key=lambda x: (TF_MINUTES.get(x[2], 0), -abs(x[0] - px)),
+            )
             # 겹침은 **출처 종류 수**로 센다(±0.4%). 레벨 개수로 세면 매물대가 한
-            # 자리에 여럿 몰려 늘 2 이상이 나와 변별력이 없었다. 구름·매물대·2468
-            # 중 몇 종이 같은 가격에 모였는가가 연구에서 본 '겹친 자리'의 뜻이다.
+            # 자리에 여럿 몰려 늘 2 이상이 나와 변별력이 없었다.
             cnt = len({
-                src for p, src in lvls
+                src for p, src, _ in lvls
                 if abs(p - best[0]) / best[0] <= 0.004
             })
-            # 쿨다운 — 같은 자리를 연속으로 스치면 봉마다 별이 찍혀 차트가 뭉갠다.
-            # 최근 COOLDOWN 봉 안에 같은 가격대(±0.4%)를 이미 표시했으면 건너뛴다.
+            # 쿨다운 — 같은 자리를 연속으로 스치면 봉마다 마커가 찍혀 차트가 뭉갠다.
             if any(i - j <= COOLDOWN and abs(p - best[0]) / best[0] <= 0.004
                    for j, p in recent):
                 break
             recent.append((i, best[0]))
             out.append({"idx": i, "price": best[0], "kind": kind,
-                        "source": best[1], "count": cnt})
+                        "source": best[1], "tf": best[2], "count": cnt})
             break
     return out
+
+
+def _pack_series(ts: np.ndarray, arr: np.ndarray) -> list[dict]:
+    """(timestamp, 값) → 프론트가 바로 setData 할 수 있는 형태. NaN 은 뺀다."""
+    return [
+        {"time": int(t), "value": float(v)}
+        for t, v in zip(ts, arr, strict=False)
+        if np.isfinite(v)
+    ]
+
+
+def cloud_series(df: pd.DataFrame, tf_label: str | None = None) -> dict:
+    """차트에 그릴 구름 — 선행스팬 A/B 시계열.
+
+    tf_label 미지정이면 차트 TF 자신의 구름. 반환 형태는
+    ``{"tf": "3m", "a": [{"time": ms, "value": px}, ...], "b": [...]}``.
+    """
+    empty = {"tf": tf_label or "", "a": [], "b": []}
+    if not isinstance(df.index, pd.DatetimeIndex) or len(df) < SPANB + DISP:
+        return empty
+    base_m = base_tf_minutes(df)
+    if tf_label and TF_MINUTES.get(tf_label, 0) != base_m:
+        clouds = multi_tf_clouds(df)
+        if tf_label not in clouds:
+            return empty
+        a, b = clouds[tf_label]
+    else:
+        tf_label = tf_label or next(
+            (k for k, v in TF_MINUTES.items() if v == base_m), f"{base_m}m",
+        )
+        a, b = cloud_spans(df)
+    ts = df.index.astype("int64").to_numpy() // 10**6
+    return {"tf": tf_label, "a": _pack_series(ts, a), "b": _pack_series(ts, b)}
