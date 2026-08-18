@@ -701,6 +701,23 @@ class MultiUserBotManager:
             ValueError: 사용자 미존재 / API 키 미등록 등 (build_user_settings 단계).
         """
         async with self._get_lock(user_code, symbol):
+            # 2026-08-18 #CYCLE: 매매 배선이 없는 모델(차트 전용)은 여기서 막는다.
+            # 목록에만 올라간 모델을 그냥 통과시키면 분기 기본값인 Origo 가 대신
+            # 매매한다 — 사용자는 Cycle 을 골랐는데 다른 모델이 도는 셈이라
+            # 조용히 틀리느니 기동을 거부한다.
+            from aurora_ict.config.settings import (  # noqa: PLC0415
+                DEFAULT_MODEL_NAME,
+                is_chart_only_model,
+            )
+            _sel_model = (
+                users_db.get_last_model(self.db_path, user_code)
+                or DEFAULT_MODEL_NAME
+            )
+            if is_chart_only_model(_sel_model):
+                raise ValueError(
+                    f"{_sel_model} 은 아직 차트 관찰 전용 모델입니다 — "
+                    "매매를 시작하려면 Origo 나 Cursus 를 선택하세요.",
+                )
             bot = await self.get_or_create_bot(
                 user_code, symbol, force_run_mode=force_run_mode,
             )

@@ -41,6 +41,7 @@ from aurora_ict.bot.pair_registry import (
     RECOMMENDED_PAIRS,
 )
 from aurora_ict.config.settings import TRADE_TIMEFRAMES, IctSettings, RunMode
+from aurora_ict.indicators import cycle_levels
 from aurora_ict.strategy.silver_bullet import Direction
 
 
@@ -66,6 +67,38 @@ def _rows_to_candles(rows: list[list[Any]]) -> list[dict[str, float]]:
 # Cursus(Dual SuperTrend) 차트 오버레이 색 — 캔들 기본 상승/하락과 동일 톤.
 _ST_UP_COLOR = "#26a69a"  # 상승 추세(가격이 트레일 라인 위)
 _ST_DN_COLOR = "#ef5350"  # 하락 추세(가격이 트레일 라인 아래)
+
+
+def _rows_to_cycle_markers(rows: list[list[Any]]) -> list[dict[str, Any]]:
+    """OHLCV rows → 지지/저항 터치 별(★) 마커.
+
+    2026-08-18 파트너 요청: "지지 저항 터치가 됐다는 봉·위치에 별 표시". Cycle
+    (순환매) 연구가 보는 레벨 — 구름대 스팬 · 매물대 · 2468 — 에 봉이 닿아 그
+    방향으로 버틴 지점을 표시한다. 지지는 봉 아래 초록, 저항은 봉 위 빨강.
+
+    별 개수 = 그 자리에 겹친 레벨 수(최대 3). 여러 레벨이 겹칠수록 연구에서
+    승률이 높았던 자리라 한눈에 구분되게 뒀다.
+
+    ``_rows_to_candles`` 와 같은 이유로 호출부에서 ``asyncio.to_thread`` 로 감싼다.
+    """
+    if len(rows) < 120:
+        return []
+    df = pd.DataFrame(
+        [(float(r[2]), float(r[3]), float(r[4]), float(r[5])) for r in rows],
+        columns=["high", "low", "close", "volume"],
+    )
+    out: list[dict[str, Any]] = []
+    for t in cycle_levels.find_touches(df):
+        i = int(t["idx"])
+        sup = t["kind"] == "support"
+        out.append({
+            "time": int(rows[i][0] // 1000),
+            "position": "belowBar" if sup else "aboveBar",
+            "color": "#22c55e" if sup else "#ef4444",
+            "shape": "circle",
+            "text": "★" * min(int(t.get("count", 1)), 3),
+        })
+    return out
 
 
 def _rows_to_st_overlay(rows: list[list[Any]], cfg: Any) -> dict[str, Any]:
@@ -2354,6 +2387,10 @@ def _register_multi_user_routes(
             result["st_overlay"] = await asyncio.to_thread(
                 _rows_to_st_overlay, rows, bot.cfg,
             )
+        # 2026-08-18: 지지/저항 터치 별 — 모델과 무관하게 항상 붙인다(눈으로 확인용).
+        result["cycle_touches"] = await asyncio.to_thread(
+            _rows_to_cycle_markers, rows,
+        )
         return result
 
     # 2026-07-22: 루트(/) → UI(/ui/) 리다이렉트. 사용자가 도메인만 치면 UI 는 /ui
@@ -3246,6 +3283,10 @@ def create_app(
             result["st_overlay"] = await asyncio.to_thread(
                 _rows_to_st_overlay, rows, bot.cfg,
             )
+        # 2026-08-18: 지지/저항 터치 별 — 모델과 무관하게 항상 붙인다(눈으로 확인용).
+        result["cycle_touches"] = await asyncio.to_thread(
+            _rows_to_cycle_markers, rows,
+        )
         return result
 
     # 2026-07-22: 루트(/) → UI(/ui/) 리다이렉트 (도메인만 쳐도 대시보드로).

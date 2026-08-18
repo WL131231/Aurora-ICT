@@ -1204,16 +1204,18 @@ async function refreshBotChart() {
         return;
     }
 
-    if (!data || !data.enabled) {
+    // 2026-08-18: 봇이 STOP 이어도 차트/마커는 보여준다(파트너 요청).
+    // 백엔드 /ict/ohlcv 는 ensure_bot_ready 로 START 전에도 캔들을 준다 —
+    // 여기서 enabled 로 막고 있어서 안 보였던 것뿐이다.
+    if (!data || !(data.candles || []).length) {
         if (empty) {
             empty.classList.remove("hidden");
-            empty.textContent = "봇 가동 시 자동으로 표시됨";
+            empty.textContent = "차트 데이터를 불러오지 못했습니다";
         }
-        if (status) status.textContent = "봇 미가동";
+        if (status) status.textContent = "데이터 없음";
         if (symEl) symEl.textContent = "—";
         return;
     }
-
     _initBotChart();
     if (!Chart.chart) {
         if (status) status.textContent = "차트 라이브러리 로드 실패 (네트워크?)";
@@ -1235,15 +1237,22 @@ async function refreshBotChart() {
     }
     _applyChartOverlays();
 
-    // 마커 — 진입(▲/▼) + 청산(○) — 캔들 시리즈 위에 박힘
-    Chart.candleSeries.setMarkers(data.markers || []);
+    // 마커 — 진입(▲/▼) + 청산(○) + 지지/저항 터치(★) — 캔들 시리즈 위에 박힘
+    // 2026-08-18: lightweight-charts 는 time 오름차순 배열을 요구한다. 매매 마커와
+    // 터치 별을 그냥 이어붙이면 순서가 섞여 마커가 통째로 안 나오므로 합친 뒤 정렬.
+    const touches = data.cycle_touches || [];
+    const marks = (data.markers || []).concat(touches);
+    marks.sort((a, b) => a.time - b.time);
+    Chart.candleSeries.setMarkers(marks);
 
     // 메타 갱신
     if (symEl) symEl.textContent = `${data.symbol || "—"} · ${data.timeframe}`;
     if (status) {
         const n = (data.candles || []).length;
         const m = (data.markers || []).length;
-        status.textContent = `${n} 봉 · 마커 ${m}`;
+        const t = touches.length;
+        const base = `${n} 봉 · 마커 ${m}${t ? ` · 지지저항 ★${t}` : ""}`;
+        status.textContent = data.enabled === false ? `${base} · 봇 미가동` : base;
     }
     if (empty) empty.classList.add("hidden");
 }

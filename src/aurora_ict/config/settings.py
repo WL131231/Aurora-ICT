@@ -83,10 +83,25 @@ ORIGO_MODEL_NAME = "Origo 2.2"
 CURSUS_MODEL_NAME = "Cursus 1.0"
 # 모델 선택 레지스트리 — 표시명 → 전략 id. 사용자가 model 선택 시 multi_user 가
 # origo→BotIctInstance, cursus→BotTrendInstance 로 분기. UI 드롭다운도 이 목록 사용.
+# 2026-08-18 #CYCLE: 3번째 모델 = Cycle(순환매 — 지지/저항 분할 진입).
+# **아직 차트 전용이다.** 백테는 지정가 전제로 흑자였지만 체결 현실화(지정가 체결률
+# 25.6% / 시장가 0.108% 밀림)에서 아직 흑자를 못 냈다. 그래서 모델 목록에는 올려
+# 차트로 레벨·터치를 관찰하되, 기동은 CHART_ONLY_MODELS 로 명시적으로 막는다.
+# 배선 없이 목록에만 올리면 분기가 전부 `== "cursus"` 이분법이라 Cycle 을 골라도
+# Origo 가 매매하는 조용한 오작동이 난다(MMBM 2주 미배선 사고와 같은 부류).
+CYCLE_MODEL_NAME = "Cycle 1.0"
 AVAILABLE_MODELS: dict[str, str] = {
     ORIGO_MODEL_NAME: "origo",
     CURSUS_MODEL_NAME: "cursus",
+    CYCLE_MODEL_NAME: "cycle",
 }
+# 매매 배선이 없는 모델 id — 선택은 되지만 봇 기동은 거부한다(차트 관찰 전용).
+CHART_ONLY_MODELS: frozenset[str] = frozenset({"cycle"})
+
+
+def is_chart_only_model(model_name: str | None) -> bool:
+    """표시명이 차트 전용 모델인가 — 기동 경로에서 이걸로 거른다."""
+    return AVAILABLE_MODELS.get(model_name or "") in CHART_ONLY_MODELS
 DEFAULT_MODEL_NAME = ORIGO_MODEL_NAME
 
 
