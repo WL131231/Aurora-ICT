@@ -40,8 +40,8 @@ from aurora_ict.bot.pair_registry import (
     EXCLUDED_PAIRS,
     RECOMMENDED_PAIRS,
 )
-from aurora_ict.indicators import cycle_levels
 from aurora_ict.config.settings import TRADE_TIMEFRAMES, IctSettings, RunMode
+from aurora_ict.indicators import cycle_levels
 from aurora_ict.strategy.silver_bullet import Direction
 
 

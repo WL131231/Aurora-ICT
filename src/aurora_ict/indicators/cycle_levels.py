@@ -26,11 +26,11 @@ COOLDOWN = 20
 
 def cloud_spans(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     """차트에 그려져 있는 선행스팬 A/B (이미 시프트 적용된 값)."""
-    h, l = df["high"], df["low"]
-    conv = (h.rolling(CONV).max() + l.rolling(CONV).min()) / 2
-    base = (h.rolling(BASE).max() + l.rolling(BASE).min()) / 2
+    h, lo = df["high"], df["low"]
+    conv = (h.rolling(CONV).max() + lo.rolling(CONV).min()) / 2
+    base = (h.rolling(BASE).max() + lo.rolling(BASE).min()) / 2
     a = ((conv + base) / 2).shift(DISP - 1)
-    b = ((h.rolling(SPANB).max() + l.rolling(SPANB).min()) / 2).shift(DISP - 1)
+    b = ((h.rolling(SPANB).max() + lo.rolling(SPANB).min()) / 2).shift(DISP - 1)
     return a.to_numpy(), b.to_numpy()
 
 
@@ -105,7 +105,7 @@ def find_touches(df: pd.DataFrame, tol: float = 0.002,
         return []
     a, b = cloud_spans(df)
     h = df["high"].to_numpy()
-    l = df["low"].to_numpy()
+    lo = df["low"].to_numpy()
     c = df["close"].to_numpy()
     start = max(BASE + DISP, n - max_bars)
     out: list[dict] = []
@@ -129,7 +129,7 @@ def find_touches(df: pd.DataFrame, tol: float = 0.002,
             for p in levels_2468(px, "up" if direction == "long" else "down"):
                 lvls.append((p, "2468"))
             hits = [(p, s) for p, s in lvls
-                    if touched(c[i - 1], h[i], l[i], px, p, tol, direction)]
+                    if touched(c[i - 1], h[i], lo[i], px, p, tol, direction)]
             if not hits:
                 continue
             best = min(hits, key=lambda x: abs(x[0] - px))
