@@ -20,7 +20,7 @@
 //          ◆ 아래(지지) 또는 위(저항)에 출처 라벨 — 1h · 매물 · 2468.
 
 //@version=5
-indicator("Cycle 지지/저항 (Aurora)", overlay = true, max_labels_count = 500)
+indicator("Cycle 지지/저항 (Aurora)", overlay = true, max_labels_count = 500, max_lines_count = 500)
 
 // ── 입력 ─────────────────────────────────────────────────────────────────
 grpL = "레벨 소스"
@@ -40,7 +40,10 @@ cooldown = input.int(20, "같은 자리 재표시 대기(봉)", minval = 0, grou
 vpLook   = input.int(300, "매물대 관찰 봉수", minval = 50, group = grpD)
 vpBins   = input.int(40, "매물대 구간 수", minval = 10, group = grpD)
 vpTop    = input.int(5, "매물대 상위 N", minval = 1, group = grpD)
+thinRatio = input.float(0.35, "얇은 구름 제외 (자기 두께 중앙값 대비)", minval = 0.0, maxval = 1.0, step = 0.05, group = grpD)
 showCloud = input.bool(true, "구름 선 그리기", group = grpD)
+showHtf   = input.bool(false, "상위 TF 구름도 그리기(검증용)", group = grpD)
+showLevel = input.bool(true, "터치한 레벨을 선으로 표시(검증용)", group = grpD)
 
 tol = tolPct / 100.0
 
@@ -54,15 +57,31 @@ spanB_raw = f_mid(52)
 spanA = spanA_raw[25]
 spanB = spanB_raw[25]
 
-// 상위 TF — [1] 로 마감된 봉만. 함수 안에서 부르면 안 되므로 최상위에서 호출한다.
-a1 = request.security(syminfo.tickerid, tf1, spanA[1], lookahead = barmerge.lookahead_off)
-b1 = request.security(syminfo.tickerid, tf1, spanB[1], lookahead = barmerge.lookahead_off)
-a2 = request.security(syminfo.tickerid, tf2, spanA[1], lookahead = barmerge.lookahead_off)
-b2 = request.security(syminfo.tickerid, tf2, spanB[1], lookahead = barmerge.lookahead_off)
-a3 = request.security(syminfo.tickerid, tf3, spanA[1], lookahead = barmerge.lookahead_off)
-b3 = request.security(syminfo.tickerid, tf3, spanB[1], lookahead = barmerge.lookahead_off)
-a4 = request.security(syminfo.tickerid, tf4, spanA[1], lookahead = barmerge.lookahead_off)
-b4 = request.security(syminfo.tickerid, tf4, spanB[1], lookahead = barmerge.lookahead_off)
+// 얇은 구름은 지지/저항으로 안 친다(파트너: "저런 데는 뚫리기 쉽다").
+// 임계는 **그 TF 자기 두께 대비 비율**. 고정 % 는 못 쓴다 — 실측 두께 중앙값이
+// 3m 0.13% / 1h 0.75% / 4h 1.63% / 1D 6.10% 로 자릿수가 달라서, 0.1% 같은 값이면
+// 3m 은 절반이 잘리고 1D 는 하나도 안 잘린다.
+thickPct = math.abs(spanA - spanB) / close
+thickMed = ta.median(thickPct, 200)
+notThin = na(thickMed) or thinRatio <= 0.0 or thickPct >= thickMed * thinRatio
+
+// 상위 TF — 함수 안에서 부르면 안 되므로 최상위에서 호출한다.
+// [1] 을 붙이지 않는다: 선행스팬은 이미 25봉 전 데이터로 만들어져 진행 중인 봉의
+// 영향을 안 받는다(미래참조 없음). 그런데도 [1] 을 붙였더니 상위 TF 한 봉만큼
+// (4h 면 4시간) 레벨이 통째로 밀려서, 화면 구름과 안 맞는 자리에 마커가 찍혔다.
+a1 = request.security(syminfo.tickerid, tf1, spanA, lookahead = barmerge.lookahead_off)
+b1 = request.security(syminfo.tickerid, tf1, spanB, lookahead = barmerge.lookahead_off)
+a2 = request.security(syminfo.tickerid, tf2, spanA, lookahead = barmerge.lookahead_off)
+b2 = request.security(syminfo.tickerid, tf2, spanB, lookahead = barmerge.lookahead_off)
+a3 = request.security(syminfo.tickerid, tf3, spanA, lookahead = barmerge.lookahead_off)
+b3 = request.security(syminfo.tickerid, tf3, spanB, lookahead = barmerge.lookahead_off)
+a4 = request.security(syminfo.tickerid, tf4, spanA, lookahead = barmerge.lookahead_off)
+b4 = request.security(syminfo.tickerid, tf4, spanB, lookahead = barmerge.lookahead_off)
+// 두께 판정은 그 TF 안에서 계산한 걸 가져온다(하위 차트에서 재면 계단이라 왜곡).
+n1 = request.security(syminfo.tickerid, tf1, notThin, lookahead = barmerge.lookahead_off)
+n2 = request.security(syminfo.tickerid, tf2, notThin, lookahead = barmerge.lookahead_off)
+n3 = request.security(syminfo.tickerid, tf3, notThin, lookahead = barmerge.lookahead_off)
+n4 = request.security(syminfo.tickerid, tf4, notThin, lookahead = barmerge.lookahead_off)
 
 // TF 우선순위(분) — 겹치면 상위 TF 라벨을 쓴다.
 m0 = math.round(timeframe.in_seconds(timeframe.period) / 60)
@@ -137,16 +156,21 @@ for pass = 0 to 1
     cTf = array.new_int()
 
     if useCloud
-        f_push(cPx, cSrc, cTf, spanA, 0, m0)
-        f_push(cPx, cSrc, cTf, spanB, 0, m0)
-        f_push(cPx, cSrc, cTf, a1, 0, m1)
-        f_push(cPx, cSrc, cTf, b1, 0, m1)
-        f_push(cPx, cSrc, cTf, a2, 0, m2)
-        f_push(cPx, cSrc, cTf, b2, 0, m2)
-        f_push(cPx, cSrc, cTf, a3, 0, m3)
-        f_push(cPx, cSrc, cTf, b3, 0, m3)
-        f_push(cPx, cSrc, cTf, a4, 0, m4)
-        f_push(cPx, cSrc, cTf, b4, 0, m4)
+        if notThin
+            f_push(cPx, cSrc, cTf, spanA, 0, m0)
+            f_push(cPx, cSrc, cTf, spanB, 0, m0)
+        if n1
+            f_push(cPx, cSrc, cTf, a1, 0, m1)
+            f_push(cPx, cSrc, cTf, b1, 0, m1)
+        if n2
+            f_push(cPx, cSrc, cTf, a2, 0, m2)
+            f_push(cPx, cSrc, cTf, b2, 0, m2)
+        if n3
+            f_push(cPx, cSrc, cTf, a3, 0, m3)
+            f_push(cPx, cSrc, cTf, b3, 0, m3)
+        if n4
+            f_push(cPx, cSrc, cTf, a4, 0, m4)
+            f_push(cPx, cSrc, cTf, b4, 0, m4)
     if useVP and array.size(vpLevels) > 0
         for i = 0 to array.size(vpLevels) - 1
             f_push(cPx, cSrc, cTf, array.get(vpLevels, i), 1, 0)
@@ -189,10 +213,29 @@ for pass = 0 to 1
             dia = str.repeat("◆", math.max(1, math.min(3, cnt)))
             // 지지는 ◆ 아래에, 저항은 ◆ 위에 라벨이 오도록 줄 순서를 뒤집는다.
             txt = isSup ? dia + "\n" + f_label(bestSrc, bestTf) : f_label(bestSrc, bestTf) + "\n" + dia
+            if showLevel
+                // 판정에 쓴 레벨 가격을 그 자리에 짧게 긋는다. 상위 TF 구름은
+                // 화면에 없어서 "아무것도 없는 자리"처럼 보였는데, 이 선이 있으면
+                // 마커가 진짜 레벨을 잡은 건지 바로 대조된다.
+                line.new(bar_index - 2, bestPx, bar_index + 2, bestPx, color = isSup ? color.new(#22c55e, 30) : color.new(#ef4444, 30), width = 1)
             label.new(bar_index, isSup ? low : high, txt, style = isSup ? label.style_label_up : label.style_label_down, color = color.new(color.black, 100), textcolor = isSup ? color.new(#22c55e, 0) : color.new(#ef4444, 0), size = size.small)
             break
 
 // ── 구름 선 ──────────────────────────────────────────────────────────────
-pA = plot(showCloud and useCloud ? spanA : na, "선행스팬 A", color = color.new(#22d3ee, 45))
-pB = plot(showCloud and useCloud ? spanB : na, "선행스팬 B", color = color.new(#f59e0b, 45))
-fill(pA, pB, color = spanA >= spanB ? color.new(#22d3ee, 88) : color.new(#f59e0b, 88))
+// 정석 이치모쿠와 같이 **현재 계산값을 25봉 앞으로** 그린다. 전에는 25봉 전
+// 계산값을 현재 자리에 그려(= 같은 그림) 미래 26봉 구간이 통째로 비어 있었다.
+// 판정에는 여전히 "지금 자리에 그려져 있는 값"(spanA/spanB)을 쓴다.
+pA = plot(showCloud and useCloud ? spanA_raw : na, "선행스팬 A", offset = 25, color = color.new(#22d3ee, 45))
+pB = plot(showCloud and useCloud ? spanB_raw : na, "선행스팬 B", offset = 25, color = color.new(#f59e0b, 45))
+// 얇은 구간(지지/저항으로 안 치는 구간)은 더 흐리게 칠해 눈으로 구분되게 한다.
+fill(pA, pB, color = not notThin ? color.new(color.gray, 94) : spanA_raw >= spanB_raw ? color.new(#22d3ee, 88) : color.new(#f59e0b, 88))
+
+// 상위 TF 구름 — 기본은 끔. 켜면 "왜 여기가 지지/저항인지"가 눈으로 보인다.
+plot(showHtf and useCloud ? a1 : na, "TF1 A", color = color.new(#22d3ee, 70), style = plot.style_stepline)
+plot(showHtf and useCloud ? b1 : na, "TF1 B", color = color.new(#f59e0b, 70), style = plot.style_stepline)
+plot(showHtf and useCloud ? a2 : na, "TF2 A", color = color.new(#22d3ee, 60), style = plot.style_stepline)
+plot(showHtf and useCloud ? b2 : na, "TF2 B", color = color.new(#f59e0b, 60), style = plot.style_stepline)
+plot(showHtf and useCloud ? a3 : na, "TF3 A", color = color.new(#22d3ee, 50), style = plot.style_stepline)
+plot(showHtf and useCloud ? b3 : na, "TF3 B", color = color.new(#f59e0b, 50), style = plot.style_stepline)
+plot(showHtf and useCloud ? a4 : na, "TF4 A", color = color.new(#22d3ee, 40), style = plot.style_stepline)
+plot(showHtf and useCloud ? b4 : na, "TF4 B", color = color.new(#f59e0b, 40), style = plot.style_stepline)
