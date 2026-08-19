@@ -1,0 +1,10 @@
+# 백테/연구 전용 의존성 — 봇 런타임(fastapi·pywebview·uvicorn 등)은 필요 없다.
+#
+# requirements.txt 는 봇 배포용이라 numpy<2.0 을 박아두는데, 그 제약은 macOS
+# wheel(Apple Accelerate) 문제 때문이고 연구 환경엔 해당이 없다. 오히려 그 핀 때문에
+# Python 3.13 이상에서는 numpy 1.26 wheel 이 없어 설치가 통째로 실패한다.
+# 실제 연구는 numpy 2.4 / pandas 2.3 에서 돌아가고 있으므로 하한만 둔다.
+numpy>=1.26
+pandas>=2.2
+pyarrow>=15.0      # parquet 읽기/쓰기
+ccxt>=4.4          # scripts/fetch_ohlcv.py 가 Bybit 공개 시세를 받을 때만
