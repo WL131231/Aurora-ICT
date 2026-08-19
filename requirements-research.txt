@@ -5,6 +5,8 @@
 # Python 3.13 이상에서는 numpy 1.26 wheel 이 없어 설치가 통째로 실패한다.
 # 실제 연구는 numpy 2.4 / pandas 2.3 에서 돌아가고 있으므로 하한만 둔다.
 numpy>=1.26
-pandas>=2.2
+# pandas 3.x 는 검증한 적이 없다(연구는 2.3.x 에서 돌았다). 3.0 은 변경이 커서
+# 조용히 다른 결과가 나올 수 있으므로 상한을 박는다.
+pandas>=2.2,<3.0
 pyarrow>=15.0      # parquet 읽기/쓰기
 ccxt>=4.4          # scripts/fetch_ohlcv.py 가 Bybit 공개 시세를 받을 때만
