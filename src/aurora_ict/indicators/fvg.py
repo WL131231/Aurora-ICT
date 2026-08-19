@@ -26,7 +26,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+import numpy as np
 import pandas as pd
+
+# ── 연구용 전역 스위치 (#FVG-BODY 2026-08-16) ──────────────────────────────
+# ICT 정통은 FVG 를 **중간봉의 큰 몸통(displacement)** 으로 식별한다.
+#   - Practical 4th p.37: "먼저 몸통이 가장 큰 캔들을 찾아라. 그 다음 직전 캔들의
+#     고가와 다음 캔들의 저가를 표시하라"
+#   - Bible p.11: 코끼리 발(자금 크기)이 물을 밀어낸다 = displacement
+#   - Trading-Strategy p.5: "Displacement 는 거의 예외 없이 MSS 와 FVG 를 낳는다"
+# 우리 봇은 갭 폭(min_size_pct)만 걸러 왔다 — 원인이 아니라 결과의 부산물을 본 것.
+# 이 값이 설정되면 detect_fvgs 의 **모든 호출부**(silver_bullet / mmbm /
+# ltf_entry_confirmer / htf_fvg_map / markers)에 몸통 필터가 함께 걸린다.
+# replay 가 cfg.fvg_body_mult 로 세팅하므로 연구 스크립트는 cfg 만 바꾸면 된다.
+_RESEARCH_BODY_MULT: float | None = None
 
 
 class FVGType(StrEnum):
@@ -87,6 +100,7 @@ def detect_fvgs(
     auto_threshold: bool = False,
     auto_threshold_multiplier: float = 2.0,
     require_displacement: bool = True,
+    body_mult: float | None = None,
 ) -> list[FVG]:
     """3봉 패턴 FVG 검출.
 
@@ -140,8 +154,26 @@ def detect_fvgs(
         cum_mean = float(abs(delta_pct).mean()) if len(delta_pct) > 0 else 0.0
         auto_thr = cum_mean * auto_threshold_multiplier
 
+    # #FVG-BODY — 중간봉 몸통(displacement) 임계. 인자 > 연구 전역 순으로 적용.
+    # 임계 = **그 시점까지의** 누적 평균 x 배수 — LuxAlgo 의
+    # ta.cum(|barDeltaPercent|)/bar_index 와 같은 인과적 계산이다.
+    # Why: 위 auto_threshold 는 df 전체 평균이라 백테에서 미래 봉이 임계에 섞인다.
+    #      같은 실수를 반복하지 않으려고 별도 인자로 분리했다.
+    _bm = body_mult if body_mult is not None else _RESEARCH_BODY_MULT
+    body_pct = None
+    body_thr = None
+    if _bm:
+        _opens = df["open"].to_numpy()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            body_pct = np.abs(closes - _opens) / np.where(_opens != 0, _opens, np.nan)
+        _cum = np.nancumsum(body_pct) / np.arange(1, len(body_pct) + 1)
+        body_thr = _cum * _bm
+
     fvgs: list[FVG] = []
     for i in range(1, len(df) - 1):
+        # #FVG-BODY — displacement 미달이면 방향 판정 전에 탈락 (ICT 정석 1단계)
+        if body_thr is not None and not (body_pct[i] >= body_thr[i]):
+            continue
         # Bullish FVG: 1봉 high < 3봉 low → 위쪽으로 gap
         if highs[i - 1] < lows[i + 1]:
             # 중간 봉 displacement: close 가 1봉 high 위

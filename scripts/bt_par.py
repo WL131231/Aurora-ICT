@@ -73,6 +73,20 @@ def cached_setup_timeline(df, cfg, sym: str):
     _rs = tuple(getattr(cfg, "research_sources", ()) or ())
     if _rs:
         parts = parts + ("rs_" + "-".join(sorted(_rs)),)
+    # [08-16] #FVG-BODY — 중간봉 몸통 필터가 켜지면 FVG 검출 집합 자체가 달라진다.
+    # 기본값(None)일 때는 키를 건드리지 않아 기존 캐시를 그대로 쓴다.
+    _bm = getattr(cfg, "fvg_body_mult", None)
+    if _bm:
+        parts = parts + (f"bm{round(float(_bm), 3)}",)
+    # [08-16] #KZ-CRYPTO — 킬존 표가 바뀌면 셋업 시각 집합이 달라진다.
+    _kp = getattr(cfg, "killzone_preset", None)
+    if _kp and _kp != "fx":
+        parts = parts + (f"kz{_kp}",)
+    # [08-16] #TS-OFF — turtle_soup_enabled 는 build_extra_source_setups 의
+    # detect 인자인데 키에 빠져 있었다(기본 True 로만 써 와서 안 터졌다).
+    # 끄고 돌리면 옛 타임라인이 재사용돼 "껐는데 안 꺼진" 결과가 나온다.
+    if not bool(getattr(cfg, "turtle_soup_enabled", True)):
+        parts = parts + ("nots",)
     key = hashlib.md5(repr(parts).encode()).hexdigest()[:16]
     os.makedirs(_TL_CACHE_DIR, exist_ok=True)
     path = os.path.join(_TL_CACHE_DIR, f"{sym}_{key}.pkl")

@@ -31,8 +31,8 @@ import os as _os
 _HO = _os.environ.get("HOLDOUT") == "1"
 PAIRS = (["SOLUSDT", "XRPUSDT", "DOGEUSDT", "LINKUSDT", "HYPEUSDT"]
          if _HO else ["BTCUSDT", "ETHUSDT"])
-OUT = ("data/axis/src_wide_holdout.json" if _HO
-       else "data/axis/src_wide_rows.json")
+OUT = ("data/axis/src_wide_holdout_ts.json" if _HO
+       else "data/axis/src_wide_rows_ts.json")
 SOURCES = ("turtle_soup", "implied_fvg", "mitigation_block", "rejection_block")
 RNG = np.random.default_rng(20260810)
 N_BOOT, N_PERM, MIN_N = 20000, 20000, 30
@@ -64,7 +64,7 @@ def collect() -> list[dict]:
     for sym in PAIRS:
         t0 = time.time()
         print(f"  {sym} 계산 중 (킬존 전면 개방, 타임라인 재빌드) …", flush=True)
-        _df, kept, _ = run_live_parity(sym, {"nyse_gate": False})
+        df5, kept, _ = run_live_parity(sym, {"nyse_gate": False})
         for t in kept:
             risk = abs(float(t.entry) - float(getattr(t, "entry_sl", 0.0) or 0.0))
             if risk <= 0 or t.entry <= 0:
@@ -72,10 +72,16 @@ def collect() -> list[dict]:
             conf = tuple(t.confluences)
             src = "mmbm" if "mmbm" in conf else next(
                 (s for s in SOURCES if s in conf), "fvg")
+            # [08-15] 진입 시각 추가 — 연도별 분석에 필요하다. 처음엔 안 넣어서
+            # "구간 1/5" 같은 상대 위치로만 볼 수 있었고, 그게 몇 년도인지
+            # 답할 수 없었다.
+            _ts = df5.index[t.entry_idx] if hasattr(df5, "index") else None
             rows.append({
                 "sym": sym, "src": src,
                 "r": float(t.raw_pnl_pct) * float(t.entry) / risk,
                 "dir": str(getattr(t.direction, "value", t.direction)).lower(),
+                "ts": (_ts.isoformat() if _ts is not None else None),
+                "year": (int(_ts.year) if _ts is not None else None),
             })
         print(f"    {sym} {len([x for x in rows if x['sym'] == sym])}건"
               f"  ({time.time() - t0:.0f}초)", flush=True)

@@ -73,6 +73,29 @@ STANDARD_KILLZONES: tuple[Killzone, ...] = (
     Killzone(KillzoneName.PM, time(13, 30), time(16, 0)),
 )
 
+# #KZ-CRYPTO (2026-08-16) — ICT 바이블 p.13 은 킬존 표를 **두 벌**로 준다.
+#   FX (NY-EST)            : ASIA 20-24 / LONDON 02-05 / NEW YORK 07-10 / LDN CLOSE 10-12
+#   FUTURES/CRYPTO (NY-EST): AM 08:30-12:00 / PM 13:30-16:00
+# 위 STANDARD_KILLZONES 는 **FX 표**다. 우리는 크립토를 돌리므로 아래가 정통.
+# 2024 멘토십 08:00 모델도 "08:30 이후 집중"이라 같은 시간대를 가리킨다.
+# 크립토 표에는 Asian/London 이 없지만 24시간 시장이라 유지하고, AM 만 정통으로
+# 옮긴 뒤 LONDON_CLOSE 는 AM(08:30-12:00)에 흡수시킨다(구간이 완전히 겹침).
+CRYPTO_KILLZONES: tuple[Killzone, ...] = (
+    Killzone(KillzoneName.ASIAN, time(19, 0), time(23, 59, 59), crosses_midnight=False),
+    Killzone(KillzoneName.LONDON, time(2, 0), time(5, 0)),
+    Killzone(KillzoneName.NY_AM, time(8, 30), time(12, 0)),
+    Killzone(KillzoneName.PM, time(13, 30), time(16, 0)),
+)
+
+# 연구용 전역 스위치 — replay 가 cfg.killzone_preset 으로 세팅한다.
+# None = STANDARD_KILLZONES(현행 FX). classify_killzone 만 이 값을 참조한다.
+_RESEARCH_KILLZONES: tuple[Killzone, ...] | None = None
+
+KILLZONE_PRESETS: dict[str, tuple[Killzone, ...]] = {
+    "fx": STANDARD_KILLZONES,
+    "crypto": CRYPTO_KILLZONES,
+}
+
 # Silver Bullet 윈도우 (NY local time) — 3개 1시간
 SILVER_BULLET_WINDOWS: tuple[tuple[str, time, time], ...] = (
     ("london_sb", time(3, 0), time(4, 0)),
@@ -126,7 +149,7 @@ def classify_killzone(ts_ms: int) -> KillzoneName | None:
     Returns:
         ``KillzoneName``. 어느 killzone에도 속하지 않으면 ``None``.
     """
-    for kz in STANDARD_KILLZONES:
+    for kz in (_RESEARCH_KILLZONES or STANDARD_KILLZONES):
         if in_killzone(ts_ms, kz):
             return kz.name
     return None

@@ -100,6 +100,18 @@ LIVE_BASE: dict = dict(
     regime_filter=True,         # [08-08] #REGIME 를 재생 루프 안으로 (사후 필터 X)
     cond_align=True,            # [08-08] #COND-ALIGN 동일
     regime_rolling=True,        # [08-08] 라이브 롤링 33/70분위(표본>=20, 최근 150)
+    # [08-15] #PAIR7 — 7페어 복원에 맞춰 건당 리스크 절반 강제(settings sub_).
+    #   페어 2→7 이면 동시 노출이 3.5배라 크기를 그대로 두면 낙폭 54→81%,
+    #   파산 0.0→5.3%. 절반이면 빈도 3.3배를 얻고 위험은 현행 수준.
+    risk_per_trade_base=1.5,
+    risk_per_trade_step=0.75,
+    risk_per_trade_max=3.0,
+    # [08-17] #WINDOW-1000 — 라이브 settings.ohlcv_limit=1000 정합. 파트너 결정
+    #   "라이브랑 똑같이 간다". 백테 기본 500 이면 swing/OB/DOL 의 lookback 모집단이
+    #   달라 **셋업 자체가 달라진다**(전수 감사 45항목에도 빠져 있던 GAP).
+    #   대가: detect 비용 2배 + 기존 timeline 캐시 전면 무효 + 8/17 이전 연구와
+    #   수치 직접 비교 불가. 그래도 정합이 깨진 기준선 위에서 A/B 하는 것보다 낫다.
+    window=1000,
     turtle_soup_enabled=False,  # [08-11] #DROP-TURTLE 프로덕션 #421 배포 —
                                 #   settings 가 sub_ 에서 False 강제. 유일한
                                 #   적자 확정 소스(3단 검증 통과 후 제거).
@@ -151,12 +163,9 @@ GAPS: dict[str, str] = {
         "진입의 5.3% 가 여기서 차단된다. 잔고 상태 시뮬이 필요.",
 
 
-    "detect 입력 길이 500 vs 라이브 1000": "미이식 — 라이브 settings.ohlcv_limit=1000 "
-        "이라 generate_ict_signal 이 매번 1000봉을 본다. 백테 cfg.window 는 500. "
-        "swing/OB/DOL/turtle 의 lookback 모집단이 달라 셋업 자체가 달라진다. "
-        "고치는 건 한 줄(window=1000)이지만 detect 비용 2배 + 모든 timeline 캐시 "
-        "무효 + 과거 연구와 비교 불가라 파트너 결정 대기. 전수 감사 45항목에도 "
-        "빠져 있던 항목이다.",
+    # [08-17] "detect 입력 길이 500 vs 라이브 1000" — **이식 완료**. 파트너 결정
+    #   "라이브랑 똑같이 가야지"로 LIVE_BASE 에 window=1000 반영. GAPS 에서 제거.
+    #   주의: 8/17 이전 연구 수치는 window=500 기준이라 직접 비교 불가.
     "bias 주입(HTF+daily)": "미구현 — 라이브는 _combine_with_daily 결과를 "
         "generate_ict_signal 의 bias 로 넘긴다. #BIAS-DIRECTION 이후 방향 강제엔 "
         "안 쓰이고 confluence 'bias=' +1 에만 쓰이지만, 백테는 bias=None(구조 자동 "

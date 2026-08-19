@@ -69,6 +69,15 @@ class BacktestConfig:
     high_rr_bypass_min_rr: float = 0.0  # 라이브 settings 일치 (2026-06-06 3.0→0.0 비활성)
     setup_stale_bars: int = 120
     fvg_min_size_pct: float = 0.0006
+    # #FVG-BODY (2026-08-16) — 중간봉 몸통(displacement) 필터 배수. None=미적용(현행).
+    # ICT 정통은 FVG 를 '중간봉의 큰 몸통'으로 식별한다 (Practical p.37 / Bible p.11).
+    # 지금 봇은 갭 폭만 본다. 값을 주면 indicators.fvg 전역에 실려 모든 검출 호출부에
+    # 함께 걸린다. 2.0 = LuxAlgo SMC 기본값.
+    fvg_body_mult: float | None = None
+    # #KZ-CRYPTO (2026-08-16) — 킬존 표 선택. None/"fx"=현행(바이블 FX 표),
+    # "crypto"=바이블 선물/크립토 표(AM 08:30-12:00 / PM 13:30-16:00).
+    # 주의: nyse_gate 가 켜져 있으면 09:30 이전이 잘려 실효 차이가 거의 없다.
+    killzone_preset: str | None = None
     min_sl_distance_pct: float = 0.001
     disable_time_filter: bool = True  # 백테스트 기본 24h (시간 필터 영향 분리)
     expand_to_killzone: bool = False
@@ -1954,7 +1963,7 @@ def _detect_params(cfg: BacktestConfig) -> dict[str, Any]:
     Returns:
         detect 입력 인자에 대응하는 cfg 필드 dict (검증/기록용).
     """
-    return {
+    d = {
         "min_rr": cfg.min_rr,
         "fvg_min_size_pct": cfg.fvg_min_size_pct,
         "expand_to_killzone": cfg.expand_to_killzone,
@@ -1969,6 +1978,17 @@ def _detect_params(cfg: BacktestConfig) -> dict[str, Any]:
         "ote_up_level": cfg.ote_up_level,
         "prefer_direction_select": cfg.prefer_direction_select,
     }
+    # [08-16] #FVG-BODY / #KZ-CRYPTO — **기본값이면 키 자체를 넣지 않는다**.
+    # Why: 이 키들이 없던 시절에 캐시된 타임라인과 detect_params 비교가 깨진다
+    #      (run_backtest_from_timeline 이 dict 를 통째로 대조). 캐시 키와 같은 규약.
+    if cfg.fvg_body_mult:
+        d["fvg_body_mult"] = cfg.fvg_body_mult
+    if cfg.killzone_preset and cfg.killzone_preset != "fx":
+        d["killzone_preset"] = cfg.killzone_preset
+    # #TS-OFF — build_extra_source_setups 의 detect 인자. 껐을 때만 기록한다.
+    if not cfg.turtle_soup_enabled:
+        d["turtle_soup_enabled"] = False
+    return d
 
 
 class SetupTimeline(list):
@@ -2015,6 +2035,22 @@ def build_setup_timeline(df: pd.DataFrame, cfg: BacktestConfig) -> list:
         길이 len(df) 의 SetupTimeline(list 서브클래스). timeline[i] = None 또는
         (setup, bars_since). detect_params 속성에 빌드 cfg 의 detect 필드 기록.
     """
+    # #FVG-BODY — cfg 의 몸통 필터를 검출 모듈 전역에 실어 전 호출부에 일괄 적용.
+    # Why: detect_fvgs 호출이 silver_bullet / mmbm / ltf_entry_confirmer /
+    #      htf_fvg_map 에 흩어져 있어 인자로 꿰면 시그니처가 4~5곳 바뀐다.
+    #      타임라인 빌드가 FVG 검출의 유일한 관문이라 여기 한 곳이면 충분하다.
+    from aurora_ict.indicators import fvg as _fvgmod
+
+    _fvgmod._RESEARCH_BODY_MULT = cfg.fvg_body_mult
+
+    # #KZ-CRYPTO — 킬존 표 교체도 같은 방식(전역)으로. classify_killzone 이 참조한다.
+    from aurora_ict.timing import killzone as _kzmod
+
+    _kzmod._RESEARCH_KILLZONES = (
+        _kzmod.KILLZONE_PRESETS.get(cfg.killzone_preset)
+        if cfg.killzone_preset else None
+    )
+
     n = len(df)
     timeline = SetupTimeline([None] * n)
     timeline.detect_params = _detect_params(cfg)
@@ -2394,6 +2430,20 @@ def run_backtest_from_timeline(
         ValueError: 타임라인 길이/detect_params 불일치, 또는
             prefer_direction_select 인데 타임라인에 dir_items 가 없을 때.
     """
+    # [08-17] #FVG-BODY / #KZ-CRYPTO — 전역 주입을 **재생 쪽에도** 건다.
+    # Why: build_setup_timeline 에만 걸었더니 타임라인이 캐시 히트하는 순간
+    #      그 함수가 호출되지 않아 전역이 초기값으로 남았다. 재생 중에도
+    #      HTF FVG map 이 detect_fvgs 를 다시 부르기 때문에 필터가 빠진 채
+    #      돌아간다(8/17 실측: 변형이 286건이어야 하는데 505건으로 나왔다).
+    from aurora_ict.indicators import fvg as _fvgmod
+    from aurora_ict.timing import killzone as _kzmod
+
+    _fvgmod._RESEARCH_BODY_MULT = cfg.fvg_body_mult
+    _kzmod._RESEARCH_KILLZONES = (
+        _kzmod.KILLZONE_PRESETS.get(cfg.killzone_preset)
+        if cfg.killzone_preset else None
+    )
+
     n = len(df)
     if len(timeline) != n:
         raise ValueError(
