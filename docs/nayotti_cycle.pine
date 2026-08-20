@@ -1,0 +1,255 @@
+// Nayotti Chart + Cycle 지지/저항 통합
+// 2026-08-20. 나뇨띠 원본 지표에 Aurora 의 Cycle 레벨 표시를 합쳤다.
+//
+// 원본에서 바꾼 것
+//   · 풀바디 캔들 다이아 2종 제거 (파트너 지시)
+//     — 그 아래 line.new 두 줄도 같이 뺐다. **조건 없이 매 봉 실행**되고 있어서
+//       다이아가 안 뜨는 봉에도 선이 그어지고 있었다(원본 버그).
+//   · 파란 다이아(깊은 낙폭 저점)는 그대로 둔다.
+//   · 방향 레이블(↑↓)은 원본 조건을 유지하되 **구름 안**을 따로 표시하게 고쳤다.
+//     원본은 A·B 중 어느 쪽이 위인지 안 따져서, 상승장에서 가격이 구름 안에
+//     있어도 ↓ 로 나왔다. 아래 주석 참조.
+//   · Cycle 지지/저항 ◆ 를 얹었다 — 구름 스팬(다중 TF) · 매물대 · 2468.
+//
+// Cycle 규칙은 Aurora 백테와 같다(docs/cycle_levels.pine 과 동일):
+//   터치 = 레벨에 닿고 그 방향으로 버팀 · 같은 자리 20봉 쿨다운 ·
+//   겹친 자리는 상위 TF 를 라벨로 · ◆ 개수 = 겹친 출처 종류(구름/매물/2468)
+
+//@version=5
+indicator("Nayotti Chart + Cycle", overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+// ── 일목 (원본) ──────────────────────────────────────────────────────────
+conversionPeriods    = input.int(9,  minval = 1, title = "Conversion Line Length")
+basePeriods          = input.int(26, minval = 1, title = "Base Line Length")
+laggingSpan2Periods  = input.int(52, minval = 1, title = "Leading Span B Length")
+displacement         = input.int(26, minval = 1, title = "Lagging Span")
+
+donchian(len) => math.avg(ta.lowest(len), ta.highest(len))
+conversionLine = donchian(conversionPeriods)
+baseLine       = donchian(basePeriods)
+leadLine1      = math.avg(conversionLine, baseLine)
+leadLine2      = donchian(laggingSpan2Periods)
+
+plot(conversionLine, color = #2962FF, title = "Conversion Line", display = display.none)
+plot(baseLine,       color = #B71C1C, title = "Base Line",       display = display.none)
+plot(close, offset = -displacement + 1, color = #43A047, title = "Lagging Span", display = display.none)
+
+p1 = plot(leadLine1, offset = displacement - 1, color = #ffffff, title = "Leading Span A")
+p2 = plot(leadLine2, offset = displacement - 1, color = #ffffff, title = "Leading Span B")
+plot(leadLine1 > leadLine2 ? leadLine1 : leadLine2, offset = displacement - 1, title = "Kumo Cloud Upper Line", display = display.none)
+plot(leadLine1 < leadLine2 ? leadLine1 : leadLine2, offset = displacement - 1, title = "Kumo Cloud Lower Line", display = display.none)
+fill(p1, p2, color = leadLine1 > leadLine2 ? color.rgb(67, 160, 71, 90) : color.rgb(244, 67, 54, 90), display = display.none)
+
+// ── 방향 레이블 ──────────────────────────────────────────────────────────
+// 원본은 `close < leadLine1` 을 먼저 보고 아니면 `close > leadLine2` 를 봤다.
+// A·B 중 어느 쪽이 위인지를 안 따지므로, 상승장(A>B)에서 가격이 **구름 안**
+// (B < close < A) 일 때도 첫 줄에 걸려 ↓ 로 나왔다. 여기서는 구름의 위/아래를
+// 실제로 잡아 위·안·아래 셋으로 가른다(Aurora 방향 필터와 같은 기준).
+//
+// ⚠ 판정에 쓰는 leadLine1/2 는 **시프트 전** 값이다. 화면의 구름은 26봉 앞에
+//    그려지므로, 이 비교는 "지금 보이는 구름"이 아니라 "26봉 뒤에 그려질 구름"과
+//    현재 종가를 견주는 것이다. 원본이 그렇게 짜여 있어 동작을 바꾸지 않았다.
+showLabel = input.bool(true, "방향 레이블(↑↓) 표시", group = "방향")
+kumoTop = math.max(leadLine1, leadLine2)
+kumoBot = math.min(leadLine1, leadLine2)
+
+var label lastLabel = na
+if barstate.islast and showLabel
+    if not na(lastLabel)
+        label.delete(lastLabel)
+    txt = close > kumoTop ? "↑" : close < kumoBot ? "↓" : "―"
+    col = close > kumoTop ? color.green : close < kumoBot ? color.red : color.gray
+    lastLabel := label.new(bar_index, high, text = txt, color = col,
+      yloc = yloc.abovebar, textcolor = col, size = size.small)
+
+// ── 파란 다이아 (원본 유지) ──────────────────────────────────────────────
+// 300봉 고저 범위의 하단 20% 에 종가가 들어오고 옛 저점은 안 깨진 자리 · 60봉 쿨다운.
+fixedLowestLow   = ta.lowest(low, 300)[100]
+highestHigh      = ta.highest(high, 300)
+priceRange       = highestHigh - fixedLowestLow
+priceDiff        = highestHigh - close
+threshold        = priceRange * 0.8
+isBelowThreshold = (priceDiff >= threshold) and (close > fixedLowestLow)
+
+var int lastPlotBarIndex = na
+showEvery30Bars = isBelowThreshold and (na(lastPlotBarIndex) or (bar_index - lastPlotBarIndex >= 60))
+if showEvery30Bars
+    lastPlotBarIndex := bar_index
+plotshape(series = showEvery30Bars, location = location.belowbar, style = shape.diamond, color = color.blue, size = size.small)
+
+// ── Cycle 지지/저항 ─────────────────────────────────────────────────────
+grpL = "Cycle 레벨"
+useCloud = input.bool(true,  "구름대(다중 TF)",              group = grpL)
+useVP    = input.bool(true,  "매물대(가격대별 거래량)",       group = grpL)
+use2468  = input.bool(true,  "2468 (1K 안 200/400/600/800)", group = grpL)
+
+grpT = "Cycle 상위 TF"
+tf1 = input.timeframe("15",  "TF 1", group = grpT)
+tf2 = input.timeframe("60",  "TF 2", group = grpT)
+tf3 = input.timeframe("120", "TF 3", group = grpT)
+tf4 = input.timeframe("240", "TF 4", group = grpT)
+
+grpD = "Cycle 판정"
+tolPct    = input.float(0.2, "터치 허용폭 %", minval = 0.01, step = 0.01, group = grpD)
+cooldown  = input.int(20, "같은 자리 재표시 대기(봉)", minval = 0, group = grpD)
+vpLook    = input.int(300, "매물대 관찰 봉수", minval = 50, group = grpD)
+vpBins    = input.int(40, "매물대 구간 수", minval = 10, group = grpD)
+vpTop     = input.int(5, "매물대 상위 N", minval = 1, group = grpD)
+thinRatio = input.float(0.35, "얇은 구름 제외 (자기 두께 중앙값 대비)", minval = 0, maxval = 1, step = 0.05, group = grpD)
+showLevel = input.bool(false, "판정 레벨을 선으로 표시(검증용)", group = grpD)
+
+tol = tolPct / 100.0
+
+// 판정에 쓰는 구름 = **지금 자리에 그려져 있는 값**(원본 plot 과 같은 25봉 시프트)
+spanA = leadLine1[displacement - 1]
+spanB = leadLine2[displacement - 1]
+
+// 얇은 구름은 지지/저항으로 안 친다 — 임계는 그 TF **자기 두께 중앙값 대비**.
+// 고정 % 는 못 쓴다: 실측 두께 중앙값이 3m 0.13% / 1h 0.75% / 1D 6.10% 로 자릿수가
+// 달라, 0.1% 같은 값이면 3m 은 절반이 잘리고 1D 는 하나도 안 잘린다.
+thickPct = math.abs(spanA - spanB) / close
+thickMed = ta.median(thickPct, 200)
+notThin  = na(thickMed) or thinRatio <= 0 or thickPct >= thickMed * thinRatio
+
+// 상위 TF — 함수 안에서 못 부르므로 최상위에서 호출.
+// [1] 을 붙이지 않는다: 선행스팬은 이미 25봉 전 데이터라 진행 중인 봉의 영향을
+// 안 받는다(미래참조 없음). 붙이면 상위 TF 한 봉만큼 레벨이 통째로 밀린다.
+a1 = request.security(syminfo.tickerid, tf1, spanA, lookahead = barmerge.lookahead_off)
+b1 = request.security(syminfo.tickerid, tf1, spanB, lookahead = barmerge.lookahead_off)
+a2 = request.security(syminfo.tickerid, tf2, spanA, lookahead = barmerge.lookahead_off)
+b2 = request.security(syminfo.tickerid, tf2, spanB, lookahead = barmerge.lookahead_off)
+a3 = request.security(syminfo.tickerid, tf3, spanA, lookahead = barmerge.lookahead_off)
+b3 = request.security(syminfo.tickerid, tf3, spanB, lookahead = barmerge.lookahead_off)
+a4 = request.security(syminfo.tickerid, tf4, spanA, lookahead = barmerge.lookahead_off)
+b4 = request.security(syminfo.tickerid, tf4, spanB, lookahead = barmerge.lookahead_off)
+n1 = request.security(syminfo.tickerid, tf1, notThin, lookahead = barmerge.lookahead_off)
+n2 = request.security(syminfo.tickerid, tf2, notThin, lookahead = barmerge.lookahead_off)
+n3 = request.security(syminfo.tickerid, tf3, notThin, lookahead = barmerge.lookahead_off)
+n4 = request.security(syminfo.tickerid, tf4, notThin, lookahead = barmerge.lookahead_off)
+
+m0 = math.round(timeframe.in_seconds(timeframe.period) / 60)
+m1 = math.round(timeframe.in_seconds(tf1) / 60)
+m2 = math.round(timeframe.in_seconds(tf2) / 60)
+m3 = math.round(timeframe.in_seconds(tf3) / 60)
+m4 = math.round(timeframe.in_seconds(tf4) / 60)
+
+// 매물대 — 가격대별 거래량 상위 N 의 중심가. 20봉마다만 갱신(봉마다 돌면 무겁다).
+var float[] vpLevels = array.new_float()
+
+f_rebuildVP() =>
+    out = array.new_float()
+    hi = ta.highest(high, vpLook)
+    lo = ta.lowest(low, vpLook)
+    if not na(hi) and not na(lo) and hi > lo
+        step = (hi - lo) / vpBins
+        vols = array.new_float(vpBins, 0.0)
+        for i = 0 to vpLook - 1
+            mid = (high[i] + low[i]) / 2.0
+            bi = math.min(vpBins - 1, math.max(0, int((mid - lo) / step)))
+            array.set(vols, bi, array.get(vols, bi) + nz(volume[i]))
+        for n = 1 to vpTop
+            mx = array.max(vols)
+            bi = array.indexof(vols, mx)
+            if bi >= 0 and mx > 0
+                array.push(out, lo + step * (bi + 0.5))
+                array.set(vols, bi, -1.0)
+    out
+
+if useVP and bar_index % 20 == 0 and bar_index >= vpLook
+    vpLevels := f_rebuildVP()
+
+f_push(arrP, arrS, arrT, v, s, t) =>
+    if not na(v)
+        array.push(arrP, v)
+        array.push(arrS, s)
+        array.push(arrT, t)
+
+// 2468 — PDF 원문: 1K 안의 200/400(상방) · 600/800(하방)
+f_push2468(arrP, arrS, arrT, price, isUp) =>
+    k = math.floor(price / 1000)
+    o1 = isUp ? 200 : 600
+    o2 = isUp ? 400 : 800
+    for d = -2 to 2
+        b = (k + d) * 1000
+        f_push(arrP, arrS, arrT, b + o1, 2, 0)
+        f_push(arrP, arrS, arrT, b + o2, 2, 0)
+
+f_touch(level, isSup) =>
+    band = level * tol
+    isSup ? (close[1] > level and low <= level + band and close >= level - band) : (close[1] < level and high >= level - band and close <= level + band)
+
+f_label(srcCode, tfMin) =>
+    srcCode == 1 ? "매물" : srcCode == 2 ? "2468" : tfMin >= 10080 ? "1W" : tfMin >= 1440 ? "1D" : tfMin >= 60 ? str.tostring(math.round(tfMin / 60)) + "h" : str.tostring(tfMin) + "m"
+
+var float lastPx  = na
+var int   lastBar = -9999
+
+// 지지 먼저 보고 없으면 저항 — 한 봉에 하나만 찍는다.
+for pass = 0 to 1
+    isSup = pass == 0
+    cPx  = array.new_float()
+    cSrc = array.new_int()
+    cTf  = array.new_int()
+
+    if useCloud
+        if notThin
+            f_push(cPx, cSrc, cTf, spanA, 0, m0)
+            f_push(cPx, cSrc, cTf, spanB, 0, m0)
+        if n1
+            f_push(cPx, cSrc, cTf, a1, 0, m1)
+            f_push(cPx, cSrc, cTf, b1, 0, m1)
+        if n2
+            f_push(cPx, cSrc, cTf, a2, 0, m2)
+            f_push(cPx, cSrc, cTf, b2, 0, m2)
+        if n3
+            f_push(cPx, cSrc, cTf, a3, 0, m3)
+            f_push(cPx, cSrc, cTf, b3, 0, m3)
+        if n4
+            f_push(cPx, cSrc, cTf, a4, 0, m4)
+            f_push(cPx, cSrc, cTf, b4, 0, m4)
+    if useVP and array.size(vpLevels) > 0
+        for i = 0 to array.size(vpLevels) - 1
+            f_push(cPx, cSrc, cTf, array.get(vpLevels, i), 1, 0)
+    if use2468
+        f_push2468(cPx, cSrc, cTf, close, isSup)
+
+    // 닿은 것 중 상위 TF 우선, 동률이면 현재가에 가까운 것
+    bestPx  = float(na)
+    bestSrc = 0
+    bestTf  = -1
+    if array.size(cPx) > 0
+        for i = 0 to array.size(cPx) - 1
+            v = array.get(cPx, i)
+            if f_touch(v, isSup)
+                t = array.get(cTf, i)
+                better = na(bestPx) or t > bestTf or (t == bestTf and math.abs(v - close) < math.abs(bestPx - close))
+                if better
+                    bestPx  := v
+                    bestSrc := array.get(cSrc, i)
+                    bestTf  := t
+
+    if not na(bestPx)
+        // 겹침은 **출처 종류 수**로 센다(±0.4%). 레벨 개수로 세면 매물대가 한 자리에
+        // 여럿 몰려 늘 2 이상이 나와 변별력이 없다.
+        hasCloud = false
+        hasVP    = false
+        has24    = false
+        for i = 0 to array.size(cPx) - 1
+            if math.abs(array.get(cPx, i) - bestPx) / bestPx <= 0.004
+                s = array.get(cSrc, i)
+                hasCloud := hasCloud or s == 0
+                hasVP    := hasVP    or s == 1
+                has24    := has24    or s == 2
+        cnt = (hasCloud ? 1 : 0) + (hasVP ? 1 : 0) + (has24 ? 1 : 0)
+
+        cooled = na(lastPx) or (bar_index - lastBar) > cooldown or math.abs(bestPx - lastPx) / bestPx > 0.004
+        if cooled
+            lastPx  := bestPx
+            lastBar := bar_index
+            if showLevel
+                line.new(bar_index - 2, bestPx, bar_index + 2, bestPx, color = isSup ? color.new(#22c55e, 30) : color.new(#ef4444, 30), width = 1)
+            dia = str.repeat("◆", math.max(1, math.min(3, cnt)))
+            // 지지는 ◆ 아래에, 저항은 ◆ 위에 라벨이 오도록 줄 순서를 뒤집는다.
+            txt = isSup ? dia + "\n" + f_label(bestSrc, bestTf) : f_label(bestSrc, bestTf) + "\n" + dia
+            label.new(bar_index, isSup ? low : high, txt, style = isSup ? label.style_label_up : label.style_label_down, color = color.new(color.black, 100), textcolor = isSup ? color.new(#22c55e, 0) : color.new(#ef4444, 0), size = size.small)
+            break
