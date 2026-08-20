@@ -14,7 +14,7 @@
 // Cycle 규칙은 Aurora 백테와 같다(docs/cycle_levels.pine 과 동일):
 //   터치 = 레벨에 닿고 그 방향으로 버팀 · 같은 자리 20봉 쿨다운 ·
 //   겹친 자리는 상위 TF 를 라벨로 · 겹친 출처 수는 라벨에 x2/x3 로.
-//   마커는 유니코드 글자가 아니라 **도형**이다(개수 제한 없고 가벼움).
+//   마커는 plotchar 로 그린다 — 유니코드 기호이면서도 label 같은 500개 제한이 없다.
 
 //@version=5
 indicator("Nayotti Chart + Cycle", overlay = true, max_labels_count = 500, max_lines_count = 500)
@@ -103,7 +103,7 @@ vpBins    = input.int(40, "매물대 구간 수", minval = 10, group = grpD)
 vpTop     = input.int(5, "매물대 상위 N", minval = 1, group = grpD)
 thinRatio = input.float(0.35, "얇은 구름 제외 (자기 두께 중앙값 대비)", minval = 0, maxval = 1, step = 0.05, group = grpD)
 showLevel = input.bool(false, "판정 레벨을 선으로 표시(검증용)", group = grpD)
-markShape = input.string("십자별", "마커 모양", options = ["십자별", "X", "십자", "원", "삼각형", "마름모", "네모", "깃발"], group = grpD)
+markChar  = input.string("★", "마커 기호", options = ["★", "☆", "✦", "✧", "●", "▲", "▼", "◆", "■", "✖", "✹"], group = grpD)
 markSize  = input.string("tiny", "마커 크기", options = ["tiny", "small", "normal"], group = grpD)
 supColor  = input.color(#facc15, "지지 색", inline = "mc", group = grpD)
 resColor  = input.color(#f87171, "저항 색", inline = "mc", group = grpD)
@@ -218,7 +218,7 @@ f_label(srcCode, tfMin) =>
 var float lastPx  = na
 var int   lastBar = -9999
 
-// plotshape 는 최상위에서 series 를 받아야 해서, 루프는 신호만 세우고
+// plotchar 는 최상위에서 series 를 받아야 해서, 루프는 신호만 세우고
 // 그리는 건 아래에서 한 번에 한다. 도형은 개수 제한이 없어(라벨은 500개)
 // 오래된 구간까지 남는다는 이점도 있다.
 supHit = false
@@ -307,21 +307,16 @@ for pass = 0 to 1
             break
 
 // ── 마커 렌더 ────────────────────────────────────────────────────────────
-// 유니코드 글자 대신 진짜 도형을 쓴다. 파인에 '별' 도형은 없어서 십자별은
-// xcross + cross 를 겹쳐 만든다(트뷰에서 이게 별처럼 보인다).
+// plotshape 은 정해진 도형(xcross/circle/triangle …)만 그릴 수 있어 '별'이 없다.
+// plotchar 는 **유니코드 문자**를 그리므로 진짜 ★ 가 나온다. 게다가 label 과 달리
+// 500개 제한이 없어 오래된 구간까지 남는다(label 은 넘치면 옛것부터 지워진다).
 _sz = markSize == "normal" ? size.normal : markSize == "small" ? size.small : size.tiny
-_isStar  = markShape == "십자별"
-// 삼각형·화살표는 지지/저항에 따라 위아래를 뒤집는다(아래를 받치면 위쪽 삼각형).
-_shapeSup = markShape == "X" or _isStar ? shape.xcross : markShape == "십자" ? shape.cross : markShape == "원" ? shape.circle : markShape == "삼각형" ? shape.triangleup : markShape == "마름모" ? shape.diamond : markShape == "네모" ? shape.square : shape.flag
-_shapeRes = markShape == "X" or _isStar ? shape.xcross : markShape == "십자" ? shape.cross : markShape == "원" ? shape.circle : markShape == "삼각형" ? shape.triangledown : markShape == "마름모" ? shape.diamond : markShape == "네모" ? shape.square : shape.flag
 
-plotshape(supHit, title = "지지 터치", style = _shapeSup, location = location.belowbar, color = supColor, size = _sz)
-plotshape(resHit, title = "저항 터치", style = _shapeRes, location = location.abovebar, color = resColor, size = _sz)
-// 십자별 — 위 xcross 에 cross 를 겹쳐 8방향 별로 만든다.
-plotshape(_isStar and supHit, title = "지지 터치(겹침)", style = shape.cross, location = location.belowbar, color = supColor, size = _sz)
-plotshape(_isStar and resHit, title = "저항 터치(겹침)", style = shape.cross, location = location.abovebar, color = resColor, size = _sz)
+plotchar(supHit, title = "지지 터치", char = markChar, location = location.belowbar, color = supColor, size = _sz)
+plotchar(resHit, title = "저항 터치", char = markChar, location = location.abovebar, color = resColor, size = _sz)
 
-// TF 라벨 — 도형에는 개별 텍스트를 못 넣어서 글자는 따로 붙인다(끌 수 있음).
+// TF 라벨 — plotchar 도 개별 텍스트를 못 넣어(char 는 전 구간 공통) 글자는 따로
+// 붙인다. 이건 label 이라 500개 제한을 받으므로 기본은 켜두되 끌 수 있게 한다.
 if showTfTag and (supHit or resHit)
     label.new(bar_index, supHit ? low : high, tagTxt,
       style = supHit ? label.style_label_up : label.style_label_down,
