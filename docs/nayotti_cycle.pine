@@ -15,6 +15,7 @@
 //   터치 = 레벨에 닿고 그 방향으로 버팀 · 같은 자리 20봉 쿨다운 ·
 //   겹친 자리는 상위 TF 를 라벨로 · 겹친 출처 수는 라벨에 x2/x3 로.
 //   마커는 plotchar 로 그린다 — 유니코드 기호이면서도 label 같은 500개 제한이 없다.
+//   삼각형을 고르면 지지는 ▲, 저항은 ▼ 로 나온다.
 
 //@version=5
 indicator("Nayotti Chart + Cycle", overlay = true, max_labels_count = 500, max_lines_count = 500)
@@ -103,8 +104,10 @@ vpBins    = input.int(40, "매물대 구간 수", minval = 10, group = grpD)
 vpTop     = input.int(5, "매물대 상위 N", minval = 1, group = grpD)
 thinRatio = input.float(0.35, "얇은 구름 제외 (자기 두께 중앙값 대비)", minval = 0, maxval = 1, step = 0.05, group = grpD)
 showLevel = input.bool(false, "판정 레벨을 선으로 표시(검증용)", group = grpD)
-markChar  = input.string("★", "마커 기호", options = ["★", "☆", "✦", "✧", "●", "▲", "▼", "◆", "■", "✖", "✹"], group = grpD)
-markSize  = input.string("tiny", "마커 크기", options = ["tiny", "small", "normal"], group = grpD)
+// plotchar 의 char/size 는 **const string** 이라 input 값을 바로 못 넣는다.
+// 그래서 기호마다 plotchar 를 따로 두고 아래에서 조건으로 가른다.
+markChar  = input.string("★", "마커 기호", options = ["★", "✦", "●", "▲", "◆"], group = grpD)
+markBig   = input.bool(false, "마커 크게", group = grpD)
 supColor  = input.color(#facc15, "지지 색", inline = "mc", group = grpD)
 resColor  = input.color(#f87171, "저항 색", inline = "mc", group = grpD)
 showTfTag = input.bool(true, "마커 옆에 TF 라벨 표시", group = grpD)
@@ -170,10 +173,14 @@ u7 = timeframe.in_seconds(tf7) > sec0
 // 매물대 — 가격대별 거래량 상위 N 의 중심가. 20봉마다만 갱신(봉마다 돌면 무겁다).
 var float[] vpLevels = array.new_float()
 
-f_rebuildVP() =>
+// ta.highest/lowest 는 **매 봉** 계산돼야 값이 맞다. 예전엔 이 두 줄이 함수 안에
+// 있었는데 함수를 20봉마다만 불러서 내부 상태가 어긋났다(트뷰가 경고로 잡아줬다).
+// 무거운 히스토그램 루프만 조건부로 두고, ta 는 밖에서 항상 돌린다.
+vpHi = ta.highest(high, vpLook)
+vpLo = ta.lowest(low, vpLook)
+
+f_rebuildVP(hi, lo) =>
     out = array.new_float()
-    hi = ta.highest(high, vpLook)
-    lo = ta.lowest(low, vpLook)
     if not na(hi) and not na(lo) and hi > lo
         step = (hi - lo) / vpBins
         vols = array.new_float(vpBins, 0.0)
@@ -190,7 +197,7 @@ f_rebuildVP() =>
     out
 
 if useVP and bar_index % 20 == 0 and bar_index >= vpLook
-    vpLevels := f_rebuildVP()
+    vpLevels := f_rebuildVP(vpHi, vpLo)
 
 f_push(arrP, arrS, arrT, v, s, t) =>
     if not na(v)
@@ -307,16 +314,38 @@ for pass = 0 to 1
             break
 
 // ── 마커 렌더 ────────────────────────────────────────────────────────────
-// plotshape 은 정해진 도형(xcross/circle/triangle …)만 그릴 수 있어 '별'이 없다.
-// plotchar 는 **유니코드 문자**를 그리므로 진짜 ★ 가 나온다. 게다가 label 과 달리
-// 500개 제한이 없어 오래된 구간까지 남는다(label 은 넘치면 옛것부터 지워진다).
-_sz = markSize == "normal" ? size.normal : markSize == "small" ? size.small : size.tiny
+// plotchar 는 유니코드 문자를 그린다 — plotshape 에는 없는 '별'이 나오고,
+// label 과 달리 500개 제한이 없어 오래된 구간까지 남는다.
+//
+// 다만 char/size 가 **const string** 이라 input 값을 그대로 못 넣는다. 그래서
+// 기호마다 한 줄씩 두고 조건으로 가른다(안 고른 기호는 조건이 false 라 안 그려진다).
+_s1 = supHit and markChar == "★"
+_s2 = supHit and markChar == "✦"
+_s3 = supHit and markChar == "●"
+_s4 = supHit and markChar == "▲"
+_s5 = supHit and markChar == "◆"
+_r1 = resHit and markChar == "★"
+_r2 = resHit and markChar == "✦"
+_r3 = resHit and markChar == "●"
+_r4 = resHit and markChar == "▼"
+_r5 = resHit and markChar == "◆"
 
-plotchar(supHit, title = "지지 터치", char = markChar, location = location.belowbar, color = supColor, size = _sz)
-plotchar(resHit, title = "저항 터치", char = markChar, location = location.abovebar, color = resColor, size = _sz)
+plotchar(_s1 and not markBig, title = "지지 ★", char = "★", location = location.belowbar, color = supColor, size = size.tiny)
+plotchar(_s1 and markBig,     title = "지지 ★ (크게)", char = "★", location = location.belowbar, color = supColor, size = size.small)
+plotchar(_s2, title = "지지 ✦", char = "✦", location = location.belowbar, color = supColor, size = size.tiny)
+plotchar(_s3, title = "지지 ●", char = "●", location = location.belowbar, color = supColor, size = size.tiny)
+plotchar(_s4, title = "지지 ▲", char = "▲", location = location.belowbar, color = supColor, size = size.tiny)
+plotchar(_s5, title = "지지 ◆", char = "◆", location = location.belowbar, color = supColor, size = size.tiny)
 
-// TF 라벨 — plotchar 도 개별 텍스트를 못 넣어(char 는 전 구간 공통) 글자는 따로
-// 붙인다. 이건 label 이라 500개 제한을 받으므로 기본은 켜두되 끌 수 있게 한다.
+plotchar(_r1 and not markBig, title = "저항 ★", char = "★", location = location.abovebar, color = resColor, size = size.tiny)
+plotchar(_r1 and markBig,     title = "저항 ★ (크게)", char = "★", location = location.abovebar, color = resColor, size = size.small)
+plotchar(_r2, title = "저항 ✦", char = "✦", location = location.abovebar, color = resColor, size = size.tiny)
+plotchar(_r3, title = "저항 ●", char = "●", location = location.abovebar, color = resColor, size = size.tiny)
+plotchar(_r4, title = "저항 ▼", char = "▼", location = location.abovebar, color = resColor, size = size.tiny)
+plotchar(_r5, title = "저항 ◆", char = "◆", location = location.abovebar, color = resColor, size = size.tiny)
+
+// TF 라벨 — plotchar 도 개별 텍스트를 못 넣어(char 가 전 구간 공통) 글자는 따로
+// 붙인다. 이건 label 이라 500개 제한을 받으므로 토글로 끌 수 있게 한다.
 if showTfTag and (supHit or resHit)
     label.new(bar_index, supHit ? low : high, tagTxt,
       style = supHit ? label.style_label_up : label.style_label_down,
