@@ -3124,3 +3124,91 @@ bootstrap();
 
 // 공지 banner — 인증 후 1회 즉시 fetch (이후는 setInterval 5분 주기).
 setTimeout(() => { refreshNotice(); }, 2000);
+
+// ============================================================
+// 2026-08-20 #LIQMAP: Hyperliquid 청산 지도
+// ============================================================
+// 고래 포지션의 **실제** 청산가를 가격대별로 합산한 값(백엔드 /ict/liquidation).
+// 코인글라스 히트맵은 미결제약정에 레버리지를 가정한 추정이지만, 이건 공개 API 가
+// 알려주는 실측이다 — 대신 Hyperliquid 한 거래소, 리더보드에 잡히는 지갑만이다.
+//
+// 표시는 가로 밴드. 금액이 큰 구간일수록 진하게 칠해 "몰린 자리"가 눈에 띄게 한다.
+// 롱 청산(아래쪽에 쌓임) 초록 / 숏 청산(위쪽) 빨강.
+let _liqOn = false;
+let _liqSeries = [];
+let _liqTimer = null;
+
+function _clearLiqBands() {
+  _liqSeries.forEach((sr) => { try { chart.removeSeries(sr); } catch (e) { /* noop */ } });
+  _liqSeries = [];
+}
+
+function _renderLiqBands(data) {
+  _clearLiqBands();
+  const meta = $("liq-meta");
+  if (!data || !data.bins || !data.bins.length) {
+    if (meta) meta.textContent = data && data.stale ? "수집 중…" : "";
+    return;
+  }
+  const bins = data.bins.filter((b) => b.total > 0);
+  if (!bins.length) return;
+  const max = Math.max(...bins.map((b) => b.total));
+  // 상위 40개 구간만 — 전부 그리면 차트가 뭉갠다.
+  const top = bins.slice().sort((a, b) => b.total - a.total).slice(0, 40);
+  const from = lastBarTimeSec ? lastBarTimeSec - 86400 * 30 : null;
+
+  top.forEach((b) => {
+    const isLong = b.long >= b.short;
+    const strength = Math.min(1, b.total / max);
+    // 투명도로 강도 표현 — 약한 구간은 거의 안 보이게.
+    const alpha = 0.10 + strength * 0.55;
+    const css = isLong
+      ? `rgba(34,197,94,${alpha.toFixed(3)})`
+      : `rgba(239,68,68,${alpha.toFixed(3)})`;
+    const sr = chart.addLineSeries({
+      color: css,
+      lineWidth: Math.max(1, Math.round(1 + strength * 5)),
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    const t2 = lastBarTimeSec || Math.floor(Date.now() / 1000);
+    sr.setData([{ time: from || t2 - 86400, value: b.price }, { time: t2, value: b.price }]);
+    _liqSeries.push(sr);
+  });
+
+  if (meta) {
+    const age = data.age_sec == null ? "?" : Math.round(data.age_sec / 60);
+    meta.textContent = `지갑 ${data.scanned.toLocaleString()} · 포지션 ${data.positions} · ${age}분 전`;
+  }
+}
+
+async function _fetchLiq() {
+  if (!_liqOn) return;
+  try {
+    const base = _baseOf(currentChartSymbol) || "BTC";
+    const d = await api(`/ict/liquidation?coin=${encodeURIComponent(base)}`);
+    _renderLiqBands(d);
+  } catch (e) {
+    const meta = $("liq-meta");
+    if (meta) meta.textContent = "불러오기 실패";
+  }
+}
+
+(function _bindLiqToggle() {
+  const btn = $("btn-liqmap");
+  if (!btn) return;
+  btn.onclick = () => {
+    _liqOn = !_liqOn;
+    btn.classList.toggle("active", _liqOn);
+    if (_liqOn) {
+      _fetchLiq();
+      // 스캔이 백엔드에서 수 분 걸리므로 느긋하게 다시 본다.
+      _liqTimer = setInterval(_fetchLiq, 60000);
+    } else {
+      clearInterval(_liqTimer); _liqTimer = null;
+      _clearLiqBands();
+      const meta = $("liq-meta");
+      if (meta) meta.textContent = "";
+    }
+  };
+})();

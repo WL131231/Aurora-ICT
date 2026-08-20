@@ -2348,6 +2348,21 @@ def _register_multi_user_routes(
             "markers": markers.to_dict(),
         }
 
+    # 2026-08-20 #LIQMAP: Hyperliquid 청산 지도 — 고래 포지션의 **실제** 청산가를
+    # 가격대별로 합산해 내려준다(코인글라스는 OI+레버 가정으로 추정하지만 이쪽은
+    # 공개 API 가 알려주는 실측값이다. 대신 Hyperliquid 한 거래소 범위).
+    # 스캔이 수 분 걸려 요청 안에서 못 돌린다 — 캐시에서만 읽고, 오래됐으면
+    # 백그라운드 갱신만 띄운 뒤 있는 값을 그대로 준다.
+    @app.get("/ict/liquidation")
+    async def _liquidation(coin: str = "BTC") -> dict[str, Any]:
+        from aurora_ict.data import liquidation as _liq  # noqa: PLC0415
+
+        sym = (coin or "BTC").upper().replace("USDT", "").replace("/", "").strip()
+        data = _liq.get_cached(sym)
+        if data["stale"]:
+            _liq.refresh_async(sym)
+        return data
+
     @app.get("/ict/ohlcv")
     async def get_ohlcv_mu(
         symbol: str | None = None,

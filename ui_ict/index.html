@@ -1452,6 +1452,18 @@
   body.model-cursus .viz-toggle { display: none !important; }
   /* 2026-08-18 #CYCLE: 순환매도 ICT 개념(킬존/BOS/PD존)을 안 쓴다 — 같이 숨긴다.
      판단 패널(bot-judgment)은 Origo 전용 해설이라 Cycle 에선 오해를 부른다. */
+  /* 2026-08-20 #LIQMAP 청산맵 토글 — viz-toggle 과 같은 톤. */
+  .liq-toggle { display:flex; align-items:center; gap:8px; }
+  .liq-toggle button {
+    background:transparent; border:1px solid var(--border, #2a323f);
+    color:var(--muted, #94a3b8); border-radius:6px; padding:3px 10px;
+    font-size:12px; cursor:pointer; letter-spacing:.02em;
+  }
+  .liq-toggle button:hover { color:#e6e9ef; }
+  .liq-toggle button.active { color:#fbbf24; border-color:#fbbf24; }
+  .liq-meta { font-size:11px; color:var(--muted, #7c8698); white-space:nowrap; }
+  body.model-cursus .liq-toggle { display:none !important; }
+
   body.model-cycle .killzone-bar,
   body.model-cycle .session-badge,
   body.model-cycle .viz-toggle,
@@ -2392,6 +2404,12 @@
         <button data-viz="bos">BOS</button>
         <button data-viz="eql">EQH/EQL</button>
         <button data-viz="zones">PD Zones</button>
+      </div>
+      <!-- 2026-08-20 #LIQMAP: Hyperliquid 고래 청산가 밀집 구간. 켜면 차트에
+           가로 밴드로 표시된다(롱 청산 초록 / 숏 청산 빨강, 진할수록 금액 큼). -->
+      <div class="liq-toggle" id="liq-toggle">
+        <button type="button" id="btn-liqmap">청산맵</button>
+        <span class="liq-meta" id="liq-meta"></span>
       </div>
       <span class="chart-symbol chart-info-label" id="chart-symbol-label">—</span>
     </div>
