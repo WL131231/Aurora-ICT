@@ -13,8 +13,8 @@
 //
 // Cycle 규칙은 Aurora 백테와 같다(docs/cycle_levels.pine 과 동일):
 //   터치 = 레벨에 닿고 그 방향으로 버팀 · 같은 자리 20봉 쿨다운 ·
-//   겹친 자리는 상위 TF 를 라벨로 · 기호 개수 = 겹친 출처 종류
-//   마커 기호는 설정에서 고른다(기본 ★).
+//   겹친 자리는 상위 TF 를 라벨로 · 겹친 출처 수는 라벨에 x2/x3 로.
+//   마커는 유니코드 글자가 아니라 **도형**이다(개수 제한 없고 가벼움).
 
 //@version=5
 indicator("Nayotti Chart + Cycle", overlay = true, max_labels_count = 500, max_lines_count = 500)
@@ -103,7 +103,11 @@ vpBins    = input.int(40, "매물대 구간 수", minval = 10, group = grpD)
 vpTop     = input.int(5, "매물대 상위 N", minval = 1, group = grpD)
 thinRatio = input.float(0.35, "얇은 구름 제외 (자기 두께 중앙값 대비)", minval = 0, maxval = 1, step = 0.05, group = grpD)
 showLevel = input.bool(false, "판정 레벨을 선으로 표시(검증용)", group = grpD)
-markSym   = input.string("★", "마커 기호", options = ["★", "☆", "✦", "●", "▲", "◆", "■"], group = grpD)
+markShape = input.string("십자별", "마커 모양", options = ["십자별", "X", "십자", "원", "삼각형", "마름모", "네모", "깃발"], group = grpD)
+markSize  = input.string("tiny", "마커 크기", options = ["tiny", "small", "normal"], group = grpD)
+supColor  = input.color(#facc15, "지지 색", inline = "mc", group = grpD)
+resColor  = input.color(#f87171, "저항 색", inline = "mc", group = grpD)
+showTfTag = input.bool(true, "마커 옆에 TF 라벨 표시", group = grpD)
 
 tol = tolPct / 100.0
 
@@ -214,6 +218,13 @@ f_label(srcCode, tfMin) =>
 var float lastPx  = na
 var int   lastBar = -9999
 
+// plotshape 는 최상위에서 series 를 받아야 해서, 루프는 신호만 세우고
+// 그리는 건 아래에서 한 번에 한다. 도형은 개수 제한이 없어(라벨은 500개)
+// 오래된 구간까지 남는다는 이점도 있다.
+supHit = false
+resHit = false
+tagTxt = ""
+
 // 지지 먼저 보고 없으면 저항 — 한 봉에 하나만 찍는다.
 for pass = 0 to 1
     isSup = pass == 0
@@ -287,8 +298,32 @@ for pass = 0 to 1
             lastBar := bar_index
             if showLevel
                 line.new(bar_index - 2, bestPx, bar_index + 2, bestPx, color = isSup ? color.new(#22c55e, 30) : color.new(#ef4444, 30), width = 1)
-            dia = str.repeat(markSym, math.max(1, math.min(3, cnt)))
-            // 지지는 기호 아래에, 저항은 기호 위에 라벨이 오도록 줄 순서를 뒤집는다.
-            txt = isSup ? dia + "\n" + f_label(bestSrc, bestTf) : f_label(bestSrc, bestTf) + "\n" + dia
-            label.new(bar_index, isSup ? low : high, txt, style = isSup ? label.style_label_up : label.style_label_down, color = color.new(color.black, 100), textcolor = isSup ? color.new(#22c55e, 0) : color.new(#ef4444, 0), size = size.small)
+            if isSup
+                supHit := true
+            else
+                resHit := true
+            // 겹친 출처 수를 라벨에 함께 적는다(도형은 개수로 표현할 수 없다).
+            tagTxt := f_label(bestSrc, bestTf) + (cnt > 1 ? " x" + str.tostring(cnt) : "")
             break
+
+// ── 마커 렌더 ────────────────────────────────────────────────────────────
+// 유니코드 글자 대신 진짜 도형을 쓴다. 파인에 '별' 도형은 없어서 십자별은
+// xcross + cross 를 겹쳐 만든다(트뷰에서 이게 별처럼 보인다).
+_sz = markSize == "normal" ? size.normal : markSize == "small" ? size.small : size.tiny
+_isStar  = markShape == "십자별"
+// 삼각형·화살표는 지지/저항에 따라 위아래를 뒤집는다(아래를 받치면 위쪽 삼각형).
+_shapeSup = markShape == "X" or _isStar ? shape.xcross : markShape == "십자" ? shape.cross : markShape == "원" ? shape.circle : markShape == "삼각형" ? shape.triangleup : markShape == "마름모" ? shape.diamond : markShape == "네모" ? shape.square : shape.flag
+_shapeRes = markShape == "X" or _isStar ? shape.xcross : markShape == "십자" ? shape.cross : markShape == "원" ? shape.circle : markShape == "삼각형" ? shape.triangledown : markShape == "마름모" ? shape.diamond : markShape == "네모" ? shape.square : shape.flag
+
+plotshape(supHit, title = "지지 터치", style = _shapeSup, location = location.belowbar, color = supColor, size = _sz)
+plotshape(resHit, title = "저항 터치", style = _shapeRes, location = location.abovebar, color = resColor, size = _sz)
+// 십자별 — 위 xcross 에 cross 를 겹쳐 8방향 별로 만든다.
+plotshape(_isStar and supHit, title = "지지 터치(겹침)", style = shape.cross, location = location.belowbar, color = supColor, size = _sz)
+plotshape(_isStar and resHit, title = "저항 터치(겹침)", style = shape.cross, location = location.abovebar, color = resColor, size = _sz)
+
+// TF 라벨 — 도형에는 개별 텍스트를 못 넣어서 글자는 따로 붙인다(끌 수 있음).
+if showTfTag and (supHit or resHit)
+    label.new(bar_index, supHit ? low : high, tagTxt,
+      style = supHit ? label.style_label_up : label.style_label_down,
+      color = color.new(color.black, 100),
+      textcolor = supHit ? supColor : resColor, size = size.tiny)
