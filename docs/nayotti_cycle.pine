@@ -10,6 +10,7 @@
 //     원본은 A·B 중 어느 쪽이 위인지 안 따져서, 상승장에서 가격이 구름 안에
 //     있어도 ↓ 로 나왔다. 아래 주석 참조.
 //   · Cycle 지지/저항 마커를 얹었다 — 구름 스팬(TF 7종) · 매물대 · 2468.
+//   · 매물대는 박스로 그리고, 가격이 관통하면(소진) 지운다.
 //
 // Cycle 규칙은 Aurora 백테와 같다(docs/cycle_levels.pine 과 동일):
 //   터치 = 레벨에 닿고 그 방향으로 버팀 · 같은 자리 20봉 쿨다운 ·
@@ -18,7 +19,7 @@
 //   삼각형을 고르면 지지는 ▲, 저항은 ▼ 로 나온다.
 
 //@version=5
-indicator("Nayotti Chart + Cycle", overlay = true, max_labels_count = 500, max_lines_count = 500)
+indicator("Nayotti Chart + Cycle", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
 
 // ── 일목 (원본) ──────────────────────────────────────────────────────────
 conversionPeriods    = input.int(9,  minval = 1, title = "Conversion Line Length")
@@ -112,6 +113,11 @@ supColor  = input.color(#facc15, "지지 색", inline = "mc", group = grpD)
 resColor  = input.color(#f87171, "저항 색", inline = "mc", group = grpD)
 showTfTag = input.bool(true, "마커 옆에 TF 라벨 표시", group = grpD)
 
+grpV = "매물대 표시"
+showVpBox = input.bool(true, "매물대를 박스로 표시", group = grpV)
+vpBoxCol  = input.color(color.new(#94a3b8, 82), "박스 색", group = grpV)
+vpFillMode = input.string("관통하면 삭제", "소진 판정", options = ["관통하면 삭제", "종가가 넘으면 삭제", "지우지 않음"], group = grpV, tooltip = "관통 = 봉의 고저가 박스를 완전히 통과한 경우. 종가 기준이 더 느슨하다.")
+
 tol = tolPct / 100.0
 
 // 판정에 쓰는 구름 = **지금 자리에 그려져 있는 값**(원본 plot 과 같은 25봉 시프트)
@@ -198,6 +204,52 @@ f_rebuildVP(hi, lo) =>
 
 if useVP and bar_index % 20 == 0 and bar_index >= vpLook
     vpLevels := f_rebuildVP(vpHi, vpLo)
+
+// ── 매물대 박스 ─────────────────────────────────────────────────────────
+// 레벨은 빈의 **중심가**라 두께가 없다. 박스로 그리려면 폭이 필요하므로 히스토그램
+// 빈 폭을 그대로 쓴다. 매물대는 20봉마다 다시 잡히는데, 그때마다 지우고 새로
+// 그리면 "언제 생겨서 언제 채워졌는지"를 추적할 수 없다. 그래서 **새로 생긴
+// 레벨만** 박스로 추가하고, 기존 박스는 관통될 때까지 오른쪽으로 늘린다.
+var box[]   vpBoxes = array.new_box()
+var float[] vpBoxPx = array.new_float()
+
+vpStep = (vpHi - vpLo) / vpBins
+vpHalf = vpStep / 2.0
+
+if showVpBox and useVP and array.size(vpLevels) > 0 and not na(vpStep) and vpStep > 0
+    for i = 0 to array.size(vpLevels) - 1
+        lv = array.get(vpLevels, i)
+        // 이미 그린 자리면 건너뛴다(같은 빈이 재계산돼도 박스를 겹쳐 쌓지 않는다)
+        dup = false
+        if array.size(vpBoxPx) > 0
+            for j = 0 to array.size(vpBoxPx) - 1
+                if math.abs(array.get(vpBoxPx, j) - lv) < vpHalf
+                    dup := true
+                    break
+        if not dup
+            bx = box.new(bar_index, lv + vpHalf, bar_index + 1, lv - vpHalf,
+              border_color = color.new(color.gray, 70), bgcolor = vpBoxCol)
+            array.push(vpBoxes, bx)
+            array.push(vpBoxPx, lv)
+
+// 박스 연장 + 소진 판정. 박스는 500개 상한이라 오래된 것부터 정리한다.
+if array.size(vpBoxes) > 0
+    for i = array.size(vpBoxes) - 1 to 0
+        bx = array.get(vpBoxes, i)
+        lv = array.get(vpBoxPx, i)
+        top = lv + vpHalf
+        bot = lv - vpHalf
+        gone = vpFillMode == "관통하면 삭제" ? (high >= top and low <= bot) : vpFillMode == "종가가 넘으면 삭제" ? (close >= top or close <= bot) : false
+        if gone
+            box.delete(bx)
+            array.remove(vpBoxes, i)
+            array.remove(vpBoxPx, i)
+        else
+            box.set_right(bx, bar_index + 1)
+
+if array.size(vpBoxes) > 450
+    box.delete(array.shift(vpBoxes))
+    array.shift(vpBoxPx)
 
 f_push(arrP, arrS, arrT, v, s, t) =>
     if not na(v)
