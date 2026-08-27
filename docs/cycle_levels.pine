@@ -34,6 +34,10 @@ tf2 = input.timeframe("60",  "TF 2", group = grpT)
 tf3 = input.timeframe("120", "TF 3", group = grpT)
 tf4 = input.timeframe("240", "TF 4", group = grpT)
 
+grpB = "추세 표시"
+showTrend = input.bool(true, "우상단에 현재 추세 표시", group = grpB)
+trendTf   = input.timeframe("5", "추세 판단 TF", group = grpB)
+
 grpD = "판정"
 tolPct   = input.float(0.2, "터치 허용폭 %", minval = 0.01, step = 0.01, group = grpD)
 cooldown = input.int(20, "같은 자리 재표시 대기(봉)", minval = 0, group = grpD)
@@ -239,3 +243,25 @@ plot(showHtf and useCloud ? a3 : na, "TF3 A", color = color.new(#22d3ee, 50), st
 plot(showHtf and useCloud ? b3 : na, "TF3 B", color = color.new(#f59e0b, 50), style = plot.style_stepline)
 plot(showHtf and useCloud ? a4 : na, "TF4 A", color = color.new(#22d3ee, 40), style = plot.style_stepline)
 plot(showHtf and useCloud ? b4 : na, "TF4 B", color = color.new(#f59e0b, 40), style = plot.style_stepline)
+
+
+// ── 현재 추세 표시 ────────────────────────────────────────────────────────
+// 백테와 같은 규칙: **추세 TF 의 종가가 그 TF 구름 위/아래/안** 으로 본다.
+//   위  → 롱 · 아래 → 숏 · 안 → 중립(양쪽 허용)
+// close 기반이라 그 봉이 닫혀야 확정된다 → [1] 로 한 봉 미룬다(미래참조 차단).
+//
+// ⚠ 이건 **예측이 아니다.** 실측 적중률이 1시간 뒤 47.2% / 4시간 뒤 47.1% 로
+//    기저(50.4% / 50.7%)를 밑돈다. 그런데도 쓰는 이유는 손절 1% · 익절 3% 구조에서
+//    기대값(R)을 올려주기 때문 — 방향을 맞히는 게 아니라 **큰 움직임이 나올 국면**을
+//    고르는 장치로 일한다. 표시를 매매 확신으로 읽지 말 것.
+biasRaw = close > math.max(spanA, spanB) ? 1 : close < math.min(spanA, spanB) ? -1 : 0
+trendVal = request.security(syminfo.tickerid, trendTf, biasRaw[1], lookahead = barmerge.lookahead_off)
+
+var table trendTbl = table.new(position.top_right, 1, 2, border_width = 1)
+if showTrend and barstate.islast
+    txt = trendVal == 1 ? "롱" : trendVal == -1 ? "숏" : "중립"
+    col = trendVal == 1 ? #22c55e : trendVal == -1 ? #ef4444 : #94a3b8
+    table.cell(trendTbl, 0, 0, "현재 추세 (" + trendTf + ")", text_color = #94a3b8,
+      text_size = size.small, bgcolor = color.new(color.black, 20))
+    table.cell(trendTbl, 0, 1, txt, text_color = col, text_size = size.large,
+      bgcolor = color.new(col, 88))
