@@ -82,6 +82,13 @@ LEGACY_FIXED_PAIRS: tuple[str, ...] = ()
 #    Origo 페어까지 바뀐다. 모델별로 분리해 `fixed_pairs_for_model()` 로 조회한다.
 # 백테 근거(5년 1h, 라이브 정합 엔진): TRX -1,941% vs LINK -3,571% → 교체가 +1,630%
 #    개선. 단 TRX 자체도 적자라 "덜 나쁜 페어로 교체"이지 흑자 전환은 아니다.
+# [08-29] HYPE 제외 — 파트너 지시. Cursus 는 6페어로 운용한다.
+# LEGACY_FIXED_PAIRS 에 넣을 필요는 없다 — 정합(reconcile_fixed_pairs)이
+# `FIXED_PAIRS + CURSUS_FIXED_PAIRS + LEGACY` 를 합쳐 "내 모델 목록에 없는 것"을
+# 정리 대상으로 잡는데, HYPE 는 Origo 쪽 FIXED_PAIRS 에 그대로 남아 있어 이미
+# 그 합집합에 든다. 나중에 **양쪽 모두에서** 뺄 때는 LEGACY 에 넣어야 한다.
+# ⚠️ 정리는 포지션이 없을 때만 이뤄진다 — 열린 HYPE 거래는 SL/TP 로 끝난 뒤
+#    빠진다(강제 청산 안 함. 손실을 확정시키고 되돌릴 수 없기 때문).
 CURSUS_FIXED_PAIRS = (
     "BTC/USDT:USDT",
     "ETH/USDT:USDT",
@@ -89,7 +96,6 @@ CURSUS_FIXED_PAIRS = (
     "XRP/USDT:USDT",
     "DOGE/USDT:USDT",
     "TRX/USDT:USDT",
-    "HYPE/USDT:USDT",
 )
 
 
