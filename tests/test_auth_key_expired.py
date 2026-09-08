@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 import pytest
 from ccxt.base.errors import AuthenticationError
 
+from aurora_ict.bot import auth_stop_notify
 from aurora_ict.bot.aurora_adapter import AuroraClientAdapter
 from aurora_ict.bot.bot_ict_instance import (
     _AUTH_FAIL_STOP_THRESHOLD as _ORIGO_THRESHOLD,
@@ -27,6 +28,14 @@ from aurora_ict.bot.bot_trend_instance import (
     _AUTH_FAIL_STOP_THRESHOLD as _CURSUS_THRESHOLD,
     BotTrendInstance,
 )
+
+@pytest.fixture(autouse=True)
+def _reset_notify_registry() -> None:
+    """사용자당 1회 레지스트리는 프로세스 전역 — 테스트마다 비운다."""
+    auth_stop_notify.reset_for_tests()
+    yield
+    auth_stop_notify.reset_for_tests()
+
 
 _EXPIRED = AuthenticationError(
     'bybit {"retCode":33004,"retMsg":"Your api key has expired."}',
@@ -138,6 +147,7 @@ async def test_origo_stops_even_when_step_raises_other_error() -> None:
     code, msg = notify.await_args.args
     assert code == "AICT-TEST-0000-0000"
     assert "만료" in msg and "재등록" in msg
+    assert "BTCUSDT" not in msg, "안내는 계정 단위 — 페어 이름을 적지 않는다"
 
 
 @pytest.mark.asyncio
@@ -241,3 +251,50 @@ async def test_equity_payload_normal() -> None:
     bot = _Bot(_Cli(None), 123.45)
     r = await _equity_payload(bot, {"kind": "none", "label": "None"})
     assert r["equity"] == pytest.approx(123.45) and "error" not in r
+
+
+# ── 안내는 사용자당 1회 (9/9: 페어 6개가 각자 보내 6통) ────────────────────
+
+@pytest.mark.asyncio
+async def test_auth_stop_notifies_once_per_user_across_symbols() -> None:
+    """같은 사용자의 봇 6개가 동시에 정지해도 텔레그램은 한 통."""
+    class _Bot(BotIctInstance):
+        async def step(self):  # type: ignore[override]
+            return None
+
+    notify = AsyncMock()
+    bots = [
+        _Bot(
+            client=_client_with_expired_key(_ORIGO_THRESHOLD), symbol=sym,
+            step_interval_sec=0, notify_cb=notify, user_code="AICT-SAME-USER-0000",
+        )
+        for sym in ("BTC", "ETH", "SOL", "XRP", "DOGE", "LINK")
+    ]
+    for b in bots:
+        b.state = BotState.RUNNING
+    await asyncio.gather(*(asyncio.wait_for(b._run_loop(), timeout=2.0) for b in bots))
+    assert all(b.state is BotState.STOPPED for b in bots)
+    assert notify.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_notify_auth_stop_cooldown_and_kind_separation() -> None:
+    """같은 사유는 6시간 안에 재발송 안 함. 사유가 다르면 따로. 쿨다운 지나면 다시."""
+    notify = AsyncMock()
+    u = "AICT-COOL-DOWN-0000"
+    assert await auth_stop_notify.notify_auth_stop(notify, u, "expired", now=0.0) is True
+    assert await auth_stop_notify.notify_auth_stop(notify, u, "expired", now=60.0) is False
+    assert await auth_stop_notify.notify_auth_stop(notify, u, "invalid", now=60.0) is True
+    later = auth_stop_notify.COOLDOWN_SEC + 1.0
+    assert await auth_stop_notify.notify_auth_stop(notify, u, "expired", now=later) is True
+    assert notify.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_notify_auth_stop_failure_recorded_no_retry_storm() -> None:
+    """발송이 실패해도 기록해 둔다 — 다른 페어 봇이 곧바로 또 시도해 도배되지 않게."""
+    notify = AsyncMock(side_effect=RuntimeError("telegram down"))
+    u = "AICT-FAIL-ONCE-0000"
+    assert await auth_stop_notify.notify_auth_stop(notify, u, "expired", now=0.0) is False
+    assert await auth_stop_notify.notify_auth_stop(notify, u, "expired", now=1.0) is False
+    assert notify.await_count == 1

@@ -24,6 +24,8 @@ import asyncio
 import logging
 
 from ccxt.base.errors import AuthenticationError
+
+from aurora_ict.bot.auth_stop_notify import notify_auth_stop
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -305,7 +307,8 @@ class BotTrendInstance:
 
         2026-09-08 #KEY-EXPIRED: 자동 정지돼도 알릴 길이 없어 사용자는 UI 의
         폴백 잔고(1000.00)만 보며 며칠을 모르고 지냈다. 정지 사유를 남기고
-        연동 텔레그램으로 1회 안내한다(도배 아님 — 정지는 한 번).
+        연동 텔레그램으로 안내한다 — 페어별이 아니라 **사용자당 1회**
+        (auth_stop_notify 가 6시간 쿨다운으로 묶는다).
 
         Args:
             streak: 연속 인증 실패 횟수.
@@ -317,25 +320,10 @@ class BotTrendInstance:
             "%s 거래소 키 %s %d회 연속 — 봇 자동 정지. 키 재등록 필요. (%s)",
             self.symbol, "만료" if expired else "무효", streak, (err or "")[:120],
         )
-        cb = self.notify_cb
-        if cb is None or not self.user_code:
-            return
-        base = (
-            "⚠ 거래소 API 키가 <b>만료</b>됐어요 (Bybit 는 IP 제한 없는 키를 90일 뒤 "
-            "만료시킵니다).\n" if expired else
-            "⚠ 거래소 API 키가 <b>유효하지 않아요</b>(만료·삭제·오타 가능).\n"
+        # 2026-09-09: 페어마다 봇이 하나라 6통이 갔다 → 사용자당 1회로 묶는다.
+        await notify_auth_stop(
+            self.notify_cb, self.user_code, "expired" if expired else "invalid",
         )
-        msg = (
-            base
-            + f"{self.symbol} 봇을 자동 정지했습니다.\n"
-            "Bybit → API 관리 → 새 키 발급(선물 거래·잔고 조회 권한) → Aurora 에서 "
-            "API 키 재등록 → STOP 후 START 해 주세요. 열린 포지션은 Bybit 에서 직접 "
-            "확인해 주세요."
-        )
-        try:
-            await cb(self.user_code, msg)
-        except Exception as e:  # noqa: BLE001 — 알림 실패가 정지를 막지 않게
-            logger.warning("키 만료 안내 발송 실패: %s", e)
 
     # ---- 핵심 step (DualST 트레일링) ----
 
