@@ -780,7 +780,21 @@ async function api(path, method = "GET", body = null) {
   return await resp.json();
 }
 
+let _authToastKey = "";
 function renderStatus(s) {
+  // 2026-09-08 #KEY-EXPIRED: 키 만료/무효로 자동 정지됐거나 조회가 막혀 있으면
+  // 한 번 크게 알린다(같은 사유로 반복 토스트 안 함).
+  const authKey = s.auth_error ? `${s.auth_error}|${s.symbol}` : "";
+  if (authKey && authKey !== _authToastKey) {
+    _authToastKey = authKey;
+    toast(
+      s.auth_error === "expired"
+        ? "거래소 API 키가 만료됐습니다. Bybit 에서 새 키 발급 후 재등록하고 STOP → START 하세요."
+        : "거래소 API 키가 유효하지 않습니다. 키를 다시 등록하고 STOP → START 하세요.",
+      true,
+    );
+  }
+  if (!authKey) _authToastKey = "";
   // 2026-05-29 파트너 결정: 상단 STATUS 박스 제거 — 6개 row 요소가 DOM 에
   // 없을 수 있어 null-safe 로 보호. 정보는 다른 섹션 (MODE 토글, PAIR 토글,
   // CREDENTIALS, START/STOP, positions-panel) 에 분산 표시됨.
@@ -2469,9 +2483,20 @@ async function refreshEquityAndSession() {
     // 잔고
     const valEl = $("equity-value");
     const subEl = $("equity-sub");
-    if (r.active && typeof r.equity === "number") {
+    // 2026-09-08 #KEY-EXPIRED: 거래소 키 만료/무효는 잔고 자리에 그대로 띄운다.
+    // 예전엔 서버 폴백 1000.00 이 '실시간' 으로 보여 사용자가 알 길이 없었다.
+    const authErr = typeof r.error === "string" && r.error.startsWith("auth_");
+    valEl.style.color = "";
+    if (authErr) {
+      valEl.textContent = r.error === "auth_expired" ? "API 키 만료" : "API 키 무효";
+      valEl.style.color = "#f87171";
+      subEl.textContent = "Bybit 에서 새 키 발급 → 재등록 → STOP/START";
+    } else if (r.active && typeof r.equity === "number") {
       valEl.textContent = `${r.equity.toFixed(2)} USDT`;
       subEl.textContent = "실시간 (5초)";
+    } else if (r.active && r.error === "fetch_failed") {
+      valEl.textContent = "—";
+      subEl.textContent = "잔고 조회 실패 — 재시도 중";
     } else {
       valEl.textContent = "—";
       subEl.textContent = "봇 시작 후 실시간 표시";

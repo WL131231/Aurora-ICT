@@ -45,6 +45,53 @@ from aurora_ict.indicators import cycle_levels
 from aurora_ict.strategy.silver_bullet import Direction
 
 
+async def _equity_payload(bot: Any, session: Any) -> dict[str, Any]:
+    """/ict/equity 응답 — 거래소 인증 실패를 숨기지 않는다.
+
+    2026-09-08 #KEY-EXPIRED: 예전엔 ``bot._fetch_equity()`` 가 실패 시 폴백
+    1000.0 을 돌려줘 UI 가 "1000.00 USDT 실시간" 으로 보였다. 키가 만료된 계좌
+    4개가 이 화면을 보며 며칠을 모르고 지냈다. 인증 실패면 잔고 대신 오류를
+    내려주고, 그 외 실패도 폴백 대신 None 을 준다.
+
+    Args:
+        bot: 슬롯의 봇 인스턴스(Origo/Cursus).
+        session: ``_compute_session_status()`` 결과.
+
+    Returns:
+        ``{"equity": float|None, "active": True, "session_status": ...}`` 에
+        인증 실패 시 ``"error": "auth_expired"|"auth_invalid"`` 와 ``"message"``.
+    """
+    cli = getattr(bot, "client", None)
+    kind = getattr(cli, "auth_error_kind", None)
+    if kind:
+        return {
+            "equity": None, "active": True, "error": f"auth_{kind}",
+            "message": getattr(cli, "last_auth_error", None),
+            "session_status": session,
+        }
+    fetch = getattr(bot, "_fetch_equity_or_none", None) or getattr(bot, "_fetch_equity")
+    try:
+        eq = await fetch()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("equity fetch 실패: %s", e)
+        eq = None
+    # 조회 직후 인증 실패가 새로 잡혔을 수 있다(첫 실패가 이 호출).
+    kind = getattr(cli, "auth_error_kind", None)
+    if kind:
+        return {
+            "equity": None, "active": True, "error": f"auth_{kind}",
+            "message": getattr(cli, "last_auth_error", None),
+            "session_status": session,
+        }
+    if eq is None:
+        return {
+            "equity": None, "active": True, "error": "fetch_failed",
+            "session_status": session,
+        }
+    return {"equity": float(eq), "active": True, "session_status": session}
+
+
+
 def _rows_to_candles(rows: list[list[Any]]) -> list[dict[str, float]]:
     """OHLCV rows → 차트 candle dict 리스트.
 
@@ -2228,17 +2275,7 @@ def _register_multi_user_routes(
         session = _compute_session_status()
         if bot is None:
             return {"equity": 0.0, "active": False, "session_status": session}
-        try:
-            eq = await bot._fetch_equity()
-        except Exception as e:  # noqa: BLE001
-            logger.debug(
-                "[multi-user] %s equity fetch 실패: %s", user_code, e,
-            )
-            return {
-                "equity": 0.0, "active": True, "error": "fetch_failed",
-                "session_status": session,
-            }
-        return {"equity": float(eq), "active": True, "session_status": session}
+        return await _equity_payload(bot, session)
 
     @app.get("/ict/closed_pnl")
     async def get_closed_pnl_mu(
@@ -3141,15 +3178,7 @@ def create_app(
         session = _compute_session_status()
         if bot is None:
             return {"equity": 0.0, "active": False, "session_status": session}
-        try:
-            eq = await bot._fetch_equity()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("equity fetch 실패: %s", e)
-            return {
-                "equity": 0.0, "active": True, "error": "fetch_failed",
-                "session_status": session,
-            }
-        return {"equity": float(eq), "active": True, "session_status": session}
+        return await _equity_payload(bot, session)
 
     @app.get("/ict/closed_pnl")
     async def get_closed_pnl(limit: int = 50) -> dict[str, Any]:

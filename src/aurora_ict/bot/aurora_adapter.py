@@ -57,9 +57,15 @@ class AuroraClientAdapter:
         # 거래소 호출 실패 로그에 어느 사용자/심볼인지 식별용 라벨 (멀티유저 운영).
         # 비어있으면 기존과 동일하게 동작 — multi_user_manager 가 start 시 주입.
         self._log_label = ""
-        # 거래소 인증 실패(키 무효 10003) 연속 횟수 — fetch_balance 성공 시 0 리셋.
-        # 봇 _run_loop 가 임계치 도달 시 자동 정지에 사용(잔고 조회조차 안 되는 키).
+        # 거래소 인증 실패 연속 횟수 — 잔고·포지션·봉 조회 어느 것이든 성공하면 0.
+        # 봇 _run_loop 가 임계치 도달 시 자동 정지에 사용.
+        # 2026-09-08 #KEY-EXPIRED: 예전엔 fetch_balance 만 셌다. Cursus 는 진입
+        # 후보가 있을 때만 잔고를 조회해서, 키가 만료돼도(33004) 포지션 조회만
+        # 매 step 실패하며 카운터가 0 에 머물렀다 → 봇이 '눈 감은 채' RUNNING.
         self.auth_fail_streak = 0
+        # 마지막 인증 실패 메시지(거래소 retMsg). UI/상태 API 가 사용자에게 보여준다.
+        self.last_auth_error: str | None = None
+        self._auth_log_n = 0
 
     def set_log_label(self, label: str) -> None:
         """거래소 호출 실패 WARNING 에 붙일 식별 라벨 설정 (예: 'AICT-XXXX/BTC').
@@ -71,6 +77,46 @@ class AuroraClientAdapter:
             label: 사용자 코드/심볼 등 식별 문자열. None/빈 문자열이면 prefix 미부착.
         """
         self._log_label = label or ""
+
+    @property
+    def auth_error_kind(self) -> str | None:
+        """현재 인증 실패 종류 — 'expired'(33004 만료) · 'invalid'(10003 등) · None.
+
+        Returns:
+            연속 실패가 0 이면 None. 메시지에 expired 가 있으면 'expired'.
+        """
+        if self.auth_fail_streak <= 0:
+            return None
+        msg = (self.last_auth_error or "").lower()
+        return "expired" if "expired" in msg else "invalid"
+
+    def _note_auth_fail(self, where: str, e: BaseException) -> None:
+        """인증 실패 1건 기록 — 카운터·메시지 갱신 + 도배 방지 로그.
+
+        매 step 마다 WARNING 을 찍으면 5초 간격으로 로그가 도배된다(9/8 실측
+        분당 12줄). 첫 1회와 이후 12회마다 한 번만 남긴다.
+
+        Args:
+            where: 실패한 호출 이름(로그용).
+            e: ccxt AuthenticationError.
+        """
+        self.auth_fail_streak += 1
+        self.last_auth_error = str(e)[:200]
+        self._auth_log_n += 1
+        if self._auth_log_n == 1 or self._auth_log_n % 12 == 0:
+            self._wlog(
+                "%s 인증 실패 %d회 (키 %s): %s",
+                where, self.auth_fail_streak,
+                "만료" if self.auth_error_kind == "expired" else "무효", e,
+            )
+
+    def _note_auth_ok(self) -> None:
+        """인증이 통한 호출 뒤 카운터 리셋(키 재등록 후 정상 복귀 감지)."""
+        if self.auth_fail_streak:
+            self._wlog("거래소 인증 복구 — 실패 %d회 후 정상", self.auth_fail_streak)
+        self.auth_fail_streak = 0
+        self.last_auth_error = None
+        self._auth_log_n = 0
 
     def _wlog(self, msg: str, *args: Any) -> None:
         """라벨 prefix 를 붙여 WARNING 로깅. 라벨 없으면 기존과 동일.
@@ -112,7 +158,14 @@ class AuroraClientAdapter:
         Aurora ``fetch_ohlcv``는 DataFrame을 반환하므로
         [ts_ms, o, h, l, c, v] 리스트 형태로 변환해서 돌려준다.
         """
-        df = await self._client.fetch_ohlcv(symbol, self._aurora_tf(timeframe), limit)
+        try:
+            df = await self._client.fetch_ohlcv(
+                symbol, self._aurora_tf(timeframe), limit,
+            )
+        except AuthenticationError as e:
+            self._note_auth_fail("fetch_ohlcv", e)
+            raise
+        self._note_auth_ok()
         if not isinstance(df, pd.DataFrame) or df.empty:
             return []
         rows: list[list[Any]] = []
@@ -298,10 +351,16 @@ class AuroraClientAdapter:
         # 1차: Aurora client.fetch_position
         try:
             pos = await self._client.fetch_position(symbol)
+        except AuthenticationError as e:
+            # #KEY-EXPIRED: 인증 실패를 None 으로 돌려주면 봇이 '포지션 없음'으로
+            # 읽는다. 그건 사실이 아니라 '모름'이다 — 예외로 올려 호출부가 보류하게.
+            self._note_auth_fail("fetch_position", e)
+            raise
         except Exception as e:  # noqa: BLE001
             self._wlog("Aurora fetch_position 실패: %s — ccxt fallback", e)
             pos = None
         if pos is not None:
+            self._note_auth_ok()
             if hasattr(pos, "__dict__"):
                 d = dict(pos.__dict__)
                 if "qty" in d and "contracts" not in d:
@@ -319,9 +378,13 @@ class AuroraClientAdapter:
         await self._ensure_time_sync()
         try:
             positions = await ex.fetch_positions([symbol])
+        except AuthenticationError as e:
+            self._note_auth_fail("fetch_positions", e)
+            raise
         except Exception as e:  # noqa: BLE001
             self._wlog("ccxt fetch_positions 실패: %s", e)
             return None
+        self._note_auth_ok()
         for p in positions or []:
             contracts = float(p.get("contracts") or 0)
             if contracts > 0:
@@ -433,15 +496,11 @@ class AuroraClientAdapter:
             return {}
         try:
             result = await ex.fetch_balance()
-            self.auth_fail_streak = 0  # 잔고 조회 성공 — 인증 정상, 카운터 리셋
+            self._note_auth_ok()
             return result
         except AuthenticationError as e:
-            # 키 무효(10003) — 별도 카운트. 봇 _run_loop 가 임계치 도달 시 자동 정지.
-            self.auth_fail_streak += 1
-            self._wlog(
-                "fetch_balance 인증 실패(키 무효) %d회: %s",
-                self.auth_fail_streak, e,
-            )
+            # 키 무효/만료 — 카운트만 하고 빈 dict. 봇 _run_loop 가 임계치에서 자동 정지.
+            self._note_auth_fail("fetch_balance", e)
             return {}
         except Exception as e:  # noqa: BLE001
             self._wlog("fetch_balance 실패: %s", e)
