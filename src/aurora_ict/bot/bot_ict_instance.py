@@ -633,6 +633,8 @@ class BotIctInstance:
     alert_cb: Any = None
     # 2026-06-13: 일반 안내 콜백 (약관 미동의 등 1회성 사용자 액션 안내).
     notify_cb: Any = None
+    # 자동 정지 사유 — 'auth_expired' | 'auth_invalid' | None. 상태 API 가 노출.
+    stop_reason: str | None = None
 
     state: BotState = field(default=BotState.STOPPED)
     active_position: _ActivePosition | None = field(default=None)
@@ -1142,16 +1144,6 @@ class BotIctInstance:
             try:
                 await self.step()
                 self._auth_fail_streak = 0  # 정상 step — 인증 실패 카운터 리셋
-                # 잔고 조회 등 거래소 호출이 키 무효로 연속 실패하면 step 이 예외를
-                # 안 내도(어댑터가 흡수) 자동 정지. TDAF 류(fetch_balance 10003) 차단.
-                _bal_streak = getattr(self.client, "auth_fail_streak", 0)
-                if _bal_streak >= _AUTH_FAIL_STOP_THRESHOLD:
-                    logger.warning(
-                        "%s 거래소 키 무효 %d회(잔고 조회) — 봇 자동 정지. 키 재등록 필요.",
-                        self.symbol, _bal_streak,
-                    )
-                    self.state = BotState.STOPPED
-                    break
             except AuthenticationError as e:
                 # 키 무효(retCode 10003) — 일시 오류가 아니므로 ERROR/traceback 대신
                 # WARNING 으로 강등하고 연속 카운트. 임계치 도달 시 봇 자동 정지로
@@ -1163,14 +1155,19 @@ class BotIctInstance:
                     _AUTH_FAIL_STOP_THRESHOLD, e,
                 )
                 if self._auth_fail_streak >= _AUTH_FAIL_STOP_THRESHOLD:
-                    logger.warning(
-                        "%s 키 무효 %d회 연속 — 봇 자동 정지. 거래소 API 키 재등록 필요.",
-                        self.symbol, self._auth_fail_streak,
-                    )
                     self.state = BotState.STOPPED
+                    await self._on_auth_stop(self._auth_fail_streak, str(e))
                     break
             except Exception as e:  # noqa: BLE001 — step 실패가 loop 전체를 죽이지 않도록
                 logger.exception("step 실패: %s", e)
+            # #KEY-EXPIRED: 어댑터가 삼킨 인증 실패(잔고·포지션·봉 조회)는 step 이
+            # 성공하든 실패하든 여기서 본다. 예전엔 try 안에 있어서 step 이 다른
+            # 예외를 내면 판정을 건너뛰었고, 카운터가 13까지 올라도 정지가 안 됐다.
+            _bal_streak, _bal_err = self._adapter_auth_state()
+            if _bal_streak >= _AUTH_FAIL_STOP_THRESHOLD:
+                self.state = BotState.STOPPED
+                await self._on_auth_stop(_bal_streak, _bal_err)
+                break
             # Heartbeat — loop 살아있음 주기적 INFO 로그.
             if self.heartbeat_interval_sec > 0:
                 now_ms = int(_time.time() * 1000)
@@ -1182,6 +1179,54 @@ class BotIctInstance:
                     )
                     self._last_heartbeat_ms = now_ms
             await asyncio.sleep(self.step_interval_sec)
+
+
+    def _adapter_auth_state(self) -> tuple[int, str | None]:
+        """어댑터의 인증 실패 상태 (연속 횟수, 마지막 메시지) — 타입을 강제한다.
+
+        client 가 어댑터가 아닐 수 있다(테스트 mock·구형 client). 그때 속성은
+        없거나 Mock 객체라, int/str 이 아니면 (0, None) 으로 본다.
+        """
+        n = getattr(self.client, "auth_fail_streak", 0)
+        err = getattr(self.client, "last_auth_error", None)
+        return (n if isinstance(n, int) else 0), (err if isinstance(err, str) else None)
+
+    async def _on_auth_stop(self, streak: int, err: str | None) -> None:
+        """거래소 키 만료/무효로 자동 정지 — 사유 기록 + 사용자 텔레그램 안내.
+
+        2026-09-08 #KEY-EXPIRED: 자동 정지돼도 알릴 길이 없어 사용자는 UI 의
+        폴백 잔고(1000.00)만 보며 며칠을 모르고 지냈다. 정지 사유를 남기고
+        연동 텔레그램으로 1회 안내한다(도배 아님 — 정지는 한 번).
+
+        Args:
+            streak: 연속 인증 실패 횟수.
+            err: 마지막 거래소 오류 메시지.
+        """
+        expired = "expired" in (err or "").lower()
+        self.stop_reason = "auth_expired" if expired else "auth_invalid"
+        logger.warning(
+            "%s 거래소 키 %s %d회 연속 — 봇 자동 정지. 키 재등록 필요. (%s)",
+            self.symbol, "만료" if expired else "무효", streak, (err or "")[:120],
+        )
+        cb = self.notify_cb
+        if cb is None or not self.user_code:
+            return
+        base = (
+            "⚠ 거래소 API 키가 <b>만료</b>됐어요 (Bybit 는 IP 제한 없는 키를 90일 뒤 "
+            "만료시킵니다).\n" if expired else
+            "⚠ 거래소 API 키가 <b>유효하지 않아요</b>(만료·삭제·오타 가능).\n"
+        )
+        msg = (
+            base
+            + f"{self.symbol} 봇을 자동 정지했습니다.\n"
+            "Bybit → API 관리 → 새 키 발급(선물 거래·잔고 조회 권한) → Aurora 에서 "
+            "API 키 재등록 → STOP 후 START 해 주세요. 열린 포지션은 Bybit 에서 직접 "
+            "확인해 주세요."
+        )
+        try:
+            await cb(self.user_code, msg)
+        except Exception as e:  # noqa: BLE001 — 알림 실패가 정지를 막지 않게
+            logger.warning("키 만료 안내 발송 실패: %s", e)
 
     async def step(self) -> ICTSignal:
         """단일 step — fetch + HTF/Daily bias + signal + execute. 생성된 signal 반환.

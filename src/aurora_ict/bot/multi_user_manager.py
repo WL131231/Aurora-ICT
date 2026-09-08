@@ -1253,6 +1253,10 @@ class MultiUserBotManager:
             "has_active_position": bot.active_position is not None,
             "last_setup_ts_ms": bot._last_setup_ts_ms,
             "running_symbols": running_symbols,
+            # #KEY-EXPIRED 2026-09-08: 거래소 키 만료/무효를 UI 가 그대로 보여주게.
+            "auth_error": getattr(slot.client, "auth_error_kind", None),
+            "auth_error_msg": getattr(slot.client, "last_auth_error", None),
+            "stop_reason": getattr(bot, "stop_reason", None),
         }
 
     async def get_seed_usdt(self, user_code: str) -> float | None:
