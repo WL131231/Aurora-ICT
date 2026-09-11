@@ -376,6 +376,95 @@ class _LicenseUpdateRequest(BaseModel):
     expires_at: str | None = None
 
 
+def purge_user_trades(
+    data_dir: Path,
+    user_code: str,
+    *,
+    since_ms: int | None = None,
+    until_ms: int | None = None,
+    reason_contains: str | None = None,
+    event_types: set[str] | None = None,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """사용자 trades.jsonl 에서 조건에 맞는 이벤트를 걷어내고 sqlite 를 재생성.
+
+    2026-09-11 #WRITE-DENIED 뒷정리용 — 읽기 전용 키 사용자에서 1분마다 쌓인 가짜
+    청산/진입 기록(4,274건)을 지운다. JSONL 이 source of truth 라 **먼저 백업**
+    (``trades.jsonl.bak-<ts>``)하고 필터링한 뒤 ``TradesStore.rebuild_sqlite`` 로
+    trades.db 를 다시 만든다. 조건은 전부 AND. 아무 조건도 없으면 거부한다.
+
+    Args:
+        data_dir: SaaS 데이터 루트.
+        user_code: 대상 사용자.
+        since_ms / until_ms: 이 구간(포함)의 이벤트만 대상.
+        reason_contains: reason 에 이 문자열이 있는 것만.
+        event_types: 이 종류만 (예: {"sync_close", "entry"}).
+        dry_run: True 면 개수만 세고 파일은 건드리지 않는다.
+
+    Returns:
+        ``{ok, user_code, total, matched, kept, dry_run, backup}``.
+    """
+    import json as _json
+    import shutil as _shutil
+    import time as _time
+
+    if since_ms is None and until_ms is None and not reason_contains and not event_types:
+        return {"ok": False, "reason": "no_filter", "user_code": user_code}
+    user_dir = data_dir / "users" / _safe_user_code(user_code)
+    jsonl = user_dir / "trades.jsonl"
+    if not jsonl.exists():
+        return {"ok": False, "reason": "no_jsonl", "user_code": user_code}
+
+    def _hit(d: dict[str, Any]) -> bool:
+        ts = int(d.get("ts_ms") or 0)
+        if since_ms is not None and ts < since_ms:
+            return False
+        if until_ms is not None and ts > until_ms:
+            return False
+        if event_types and str(d.get("event_type") or "") not in event_types:
+            return False
+        if reason_contains and reason_contains not in str(d.get("reason") or ""):
+            return False
+        return True
+
+    kept_lines: list[str] = []
+    total = matched = 0
+    with jsonl.open("r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            total += 1
+            try:
+                d = _json.loads(line)
+            except Exception:  # noqa: BLE001 — 깨진 줄은 보존
+                kept_lines.append(line)
+                continue
+            if _hit(d):
+                matched += 1
+            else:
+                kept_lines.append(line)
+    out: dict[str, Any] = {
+        "ok": True, "user_code": user_code, "total": total, "matched": matched,
+        "kept": total - matched, "dry_run": dry_run, "backup": None,
+    }
+    if dry_run or matched == 0:
+        return out
+    backup = user_dir / f"trades.jsonl.bak-{int(_time.time())}"
+    _shutil.copy2(jsonl, backup)
+    tmp = user_dir / "trades.jsonl.tmp"
+    with tmp.open("w", encoding="utf-8") as f:
+        f.writelines(kept_lines)
+    tmp.replace(jsonl)
+    from aurora_ict.interfaces.trades_store import TradesStore
+    store = TradesStore(user_dir)
+    try:
+        out["inserted_count"] = store.rebuild_sqlite()
+    finally:
+        store.close()
+    out["backup"] = str(backup)
+    return out
+
+
 def create_trades_router(
     data_dir: Path,
     require_auth_dep: Any,
@@ -645,6 +734,28 @@ def create_trades_router(
             "user_code": user_code,
             "inserted_count": inserted,
         }
+
+    @router.post("/admin/trades/purge")
+    async def admin_purge_trades(
+        user_code: str = Query(..., min_length=4, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
+        since_ms: int | None = Query(default=None),
+        until_ms: int | None = Query(default=None),
+        reason_contains: str | None = Query(default=None, max_length=200),
+        event_types: str | None = Query(default=None, max_length=200),
+        dry_run: bool = Query(default=True),
+        x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+        cookie_token: str | None = Cookie(default=None, alias=_ADMIN_COOKIE_NAME),
+    ) -> dict[str, Any]:
+        """조건에 맞는 매매 이벤트 삭제(백업 후) + sqlite 재생성. 기본 dry_run.
+
+        가짜 기록 정리용(#WRITE-DENIED). ``event_types`` 는 쉼표 구분.
+        """
+        _check_admin_cookie_or_header(cookie_token, x_admin_token)
+        et = {x.strip() for x in (event_types or "").split(",") if x.strip()} or None
+        return purge_user_trades(
+            data_dir, user_code, since_ms=since_ms, until_ms=until_ms,
+            reason_contains=reason_contains, event_types=et, dry_run=dry_run,
+        )
 
     @router.get("/admin/trades/backup", response_class=PlainTextResponse)
     async def admin_backup_jsonl(

@@ -21,7 +21,7 @@ import logging
 from typing import Any
 
 import pandas as pd
-from ccxt.base.errors import AuthenticationError
+from ccxt.base.errors import AuthenticationError, PermissionDenied
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,11 @@ class AuroraClientAdapter:
         # 마지막 인증 실패 메시지(거래소 retMsg). UI/상태 API 가 사용자에게 보여준다.
         self.last_auth_error: str | None = None
         self._auth_log_n = 0
+        # #WRITE-DENIED 2026-09-11: 주문·SL 등 **쓰기** 호출이 10005(Permission
+        # denied)로 연속 거부된 횟수. 읽기는 되는데 쓰기만 막힌 키(읽기 전용 키)를
+        # 잡기 위한 별도 카운터 — auth_fail_streak 는 읽기 성공에 리셋돼 못 잡는다.
+        self.write_fail_streak = 0
+        self.last_write_error: str | None = None
 
     def set_log_label(self, label: str) -> None:
         """거래소 호출 실패 WARNING 에 붙일 식별 라벨 설정 (예: 'AICT-XXXX/BTC').
@@ -117,6 +122,43 @@ class AuroraClientAdapter:
         self.auth_fail_streak = 0
         self.last_auth_error = None
         self._auth_log_n = 0
+
+    def _note_write_fail(self, where: str, e: BaseException) -> None:
+        """쓰기 호출 권한 거부(10005) 1건 기록.
+
+        Args:
+            where: 실패한 호출 이름.
+            e: 거래소 예외.
+        """
+        self.write_fail_streak += 1
+        self.last_write_error = str(e)[:200]
+        self._wlog("%s 권한 거부 %d회 (API 키 거래 권한 없음): %s",
+                   where, self.write_fail_streak, e)
+
+    def _note_write_ok(self) -> None:
+        """쓰기 호출이 실제로 통했을 때 카운터 리셋."""
+        self.write_fail_streak = 0
+        self.last_write_error = None
+
+    async def _position_qty(self, symbol: str) -> float | None:
+        """현재 포지션 수량. 조회 실패면 None(= 모름)."""
+        try:
+            pos = await self.fetch_position(symbol)
+            return float((pos or {}).get("contracts") or 0)
+        except Exception:  # noqa: BLE001 — 조회 실패·형식 이상은 '모름'
+            return None
+
+    async def _bot_open_order_count(self, symbol: str) -> int:
+        """봇 태그(AUR*)가 붙은 미체결 주문 수. 조회 불가면 -1."""
+        ex = getattr(self._client, "_ex", None)
+        if ex is None:
+            return -1
+        try:
+            from aurora.exchange.ccxt_client import _is_bot_order
+            orders = await ex.fetch_open_orders(symbol)
+            return sum(1 for o in orders or [] if _is_bot_order(o))
+        except Exception:  # noqa: BLE001 — 조회 실패·형식 이상은 '모름'
+            return -1
 
     def _wlog(self, msg: str, *args: Any) -> None:
         """라벨 prefix 를 붙여 WARNING 로깅. 라벨 없으면 기존과 동일.
@@ -222,6 +264,9 @@ class AuroraClientAdapter:
         # ccxt exception 이 retCode 10005 + query-api 메시지면 fetch_position
         # 으로 실제 진입 확인 → 활성 포지션 또는 pending order 있으면 success
         # 처리. 없으면 진짜 실패.
+        # #WRITE-DENIED: 10005 를 '효과'로 검증하려면 주문 **전** 상태가 필요하다.
+        pre_qty = await self._position_qty(symbol)
+        pre_open = await self._bot_open_order_count(symbol)
         try:
             order = await self._client.place_order(
                 symbol=symbol,
@@ -232,6 +277,7 @@ class AuroraClientAdapter:
                 stop_loss=None if reduce_only else stop_loss,
                 take_profit=None if reduce_only else take_profit,
             )
+            self._note_write_ok()
         except Exception as e:  # noqa: BLE001
             msg = str(e)
             # #LEV-8b: query-api 메시지 없이 단순 retCode 10005 만 응답하는
@@ -239,50 +285,42 @@ class AuroraClientAdapter:
             # 들어간 상태에서 ERROR). retCode 10005 모두 false positive 처리,
             # 다음 sync_position_state 가 거래소 상태와 reconcile.
             if "10005" in msg:
-                self._wlog(
-                    "place_order (%s %s qty=%s): ccxt UTA 체크 false positive "
-                    "(retCode 10005) — Bybit 측 실제 처리 확인 중...",
-                    symbol, side, qty,
-                )
-                # 실제 들어갔는지 확인 — fetch_position 으로.
-                pos = None
-                try:
-                    pos = await self.fetch_position(symbol)
-                except Exception as pe:  # noqa: BLE001
+                # #WRITE-DENIED 2026-09-11: 예전엔 '포지션이 있으면 성공'으로 봤다.
+                # 6월 데모+ccxt 의 UTA 체크 false positive 를 넘기려는 우회였는데,
+                # **거래 권한이 없는 키**(읽기 전용)에서는 진짜 10005 가 매 주문에
+                # 나오고, 청산 주문은 '포지션이 남아 있음' 이 곧 실패인데도 성공으로
+                # 기록됐다 → 1분마다 가짜 청산 4,202건(TDAF 9/10~11 실측).
+                # 이제는 주문 **전후 상태 변화**로만 성공을 인정한다.
+                post_qty = await self._position_qty(symbol)
+                post_open = await self._bot_open_order_count(symbol)
+                if reduce_only:
+                    ok = (pre_qty is not None and post_qty is not None
+                          and post_qty < pre_qty)
+                else:
+                    grew = (pre_qty is not None and post_qty is not None
+                            and post_qty > pre_qty)
+                    pending = pre_open >= 0 and post_open > pre_open
+                    ok = grew or pending
+                if ok:
+                    self._note_write_ok()
                     self._wlog(
-                        "place_order false positive 검증용 fetch_position 실패: %s",
-                        pe,
-                    )
-                if pos is not None and float(pos.get("contracts") or 0) > 0:
-                    self._wlog(
-                        "place_order false positive 확인 — 포지션 활성. success 처리.",
+                        "place_order (%s %s qty=%s): 10005 응답이나 거래소 상태 변화 "
+                        "확인(수량 %s→%s · 대기주문 %s→%s) — 성공 처리.",
+                        symbol, side, qty, pre_qty, post_qty, pre_open, post_open,
                     )
                     return {
-                        "id": None,
-                        "symbol": symbol,
-                        "side": side,
-                        "qty": qty,
-                        "price": price,
-                        "status": "open_uta_false_positive",
+                        "id": None, "symbol": symbol, "side": side, "qty": qty,
+                        "price": price, "status": "open_uta_false_positive",
                         "info": {"retCode": 10005, "ccxt_false_positive": True},
                     }
-                # 포지션 없음 — pending limit 가능성 또는 진짜 실패. UI 의
-                # pending 표시 (별도 `_pending_entry` 로직) 가 fetch_open_orders
-                # 로 확인하므로 여기선 일단 success 응답으로 처리해 봇의 active
-                # state 박음. 만약 진짜 실패면 다음 sync 에서 자동 해제.
-                self._wlog(
-                    "place_order false positive — 포지션 미확인 but Bybit 측 "
-                    "limit 박힌 가능성 (pending). success 처리 + 다음 sync 검증.",
-                )
-                return {
-                    "id": None,
-                    "symbol": symbol,
-                    "side": side,
-                    "qty": qty,
-                    "price": price,
-                    "status": "open_uta_false_positive",
-                    "info": {"retCode": 10005, "ccxt_false_positive": True},
-                }
+                self._note_write_fail("place_order", e)
+                raise PermissionDenied(
+                    f"place_order {symbol} {side} qty={qty} 거부(10005) — 거래소 상태 "
+                    f"변화 없음(수량 {pre_qty}→{post_qty} · 대기주문 {pre_open}→"
+                    f"{post_open}). API 키 거래 권한 확인 필요: {msg[:160]}"
+                ) from e
+            if isinstance(e, AuthenticationError):
+                self._note_auth_fail("place_order", e)
             raise
         order_dict: dict[str, Any]
         if hasattr(order, "__dict__"):
@@ -730,6 +768,7 @@ class AuroraClientAdapter:
         }
         try:
             result = await ex.private_post_v5_position_trading_stop(params)
+            self._note_write_ok()
         except Exception as e:  # noqa: BLE001
             msg = str(e)
             if "34040" in msg or "not modified" in msg:
@@ -738,6 +777,8 @@ class AuroraClientAdapter:
                     raw_symbol, new_stop_loss,
                 )
                 return {"retCode": 34040, "alreadySet": True}
+            if "10005" in str(e):
+                self._note_write_fail("modify_stop_loss", e)
             self._wlog("set_trading_stop 실패 (%s, sl=%.4f): %s",
                            raw_symbol, new_stop_loss, e)
             return {}
@@ -799,7 +840,10 @@ class AuroraClientAdapter:
                 params["activePrice"] = str(active_price)
         try:
             result = await ex.private_post_v5_position_trading_stop(params)
+            self._note_write_ok()
         except Exception as e:  # noqa: BLE001
+            if "10005" in str(e):
+                self._note_write_fail("set_position_tpsl", e)
             msg = str(e)
             if "34040" in msg or "not modified" in msg:
                 logger.debug(

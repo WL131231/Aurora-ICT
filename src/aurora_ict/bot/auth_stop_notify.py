@@ -26,8 +26,17 @@ def build_message(kind: str) -> str:
     """사유별 안내문(HTML). 페어를 적지 않는다 — 계정 단위 사유라서.
 
     Args:
-        kind: ``"expired"`` | ``"invalid"``.
+        kind: ``"expired"`` | ``"invalid"`` | ``"permission"``.
     """
+    if kind == "permission":
+        return (
+            "⚠ 거래소 API 키에 <b>거래 권한이 없어요</b>. 잔고·포지션 조회는 되는데 "
+            "주문·손절 등록이 전부 거부되고 있습니다(Permission denied).\n"
+            "가동 중인 봇을 모두 자동 정지했습니다.\n"
+            "Bybit → API 관리 → 이 키에 <b>통합거래(Unified Trading) - 거래</b> 권한을 "
+            "켜거나 새 키를 발급해 Aurora 에 재등록 → STOP 후 START 해 주세요. "
+            "열린 포지션은 봇이 손절을 못 거는 상태이니 Bybit 에서 직접 손절을 걸어 주세요."
+        )
     if kind == "expired":
         head = (
             "⚠ 거래소 API 키가 <b>만료</b>됐어요 (Bybit 는 IP 제한 없는 키를 90일 뒤 "
