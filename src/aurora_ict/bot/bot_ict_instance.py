@@ -192,6 +192,9 @@ def _log_alert_task_exc(task: asyncio.Task) -> None:
 # 키 무효(retCode 10003)가 step 에서 이 횟수만큼 연속되면 봇 자동 정지 —
 # 무한 재시도로 인한 로그 폭증·502 차단. 사용자는 거래소 키 재등록 후 재가동.
 _AUTH_FAIL_STOP_THRESHOLD = 3
+# 주문·SL 쓰기가 10005(권한 없음)로 이 횟수 연속 거부되면 자동 정지 —
+# 읽기 전용 키는 auth 카운터(읽기 성공에 리셋)로는 못 잡는다(#WRITE-DENIED).
+_WRITE_FAIL_STOP_THRESHOLD = 3
 
 _NY_TZ = ZoneInfo("America/New_York")
 
@@ -1170,6 +1173,12 @@ class BotIctInstance:
                 self.state = BotState.STOPPED
                 await self._on_auth_stop(_bal_streak, _bal_err)
                 break
+            # #WRITE-DENIED: 읽기는 되는데 주문·SL 쓰기만 거부되는 키(권한 부족).
+            _wf, _werr = self._adapter_write_state()
+            if _wf >= _WRITE_FAIL_STOP_THRESHOLD:
+                self.state = BotState.STOPPED
+                await self._on_write_denied_stop(_wf, _werr)
+                break
             # Heartbeat — loop 살아있음 주기적 INFO 로그.
             if self.heartbeat_interval_sec > 0:
                 now_ms = int(_time.time() * 1000)
@@ -1182,6 +1191,30 @@ class BotIctInstance:
                     self._last_heartbeat_ms = now_ms
             await asyncio.sleep(self.step_interval_sec)
 
+
+    async def _on_write_denied_stop(self, streak: int, err: str | None) -> None:
+        """주문·SL 쓰기 권한 거부(10005) 연속으로 자동 정지 + 사용자 안내.
+
+        2026-09-11 #WRITE-DENIED: 읽기 전용 키로 재등록한 사용자에서 SL 등록 실패 →
+        비상청산 실패가 1분마다 반복되며 가짜 청산 4,202건이 쌓였다. 쓰기가 막힌
+        상태로 돌아봐야 포지션을 지킬 수 없으므로 멈추고 알린다.
+
+        Args:
+            streak: 연속 쓰기 거부 횟수.
+            err: 마지막 거래소 오류 메시지.
+        """
+        self.stop_reason = "api_permission"
+        logger.warning(
+            "%s 거래소 쓰기 권한 거부 %d회 연속 — 봇 자동 정지. API 키 거래 권한 확인 필요. (%s)",
+            self.symbol, streak, (err or "")[:120],
+        )
+        await notify_auth_stop(self.notify_cb, self.user_code, "permission")
+
+    def _adapter_write_state(self) -> tuple[int, str | None]:
+        """어댑터의 쓰기 거부 상태 (연속 횟수, 마지막 메시지) — 타입을 강제한다."""
+        n = getattr(self.client, "write_fail_streak", 0)
+        err = getattr(self.client, "last_write_error", None)
+        return (n if isinstance(n, int) else 0), (err if isinstance(err, str) else None)
 
     def _adapter_auth_state(self) -> tuple[int, str | None]:
         """어댑터의 인증 실패 상태 (연속 횟수, 마지막 메시지) — 타입을 강제한다.
