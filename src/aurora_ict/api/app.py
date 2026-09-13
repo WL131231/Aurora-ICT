@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, SecretStr
 
 from aurora_ict.api.markers import to_chart_markers
+from aurora_ict.bot.bot_ict_instance import BotIctInstance
+from aurora_ict.bot.bot_trend_instance import BotTrendInstance
 from aurora_ict.bot.manager import BotManager
 from aurora_ict.bot.multi_user_manager import (
     _DEFAULT_SYMBOL,
@@ -43,6 +46,26 @@ from aurora_ict.bot.pair_registry import (
 from aurora_ict.config.settings import TRADE_TIMEFRAMES, IctSettings, RunMode
 from aurora_ict.indicators import cycle_levels
 from aurora_ict.strategy.silver_bullet import Direction
+
+
+def _pending_payload(bot: Any) -> dict[str, Any] | None:
+    """기존 Origo 지정가 대기를 조회 형식으로 변환.
+
+    Args:
+        bot: 조회 대상 봇.
+    Returns:
+        미체결 주문 정보 또는 None. 조회 중 봇 상태는 변경하지 않음.
+    """
+    if bot is None:
+        return None
+    pe = getattr(bot, "_pending_entry", None)
+    if pe is not None:
+        return {
+            "direction": pe.direction.value, "entry": pe.entry,
+            "stop_loss": pe.stop_loss, "take_profit": pe.take_profit,
+            "qty": pe.qty, "placed_ts_ms": pe.placed_ts_ms,
+        }
+    return None
 
 
 async def _equity_payload(bot: Any, session: Any) -> dict[str, Any]:
@@ -548,6 +571,7 @@ def _register_multi_user_routes(
             secure_cookie=secure_cookie,
             master_key=master_key,
             on_keys_changed=mu_manager.stop_user,
+            validate_keys=mu_manager.validate_key_registration,
         ),
     )
 
@@ -701,7 +725,15 @@ def _register_multi_user_routes(
         # 2026-05-29 PR C: ?symbol= 쿼리 — 사용자가 BTC 만 정지하고 ETH 는
         # 계속 가동하는 부분 정지 가능. 미지정 시 BTC default. 페어 칩으로 끄는
         # 경우라 forget_preference=True(기본) — 선호에서도 제거.
-        await mu_manager.stop(user_code, symbol)
+        try:
+            await mu_manager.stop(user_code, symbol)
+        except (ValueError, RuntimeError) as e:
+            slot = mu_manager._slots.get((user_code, symbol))
+            if slot is not None and isinstance(slot.bot, BotTrendInstance):
+                raise
+            raise HTTPException(
+                status_code=409, detail="주문 취소가 확인되지 않아 해당 페어 감시 연결을 유지합니다.",
+            ) from e
         return await mu_manager.status(user_code, symbol)
 
     @app.post("/ict/stop-all")
@@ -712,6 +744,15 @@ def _register_multi_user_routes(
         # 유지해서 START 시 복원되게 한다(개별 칩 stop 과 구분).
         stopped = await mu_manager.stop_user(user_code)
         logger.info("/ict/stop-all — code=%s stopped=%s", user_code, stopped)
+        retained = [
+            sym for (u, sym), slot in mu_manager._slots.items()
+            if u == user_code and isinstance(slot.bot, BotIctInstance)
+        ]
+        if retained:
+            raise HTTPException(
+                status_code=409,
+                detail=f"정지 확인 필요: {', '.join(sorted(retained))}. 주문 상태 확인을 위한 연결을 유지합니다.",
+            )
         return await mu_manager.status(user_code)
 
     @app.get("/ict/running-pairs")
@@ -829,7 +870,11 @@ def _register_multi_user_routes(
             s.run_mode = RunMode.LIVE
         elif last_mode == "demo":
             s.run_mode = RunMode.DEMO
-        return s
+        from aurora_ict.config.settings import AVAILABLE_MODELS
+
+        if AVAILABLE_MODELS.get(_users_db_local.get_last_model(mu_manager.db_path, user_code)) == "cursus":
+            return s
+        return mu_manager.apply_user_preferences(s, user_code)
 
     @app.get("/ict/config")
     async def get_config_mu(
@@ -968,7 +1013,15 @@ def _register_multi_user_routes(
         # 2026-06-26 반응속도: last_model 은 즉시 저장(status 폴링이 새 모델 반영), 전 페어
         # 슬롯 폐기·재가동(거래소 set_leverage/복원 호출 多)은 백그라운드 task 로 빼서 API
         # 가 즉시 응답한다(UI 토글 체감 개선). 재가동은 뒤에서 돌고 status 가 따라잡음.
-        user_syms = [sym for (u, sym) in list(mu_manager._slots.keys()) if u == user_code]
+        from aurora_ict.config.settings import AVAILABLE_MODELS
+
+        running_syms = {
+            sym for sym in _users_db.get_bot_running_symbols(mu_manager.db_path, user_code)
+            if AVAILABLE_MODELS.get(mu_manager.model_for_slot(user_code, sym)) != "cursus"
+        }
+        user_syms = sorted(running_syms | {
+            sym for (u, sym) in list(mu_manager._slots.keys()) if u == user_code
+        })
         # 같은 모델 재선택은 아무것도 하지 않는다(불필요한 슬롯 재생성 방지).
         try:
             if _users_db.get_last_model(mu_manager.db_path, user_code) == _canon:
@@ -976,11 +1029,20 @@ def _register_multi_user_routes(
         except Exception as e:  # noqa: BLE001
             logger.debug("현재 모델 조회 실패(계속 진행): %s", e)
 
+        paused_before: dict[str, bool] = {}
+        for sym in user_syms:
+            slot = mu_manager._slots.get((user_code, sym))
+            if slot is not None and isinstance(slot.bot, BotIctInstance):
+                paused_before[sym] = getattr(slot.bot, "entry_paused", False)
+                slot.bot.entry_paused = True
         # ── 열린 포지션 조사 — 있으면 사용자 선택 없이는 전환하지 않는다 ──
         held: list[dict[str, Any]] = []
         for sym in user_syms:
             try:
-                exposed = await mu_manager._has_live_exposure(user_code, sym)
+                exposed = (
+                    None if (user_code, sym) not in mu_manager._slots
+                    else await mu_manager._has_live_exposure(user_code, sym)
+                )
             except Exception as e:  # noqa: BLE001
                 logger.warning("[%s/%s] 전환 전 포지션 확인 실패: %s", user_code, sym, e)
                 exposed = None          # 판정 불가 → 보수적으로 '있음' 취급
@@ -999,15 +1061,14 @@ def _register_multi_user_routes(
             })
         if held and req.on_position is None:
             # UI 가 선택 창을 띄우도록 되묻는다. 상태 변경 없음 — 모델도 그대로.
+            for sym, paused in paused_before.items():
+                slot = mu_manager._slots.get((user_code, sym))
+                if slot is not None and slot.bot is not None:
+                    slot.bot.entry_paused = paused
             return {
                 "ok": False, "needs_choice": True, "model": _canon,
                 "positions": held,
             }
-
-        try:
-            _users_db.set_last_model(mu_manager.db_path, user_code, req.model)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("사용자 %s last_model 박기 실패 (무시): %s", user_code, e)
 
         held_syms = {h["symbol"] for h in held}
         if req.on_position == "close":
@@ -1016,16 +1077,42 @@ def _register_multi_user_routes(
                 _slot = mu_manager._slots.get((user_code, h["symbol"]))
                 _bot = getattr(_slot, "bot", None) if _slot else None
                 if _bot is None or getattr(_bot, "active_position", None) is None:
-                    held_syms.discard(h["symbol"])
+                    if isinstance(_bot, BotTrendInstance) or (
+                        _slot is not None
+                        and await mu_manager._has_live_exposure(user_code, h["symbol"]) is False
+                    ):
+                        held_syms.discard(h["symbol"])
                     continue
                 try:
                     await _bot._emergency_close("모델 전환 — 사용자 선택 청산")
-                    held_syms.discard(h["symbol"])
+                    if isinstance(_bot, BotTrendInstance) or await mu_manager._has_live_exposure(user_code, h["symbol"]) is False:
+                        held_syms.discard(h["symbol"])
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
                         "[%s/%s] 모델 전환 청산 실패 — 유예로 전환: %s",
                         user_code, h["symbol"], e,
                     )
+        from aurora_ict.config.settings import ORIGO_MODEL_NAME
+
+        deferred = _users_db.get_deferred_models(mu_manager.db_path, user_code)
+        for sym in user_syms:
+            slot = mu_manager._slots.get((user_code, sym))
+            if sym in held_syms and slot is not None and slot.bot is not None:
+                if isinstance(slot.bot, BotTrendInstance):
+                    deferred.pop(sym, None)
+                else:
+                    deferred[sym] = ORIGO_MODEL_NAME
+            elif sym in held_syms:
+                deferred[sym] = mu_manager.model_for_slot(user_code, sym)
+            else:
+                deferred.pop(sym, None)
+        if not _users_db.set_model_selection(mu_manager.db_path, user_code, req.model, deferred):
+            raise HTTPException(status_code=404, detail="사용자가 없습니다.")
+        saved = _users_db.get_deferred_models(mu_manager.db_path, user_code)
+        for sym in user_syms:
+            slot = mu_manager._slots.get((user_code, sym))
+            if slot is not None and isinstance(slot.bot, BotIctInstance):
+                slot.bot.entry_paused = sym in saved or sym not in held_syms
         # 유예분은 슬롯을 건드리지 않는다 — 옛 모델 봇이 그 포지션을 끝까지 관리하고,
         # 거래가 끝나면 10분 주기 reconcile_models 가 새 모델로 교체한다.
         switch_syms = [s for s in user_syms if s not in held_syms]
@@ -1038,16 +1125,26 @@ def _register_multi_user_routes(
                 # 자가치유가 다음 접근 때 재생성.
                 try:
                     _slot = mu_manager._slots.get((user_code, sym))
+                    _was_origo = _slot is not None and isinstance(_slot.bot, BotIctInstance)
                     _running = (
                         _slot is not None and _slot.bot is not None
                         and _slot.bot.state.value == "running"
+                        and (
+                            isinstance(_slot.bot, BotTrendInstance)
+                            or sym in _users_db.get_bot_running_symbols(mu_manager.db_path, user_code)
+                        )
                     )
                     # stop 이 per-(user,sym) lock 안에서 슬롯 폐기(pop)·클라이언트 정리
                     # 까지 담당 — 정지 슬롯도 안전 제거(새 모델로 재생성). 모델 전환은
                     # 선호 유지(forget_preference=False)라 재가동 시 복원.
                     await mu_manager.stop(user_code, sym, forget_preference=False)
                     if _running:
-                        await mu_manager.start(user_code, sym)
+                        try:
+                            await mu_manager.start(user_code, sym)
+                        except Exception:
+                            if _was_origo:
+                                _users_db.set_bot_running(mu_manager.db_path, user_code, True, symbol=sym)
+                            raise
                 except Exception as e:  # noqa: BLE001 — 다음 페어 계속
                     logger.warning("모델 전환 — %s 처리 실패(다음 페어 계속): %s", sym, e)
 
@@ -1155,27 +1252,56 @@ def _register_multi_user_routes(
                     f"허용 목록: {list(TRADE_TIMEFRAMES)}"
                 ),
             )
-        slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
-        was_running = (
-            slot is not None
-            and slot.bot is not None
-            and slot.bot.state.value == "running"
-        )
-        if was_running:
-            await mu_manager.stop(user_code)
-        if slot is not None:
-            slot.settings.timeframe = req.timeframe
-        elif mu_manager.base_settings is not None:
-            mu_manager.base_settings.timeframe = req.timeframe
-        # 2026-06-08: 사용자별 영속화 — 재시작/재가동이 전역 base(기본값)로
-        # 회귀하지 않게. _build_user_settings 가 이 값을 복원한다.
         from aurora_ict.auth import users_db as _users_db_tf
+        from aurora_ict.config.settings import AVAILABLE_MODELS
+
+        is_cursus = AVAILABLE_MODELS.get(_users_db_tf.get_last_model(db_path, user_code)) == "cursus"
+        if is_cursus:
+            # Cursus 경로는 이번 Origo 수정 범위 밖이므로 기존 동작을 유지.
+            slot = mu_manager._slots.get((user_code, _DEFAULT_SYMBOL))
+            running = slot is not None and slot.bot is not None and slot.bot.state.value == "running"
+            if running:
+                await mu_manager.stop(user_code)
+            if slot is not None:
+                slot.settings.timeframe = req.timeframe
+            elif mu_manager.base_settings is not None:
+                mu_manager.base_settings.timeframe = req.timeframe
+            _users_db_tf.set_last_timeframe(db_path, user_code, req.timeframe)
+            if running:
+                await mu_manager.start(user_code)
+            return {"timeframe": _user_settings(user_code).timeframe,
+                    "allowed": list(TRADE_TIMEFRAMES), "restarted": running}
         _users_db_tf.set_last_timeframe(db_path, user_code, req.timeframe)
+        effective = mu_manager.apply_user_preferences(_user_settings(user_code), user_code)
+        _users_db_tf.set_last_timeframe(db_path, user_code, effective.timeframe)
+        was_running = False
+        failed: list[str] = []
+        for (u, sym), slot in list(mu_manager._slots.items()):
+            if u != user_code or isinstance(slot.bot, BotTrendInstance):
+                continue
+            updated = mu_manager.apply_user_preferences(slot.settings, user_code)
+            running = slot.bot is not None and slot.bot.state.value == "running"
+            if running:
+                was_running = True
+                try:
+                    await mu_manager.stop(user_code, sym, forget_preference=False)
+                    await mu_manager.start(user_code, sym)
+                except Exception as e:  # noqa: BLE001
+                    _users_db_tf.set_bot_running(db_path, user_code, True, symbol=sym)
+                    failed.append(sym)
+                    logger.warning("시간봉 변경 재시작 실패: %s/%s (%s)", user_code, sym, type(e).__name__)
+            else:
+                slot.settings = updated
+                if slot.bot is not None:
+                    slot.bot.timeframe = updated.timeframe
+        if failed:
+            raise HTTPException(
+                status_code=409,
+                detail=f"시간봉은 저장했으나 적용 확인이 필요합니다: {', '.join(sorted(failed))}",
+            )
         logger.info(
             "[multi-user] %s trade timeframe 변경 → %s", user_code, req.timeframe,
         )
-        if was_running:
-            await mu_manager.start(user_code)
         settings = _user_settings(user_code)
         return {
             "timeframe": settings.timeframe,
@@ -1280,19 +1406,31 @@ def _register_multi_user_routes(
         user_code: str = Depends(require_auth),
     ) -> dict[str, Any]:
         """#SAFETY-1 한도 설정 — 사용자 slot.settings + 가동 중 bot in-memory 갱신."""
-        if req.pct < 0 or req.pct > 50:
+        from aurora_ict.auth import users_db as _users_db_limit
+        from aurora_ict.config.settings import AVAILABLE_MODELS
+
+        is_cursus = AVAILABLE_MODELS.get(_users_db_limit.get_last_model(db_path, user_code)) == "cursus"
+        if (not is_cursus and not math.isfinite(req.pct)) or req.pct < 0 or req.pct > 50:
             raise HTTPException(
                 status_code=400,
                 detail="daily_loss_limit_pct 는 0~50 범위 (0 = 비활성).",
             )
+        candidate = _user_settings(user_code).model_copy(deep=True)
+        candidate.daily_loss_limit_pct = req.pct
+        if not is_cursus:
+            candidate = IctSettings.model_validate(candidate.model_dump())
+        pct = req.pct if is_cursus else candidate.daily_loss_limit_pct
+        if not is_cursus and not _users_db_limit.set_daily_loss_limit(db_path, user_code, pct):
+            raise HTTPException(status_code=404, detail="사용자가 없습니다.")
         # 2026-06-11 리뷰 수정: 사용자 전 슬롯 순회 + base_settings 오염 제거
         # (위 daily_profit_limit 와 동일 — 크로스 테넌트 누출 방지).
         for (u, _sym), slot in list(mu_manager._slots.items()):
             if u != user_code:
                 continue
-            slot.settings.daily_loss_limit_pct = req.pct
+            applied = req.pct if isinstance(slot.bot, BotTrendInstance) else pct
+            slot.settings.daily_loss_limit_pct = applied
             if slot.bot is not None:
-                slot.bot.daily_loss_limit_pct = req.pct
+                slot.bot.daily_loss_limit_pct = applied
                 if (
                     slot.bot._daily_limit_hit
                     and not slot.bot._is_daily_loss_limit_hit()
@@ -1303,9 +1441,9 @@ def _register_multi_user_routes(
                         user_code, _sym,
                     )
         logger.info(
-            "[multi-user] %s daily loss limit 설정 → %.2f%%", user_code, req.pct,
+            "[multi-user] %s daily loss limit 설정 → %.2f%%", user_code, pct,
         )
-        return {"limit_pct": req.pct}
+        return {"limit_pct": pct}
 
     @app.post("/ict/credentials")
     async def set_credentials_mu(
@@ -1423,17 +1561,7 @@ def _register_multi_user_routes(
 
         멀티 페어(BTC/ETH/HYPE) 동시 포지션을 슬롯별로 만들 때 재사용.
         """
-        pending: dict[str, Any] | None = None
-        if bot._pending_entry is not None:
-            pe = bot._pending_entry
-            pending = {
-                "direction": pe.direction.value,
-                "entry": pe.entry,
-                "stop_loss": pe.stop_loss,
-                "take_profit": pe.take_profit,
-                "qty": pe.qty,
-                "placed_ts_ms": pe.placed_ts_ms,
-            }
+        pending = _pending_payload(bot)
         if bot.active_position is None:
             return {"active": False, "symbol": bot.symbol, "pending": pending}
 
@@ -1575,16 +1703,17 @@ def _register_multi_user_routes(
             lev = int(getattr(bot, "leverage", 0)) or 1
             for kind, pos in (
                 ("active", bot.active_position),
-                ("pending", bot._pending_entry),
+                ("pending", _pending_payload(bot)),
             ):
                 if pos is None:
                     continue
-                entry = float(pos.entry)
-                qty = float(pos.qty)
-                is_long = pos.direction is Direction.LONG
+                entry = float(pos["entry"] if kind == "pending" else pos.entry)
+                qty = float(pos["qty"] if kind == "pending" else pos.qty)
+                direction = pos["direction"] if kind == "pending" else pos.direction.value
+                is_long = direction == Direction.LONG.value
                 liq = entry * (1.0 - 0.95 / lev) if is_long else entry * (1.0 + 0.95 / lev)
-                sl = float(pos.stop_loss)
-                tp = float(pos.take_profit)
+                sl = float(pos["stop_loss"] if kind == "pending" else pos.stop_loss)
+                tp = float(pos["take_profit"] if kind == "pending" else pos.take_profit)
                 sltp_src = "bot"
                 # 2026-06-13: active 는 거래소 값 우선 (SL/TP/청산가/진입가/수량).
                 ex = ex_map.get((u, sym)) if kind == "active" else None
@@ -2860,17 +2989,7 @@ def create_app(
         """
         bot = manager.bot
         # pending entry (지정가 미체결 대기) — active 든 아니든 같이 표시.
-        pending: dict[str, Any] | None = None
-        if bot is not None and bot._pending_entry is not None:
-            pe = bot._pending_entry
-            pending = {
-                "direction": pe.direction.value,
-                "entry": pe.entry,
-                "stop_loss": pe.stop_loss,
-                "take_profit": pe.take_profit,
-                "qty": pe.qty,
-                "placed_ts_ms": pe.placed_ts_ms,
-            }
+        pending = _pending_payload(bot)
         if bot is None or bot.active_position is None:
             return {"active": False, "pending": pending}
 

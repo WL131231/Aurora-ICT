@@ -30,7 +30,6 @@ import uvicorn
 import webview
 
 from aurora_ict.api.app import create_app
-from aurora_ict.bot import aurora_client_factory
 from aurora_ict.bot.manager import BotManager
 from aurora_ict.config.settings import get_settings, reload_settings
 from aurora_ict.updater import (
@@ -191,7 +190,9 @@ def main() -> int:
     if port != preferred_port:
         logger.warning("포트 %d 사용 중 — %d 로 fallback", preferred_port, port)
 
-    manager = BotManager(client_factory=aurora_client_factory, settings=settings)
+    from aurora_ict.bot import origo_client_factory
+
+    manager = BotManager(client_factory=origo_client_factory, settings=settings)
     app = create_app(manager)
 
     server = _run_uvicorn(app, host, port)

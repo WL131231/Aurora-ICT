@@ -18,6 +18,7 @@ from aurora_ict.bot.bot_ict_instance import (
 from aurora_ict.indicators.structure import TrendDirection
 from aurora_ict.signal.ict_signal import SignalAction
 from aurora_ict.strategy.silver_bullet import Direction
+from tests.test_origo_execution_safety import OrderLedger
 
 NY = ZoneInfo("America/New_York")
 
@@ -93,15 +94,15 @@ def _short_position(qty: float = 0.107) -> _ActivePosition:
 
 
 @pytest.mark.asyncio
-async def test_sync_emergency_close_on_direction_mismatch() -> None:
+async def test_sync_emergency_close_on_direction_mismatch(tmp_path) -> None:
     """#POS-SYNC 04:14: 봇=숏인데 거래소=롱 → 즉시 비상청산 (거래소 방향 반대로)."""
-    client = _mock_client([[1, 100, 101, 99, 100, 10]])
-    client.fetch_position = AsyncMock(return_value=_ex_pos("long", 0.107))
-    bot = BotIctInstance(client=client, symbol="BTCUSDT")
+    client = OrderLedger()
+    client.position = _ex_pos("long", 0.107)
+    bot = BotIctInstance(client=client, symbol="BTCUSDT", trades_data_dir=tmp_path)
     bot.active_position = _short_position()
     await bot._sync_position_state()
-    assert client.place_order.await_count == 1
-    kw = client.place_order.await_args_list[0].kwargs
+    assert len(client.requests) == 1
+    kw = client.requests[0]
     assert kw["side"] == "sell"          # 거래소 실제(롱)의 반대 — same-side 110017 회피
     assert kw["reduce_only"] is True
     assert kw["qty"] == pytest.approx(0.107)
@@ -206,14 +207,14 @@ async def test_sync_corrects_qty_on_partial_manual_close() -> None:
 
 
 @pytest.mark.asyncio
-async def test_emergency_close_uses_exchange_direction_and_qty() -> None:
+async def test_emergency_close_uses_exchange_direction_and_qty(tmp_path) -> None:
     """#POS-SYNC: 비상청산이 봇 인식 아닌 거래소 실제 방향·수량 기준 (110017 방지)."""
-    client = _mock_client([[1, 100, 101, 99, 100, 10]])
-    client.fetch_position = AsyncMock(return_value=_ex_pos("long", 0.107))
-    bot = BotIctInstance(client=client, symbol="BTCUSDT")
+    client = OrderLedger()
+    client.position = _ex_pos("long", 0.107)
+    bot = BotIctInstance(client=client, symbol="BTCUSDT", trades_data_dir=tmp_path)
     bot.active_position = _short_position(qty=0.2)  # 봇은 숏 0.2 로 착각
     await bot._emergency_close()
-    kw = client.place_order.await_args_list[0].kwargs
+    kw = client.requests[0]
     assert kw["side"] == "sell"               # 거래소 롱의 반대
     assert kw["qty"] == pytest.approx(0.107)   # 거래소 실제 수량
     assert kw["reduce_only"] is True
@@ -264,7 +265,7 @@ async def test_step_executes_long_setup() -> None:
     assert entry_call["side"] == "buy"
     assert entry_call["qty"] > 0
     assert entry_call["price"] > 0                          # setup.entry (계획가) limit
-    assert "stop_loss" not in entry_call                   # 동봉 X (#LIVE-4)
+    assert entry_call["stop_loss"] > 0                    # 진입 순간부터 거래소 보호
     assert "take_profit" not in entry_call
     assert entry_call.get("reduce_only", False) is False
     # 즉시 체결 → active position + SL/TP 는 set_position_tpsl 로
@@ -792,11 +793,11 @@ async def test_marketable_limit_pending_when_unfilled() -> None:
         regime_filter_enabled=False,  # 미체결 pending 검증 — 횡보 게이트 격리
     )
     await bot.step()
-    # entry 1회 — #LIVE-4: SL/TP 동봉 안 함 (체결 후 set_position_tpsl)
+    # entry 1회 — SL 동봉, TP는 체결 후 set_position_tpsl로 등록.
     assert client.place_order.await_count == 1
     entry_call = client.place_order.await_args_list[0].kwargs
     assert "take_profit" not in entry_call
-    assert "stop_loss" not in entry_call
+    assert entry_call["stop_loss"] > 0
     # 미체결 → pending 등록, active_position 아직 X. SL/TP 도 아직 안 박음 (체결 후).
     assert bot.active_position is None
     assert bot._pending_entry is not None
@@ -813,7 +814,7 @@ async def test_pending_entry_promoted_on_fill() -> None:
 
     client = _mock_client([[1, 100, 101, 99, 100, 10]])
     client.fetch_position = AsyncMock(
-        return_value={"contracts": 0.01, "entryPrice": 100.5},
+        return_value={"contracts": 0.01, "entryPrice": 100.5, "side": "long"},
     )
     bot = BotIctInstance(client=client)
     bot._pending_entry = _PendingEntry(
@@ -1232,8 +1233,8 @@ def test_daily_pair_limit_resets_on_new_day() -> None:
 
 
 @pytest.mark.asyncio
-async def test_startup_cancel_skipped_when_position_recovered() -> None:
-    """#TPSL-STRIP 회귀: 활성 포지션 복구 시 startup 주문청소 금지 (SL/TP 보존)."""
+async def test_startup_cancels_entry_remainder_when_position_recovered() -> None:
+    """보호주문을 제외하는 취소 계약으로 복원 포지션의 진입 잔량만 정리한다."""
     client = _mock_client([[1, 100, 101, 99, 100, 10]])
     client.fetch_position = AsyncMock(return_value={
         "contracts": 1.0, "side": "short", "entryPrice": 100.0,
@@ -1243,7 +1244,7 @@ async def test_startup_cancel_skipped_when_position_recovered() -> None:
     bot = BotIctInstance(client=client, step_interval_sec=3600)
     await bot.start()
     assert bot.active_position is not None
-    client.cancel_bot_orders.assert_not_awaited()  # 보호장치 벗기면 안 됨
+    client.cancel_bot_orders.assert_awaited_once()
     await bot.stop()
 
 
@@ -1289,30 +1290,29 @@ async def test_tpsl_verify_noop_when_exchange_matches() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tpsl_verify_emergency_close_when_sl_breached() -> None:
+async def test_tpsl_verify_emergency_close_when_sl_breached(tmp_path) -> None:
     """#TPSL-VERIFY: 거래소 무SL + 가격이 SL 관통 → 재장착 대신 즉시 비상청산."""
     from aurora_ict.bot.bot_ict_instance import _ActivePosition
 
-    client = _mock_client([[1, 100, 101, 99, 100, 10]])
-    client.set_position_tpsl = AsyncMock(return_value=True)
-    client.place_order = AsyncMock(return_value={"orderId": "X"})
-    bot = BotIctInstance(client=client)
+    client = OrderLedger()
+    client.price = 7.956
+    bot = BotIctInstance(client=client, trades_data_dir=tmp_path)
     bot.active_position = _ActivePosition(
         direction=Direction.SHORT, entry=7.855, stop_loss=7.932,
         take_profit=0.0, qty=46.6, setup_ts_ms=1,
     )
     # 거래소: SL 없음 + mark 가 SL 위 (숏 관통).
-    client.fetch_position = AsyncMock(return_value={
+    client.position = {
         "contracts": 46.6, "side": "short", "entryPrice": 7.855,
         "stopLossPrice": 0, "takeProfitPrice": 0, "markPrice": 7.956,
-    })
+    }
     await bot._reconcile_open_position({
         "contracts": 46.6, "side": "short", "entryPrice": 7.855,
         "stopLossPrice": 0, "takeProfitPrice": 0, "markPrice": 7.956,
     })
     # 재장착이 아니라 청산(reduce_only place_order)이 나가야 함.
-    client.set_position_tpsl.assert_not_awaited()
-    client.place_order.assert_awaited()
+    assert client.protection == []
+    assert len(client.requests) == 1
     assert bot.active_position is None
 
 
@@ -1330,33 +1330,36 @@ def test_calc_tp1_long_short_and_off() -> None:
 
 
 @pytest.mark.asyncio
-async def test_partial_exit_closes_half_and_moves_sl_to_breakeven() -> None:
+async def test_partial_exit_closes_half_and_moves_sl_to_breakeven(tmp_path) -> None:
     """TP1(1R) 도달 → 50% reduce_only 청산 + 나머지 50% SL 본전 이동."""
     import pandas as pd
 
     from aurora_ict.bot.bot_ict_instance import _ActivePosition
-    client = _mock_client([[1, 100, 101, 99, 100, 10]])
+    client = OrderLedger()
+    client.position = _ex_pos("long", 0.1, 100.0)
     bot = BotIctInstance(
         client=client, symbol="BTCUSDT", partial_tp_rr=1.0, partial_be=True,
+        trades_data_dir=tmp_path,
     )
     # 롱: entry 100, SL 98(risk 2) → tp1 102(1R), swing TP 110
     bot.active_position = _ActivePosition(
         direction=Direction.LONG, entry=100.0, stop_loss=98.0,
-        take_profit=110.0, qty=0.1, setup_ts_ms=1, tp1_price=102.0,
+        take_profit=110.0, qty=0.1, setup_ts_ms=1, tp1_price=102.0, entry_ts_ms=1,
     )
     df = pd.DataFrame(
         [{"open": 101.0, "high": 103.0, "low": 101.0, "close": 102.5, "volume": 1.0}],
+        index=pd.to_datetime(["2026-06-23T10:00:00Z"]),
     )
     await bot._maybe_partial_exit(df)
-    assert client.place_order.await_count == 1
-    kw = client.place_order.await_args_list[0].kwargs
+    assert len(client.requests) == 1
+    kw = client.requests[0]
     assert kw["side"] == "sell"               # 롱 → sell 로 부분청산
     assert kw["qty"] == pytest.approx(0.05)    # 50%
     assert kw["reduce_only"] is True
     assert bot.active_position.partial_done is True
     assert bot.active_position.qty == pytest.approx(0.05)
     assert bot.active_position.stop_loss == pytest.approx(100.0)  # 본전
-    client.set_position_tpsl.assert_awaited()
+    assert client.protection
 
 
 @pytest.mark.asyncio

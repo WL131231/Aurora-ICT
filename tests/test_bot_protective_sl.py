@@ -12,6 +12,7 @@ import pytest
 
 from aurora_ict.bot.bot_ict_instance import BotIctInstance, _ActivePosition
 from aurora_ict.strategy.silver_bullet import Direction
+from tests.test_origo_execution_safety import OrderLedger
 
 
 def _client() -> AsyncMock:
@@ -85,16 +86,17 @@ async def test_short_sl_wrong_side_recomputed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sl_set_fails_twice_emergency_close() -> None:
+async def test_sl_set_fails_twice_emergency_close(tmp_path) -> None:
     """set_position_tpsl 2회 실패 → 무SL 방치 금지: 포지션 reduce_only 청산."""
-    client = _client()
-    client.set_position_tpsl = AsyncMock(return_value=None)  # 항상 실패
-    bot = BotIctInstance(client=client)
+    client = OrderLedger()
+    client.position = dict(contracts=1.0, side="short", entryPrice=100.0)
+    client.protection_fails = True
+    bot = BotIctInstance(client=client, trades_data_dir=tmp_path)
     bot.active_position = _pos(Direction.SHORT, 100.0, 99.0, 95.0)
     ok = await bot._ensure_protective_sl(95.0, 1.0)
     assert ok is False
     assert bot.active_position is None  # 청산됨
-    close = client.place_order.await_args_list[-1].kwargs
+    close = client.requests[-1]
     assert close["reduce_only"] is True
     assert close["side"] == "buy"  # SHORT 청산 = buy
 

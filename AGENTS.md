@@ -136,6 +136,10 @@ C:\Users\지영민\Desktop\aurora-ict-license\    ← 라이선스 admin 텔레�
 
 이 리포는 Claude(Claude Code)와 Codex(GPT)가 **번갈아 또는 동시에** 작업한다.
 
+- **2026-09-13 파트너 지시: Cursus는 다른 개발자 소유다. 오류는 보고만 하고 수정하지 않는다.**
+  공통 코드를 통한 간접 실행 변경도 피한다. 이번 Origo 실행 안전성 보강은 전용
+  `bot/origo_adapter.py`와 별도 factory로 분리한다. 미수정 결함과 검증/배포 상태는
+  `docs/SYSTEM_SAFETY_FIX_2026-09-13.md`를 먼저 확인한다.
 - **브랜치를 따로** 판다. 한 브랜치를 두 에이전트가 만지지 않는다.
 - PR 제목 앞에 누가 만들었는지 적는다: `[codex] fix: ...` / `[claude] fix: ...`
 - 같은 파일을 동시에 고칠 가능성이 높은 것: `aurora_adapter.py`, `bot_*_instance.py`, `app.py`.

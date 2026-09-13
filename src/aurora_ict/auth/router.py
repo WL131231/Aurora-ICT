@@ -95,6 +95,7 @@ def create_auth_router(
     secure_cookie: bool = False,
     master_key: bytes | None = None,
     on_keys_changed: Any = None,
+    validate_keys: Any = None,
 ) -> APIRouter:
     """``/auth/*`` router 생성 — DB 경로/master key 를 주입.
 
@@ -107,6 +108,7 @@ def create_auth_router(
         on_keys_changed: async (user_code) -> Any. 키 등록/갱신 직후 호출되는
             콜백. SaaS 는 mu_manager.stop_user 를 주입해 옛 키로 가동 중인 봇을
             자동 정지한다(사용자는 새 키로 다시 START). None 이면 미동작.
+        validate_keys: 영속 정지된 키의 실제 인증/거래 권한 검증 콜백.
 
     Returns:
         prefix ``/auth`` 의 APIRouter.
@@ -323,10 +325,25 @@ def create_auth_router(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="api_key 와 api_secret 은 비어있을 수 없습니다.",
             )
+        verified = False
+        if validate_keys is not None:
+            try:
+                verified = await validate_keys(user_code, req.mode, api_key, api_secret)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("키 재등록 권한 검증 실패: %s (%s)", user_code, type(e).__name__)
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="API 키 인증과 주문/포지션 거래 권한을 확인해 주세요.",
+                ) from e
+        if users_db.get_credential_state(db_path, user_code, req.mode)["stop_reason"] and not verified:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="정지 해제 전에 API 키 인증과 거래 권한 확인이 필요합니다.",
+            )
         # secret 만 암호화 — public api_key 는 평문 OK (조회용).
         secret_enc = keystore.encrypt_secret(api_secret, key=master_key)
         ok = users_db.set_api_keys(
-            db_path, user_code, api_key, secret_enc, mode=req.mode,
+            db_path, user_code, api_key, secret_enc, mode=req.mode, verified=verified,
         )
         if not ok:
             raise HTTPException(

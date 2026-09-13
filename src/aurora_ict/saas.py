@@ -151,6 +151,19 @@ async def auto_resume_running_bots(
             force_mode = RunMode.LIVE
         elif last_mode_str == "demo":
             force_mode = RunMode.DEMO
+        base = getattr(mu, "base_settings", None)
+        mode = force_mode.value if force_mode else (
+            base.run_mode.value if base is not None else "demo"
+        )
+        from aurora_ict.config.settings import AVAILABLE_MODELS
+
+        model = (
+            mu.model_for_slot(code, sym) if isinstance(mu, MultiUserBotManager)
+            else users_db.get_last_model(db_path, code)
+        )
+        is_cursus = AVAILABLE_MODELS.get(model) == "cursus"
+        if not is_cursus and users_db.get_credential_state(db_path, code, mode)["stop_reason"]:
+            return False
         try:
             await mu.start(code, sym, force_run_mode=force_mode)
             logger.info(
@@ -268,8 +281,11 @@ def main() -> int:
     # client_factory 는 main.py 와 정확히 동일한 ``aurora_client_factory`` 재사용.
     # multi_user_manager 가 사용자별 settings 로 호출해 ccxt CcxtClient → AuroraClientAdapter
     # 생성. 시그니처 ``Callable[[IctSettings], Awaitable[ExchangeClientProtocol]]`` 일치.
+    from aurora_ict.bot import origo_client_factory
+
     mu = MultiUserBotManager(
         client_factory=aurora_client_factory,
+        origo_client_factory=origo_client_factory,
         db_path=db_path,
         base_settings=base_settings,
     )

@@ -775,7 +775,9 @@ async function api(path, method = "GET", body = null) {
     if (resp.status === 401 && typeof showAuthGate === "function") {
       try { await showAuthGate(); } catch (_) { /* noop */ }
     }
-    throw new Error(`${resp.status}: ${detail}`);
+    const error = new Error(`${resp.status}: ${detail}`);
+    error.status = resp.status;
+    throw error;
   }
   return await resp.json();
 }
@@ -1354,14 +1356,21 @@ $("btn-stop").onclick = async () => {
   // 유지 → START 시 복원. (개별 페어 정지는 페어 칩 클릭 = /ict/stop?symbol=)
   try {
     // 2026-06-11 리뷰 수정: /ict/stop-all 은 멀티유저 전용 — .exe(단일) 모드에선
-    // 404 라 STOP 버튼이 안 먹었다. 실패 시 /ict/stop 폴백.
+    // 404일 때만 단일봇 경로로 폴백한다. 취소 미확인(409)을 성공으로 숨기지 않는다.
     try { await api("/ict/stop-all", "POST"); }
-    catch (e2) { await api("/ict/stop", "POST"); }
+    catch (e2) {
+      if (e2.status !== 404) throw e2;
+      await api("/ict/stop", "POST");
+    }
     toast("봇 중지됨");
     await fetchAndRender();
     await refreshRunningPairs();
   }
-  catch (e) { toast(e.message, true); }
+  catch (e) {
+    toast(e.message, true);
+    await fetchAndRender();
+    await refreshRunningPairs();
+  }
 };
 
 // 2026-05-29: 사이드바 cred-mode-toggle (DEMO/LIVE 슬롯 선택) 핸들러.

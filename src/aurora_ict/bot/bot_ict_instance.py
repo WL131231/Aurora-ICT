@@ -19,6 +19,7 @@ import json
 import logging
 import time
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -218,6 +219,8 @@ class ExchangeClientProtocol(Protocol):
 
     async def fetch_position(self, symbol: str) -> dict[str, Any] | None: ...
 
+    async def fetch_order(self, order_id: str, symbol: str) -> dict[str, Any] | None: ...
+
     async def fetch_balance(self) -> dict[str, Any]: ...
 
     async def fetch_ticker(self, symbol: str) -> float | None: ...
@@ -358,6 +361,31 @@ class _PendingEntry:
     # 등록 시점에 미리 빌드한 ENTRY 컨텍스트 JSON (confluences/source/window 등).
     # 체결 시 _record_trade(context_json=...) 로 넘겨 거래 저널에 풍부히 기록.
     context_json: str | None = None
+
+    order_id: str = ""
+    cancel_requested: bool = False
+    recorded_qty: float = 0.0
+    recorded_notional: float = 0.0
+
+
+@dataclass(slots=True)
+class _PendingClose:
+    """접수·체결·잔량 확인이 끝나지 않은 reduce-only 청산 의도."""
+
+    direction: Direction
+    entry: float
+    remaining: float
+    event_type: TradeEventType
+    reason: str
+    setup_ts_ms: int
+    close_all: bool
+    sent: bool = False
+    order_id: str = ""
+    receipt: dict[str, Any] | None = None
+    pre_qty: float = 0.0
+    attempt_qty: float = 0.0
+    recorded_qty: float = 0.0
+    recorded_notional: float = 0.0
 
 
 @dataclass(slots=True)
@@ -639,6 +667,9 @@ class BotIctInstance:
     notify_cb: Any = None
     # 자동 정지 사유 — 'auth_expired' | 'auth_invalid' | None. 상태 API 가 노출.
     stop_reason: str | None = None
+    safety_stop_cb: Callable[[str], Awaitable[None]] | None = None
+    # 모델 전환 대기 중 신규 진입만 보류하고 기존 주문·포지션 보호는 유지한다.
+    entry_paused: bool = False
 
     state: BotState = field(default=BotState.STOPPED)
     active_position: _ActivePosition | None = field(default=None)
@@ -647,6 +678,9 @@ class BotIctInstance:
     _active_model: str = field(default=ORIGO_MODEL_NAME)
     # #LIVE-1 fix: marketable limit entry 미체결 대기 상태 (체결되면 active_position 으로 승격).
     _pending_entry: _PendingEntry | None = field(default=None)
+    _startup_orders_unconfirmed: bool = field(default=False)
+    _pending_close: _PendingClose | None = field(default=None)
+    _close_check_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     _task: asyncio.Task[None] | None = field(default=None)
     _last_setup_ts_ms: int = field(default=0)  # 동일 setup 중복 진입 방지
     # 2026-06-09: 방향까지 기록 — 같은 봉의 반대 방향(롱→숏 전환)은 차단 안 함.
@@ -760,28 +794,14 @@ class BotIctInstance:
                 logger.warning("symbol meta 로드 실패 (%s): %s", self.symbol, e)
                 self._symbol_meta = {}
         await self._recover_position_from_exchange()
-        # 2026-06-12 고아 주문 청소 (LINK 사고): 재시작(강제 종료 배포)으로 stop()
-        # 의 pending 취소가 못 돈 경우, 전생의 미체결 지정가가 거래소에 남아
-        # 봇 모르게 체결된다(무SL 고아 포지션). 시작 시점엔 이 봇의 pending 의도가
-        # 없으므로 trading order 전부 취소.
-        # 2026-06-13 회귀 수정(#TPSL-STRIP): 활성 포지션이 있으면 skip — Bybit 의
-        # 주문 동봉형 SL/TP 가 조건부 주문으로 살아 있어 cancel_all 이 보호장치를
-        # 벗겨버렸다 (전 사용자 XRP/LINK 무방비 사고). 포지션 보유 시 고아
-        # 지정가는 sync 의 방향 검증·입양이 처리하므로 청소는 무포지션일 때만.
-        if self.active_position is None:
-            try:
-                n_cxl = await self.client.cancel_bot_orders(self.symbol)
-                logger.info(
-                    "startup 고아 주문 청소 — 봇 주문만 취소 %d건 (유저 수동 주문 보존, %s)",
-                    n_cxl or 0, self.symbol,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning("startup 고아 주문 청소 실패 (무시): %s", e)
-        else:
-            logger.info(
-                "startup 고아 주문 청소 skip — 활성 포지션 보유 (SL/TP 보존, %s)",
-                self.symbol,
-            )
+        # cancel_bot_orders는 reduce-only/SL/TP를 제외한 봇 진입 잔량만 취소한다.
+        # 부분 체결 후 재시작도 잔여 진입을 제거해야 하며, 실패를 잊으면 안 된다.
+        self._startup_orders_unconfirmed = True
+        try:
+            await self.client.cancel_bot_orders(self.symbol)
+            self._startup_orders_unconfirmed = False
+        except Exception as e:  # noqa: BLE001
+            logger.warning("startup 진입 주문 청소 미확인 — 신규 진입 보류: %s", e)
         # #RECONCILE 2026-06-06: 재기동(crash) 중 청산돼 trades DB 에 청산 이벤트가
         # 누락된 ENTRY(orphan)를 거래소 closed-pnl 로 대조해 보충. 봇 진행 막지 않게
         # 실패는 무시.
@@ -970,6 +990,7 @@ class BotIctInstance:
             take_profit=tp,
             qty=contracts,
             setup_ts_ms=0,  # recovery — 원 setup ts_ms 알 수 없어 0
+            entry_ts_ms=int(time.time() * 1000),  # 복원 이전 봉 극값을 새 수익으로 오인하지 않는다.
             tp1_price=_r_tp1,
             partial_done=_r_done,
         )
@@ -1105,17 +1126,16 @@ class BotIctInstance:
         attached SL/TP conditional 은 영향 X (Bybit V5 category 분리).
         """
         # 1) pending limit entry 취소 (active_position 의 SL/TP 는 무관)
+        if self._pending_close is not None:
+            await self._check_pending_close()
+            if self._pending_close is not None:
+                self.entry_paused = True
+                raise RuntimeError("청산 주문 미확인 — 기존 추적 태스크를 유지합니다")
         if self._pending_entry is not None:
-            pe = self._pending_entry
-            try:
-                await self.client.cancel_bot_orders(self.symbol)
-                logger.info(
-                    "STOP: 지정가 미체결 (entry=%.4f qty=%.6f) 취소",
-                    pe.entry, pe.qty,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning("STOP pending 취소 실패: %s", e)
-            self._pending_entry = None
+            if not await self.cancel_pending_entry():
+                self.entry_paused = True
+                logger.error("STOP: 진입 주문 취소 미확인 — 신규 진입만 중단, 추적 태스크 유지 (%s)", self.symbol)
+                raise RuntimeError("진입 주문 취소 미확인 — 기존 추적 태스크를 유지합니다")
         self.state = BotState.STOPPED
         # 변경 7: flip watcher 정지.
         if self._flip_watcher is not None:
@@ -1203,6 +1223,8 @@ class BotIctInstance:
             err: 마지막 거래소 오류 메시지.
         """
         self.stop_reason = "api_permission"
+        if self.safety_stop_cb is not None:
+            await self.safety_stop_cb(self.stop_reason)
         logger.warning(
             "%s 거래소 쓰기 권한 거부 %d회 연속 — 봇 자동 정지. API 키 거래 권한 확인 필요. (%s)",
             self.symbol, streak, (err or "")[:120],
@@ -1239,6 +1261,8 @@ class BotIctInstance:
         """
         expired = "expired" in (err or "").lower()
         self.stop_reason = "auth_expired" if expired else "auth_invalid"
+        if self.safety_stop_cb is not None:
+            await self.safety_stop_cb(self.stop_reason)
         logger.warning(
             "%s 거래소 키 %s %d회 연속 — 봇 자동 정지. 키 재등록 필요. (%s)",
             self.symbol, "만료" if expired else "무효", streak, (err or "")[:120],
@@ -1254,9 +1278,25 @@ class BotIctInstance:
         Returns:
             계산된 ``ICTSignal`` (테스트/디버그 용도로 노출).
         """
-        if self.multi_tf:
-            return await self._step_multi_tf()
-
+        if self._pending_close is not None:
+            await self._check_pending_close()
+            if self._pending_close is not None:
+                return ICTSignal(
+                    action=SignalAction.NO_ACTION, setup=None, symbol=self.symbol,
+                    ts_ms=int(time.time() * 1000), reason="청산 주문 실제 체결 확인 대기",
+                )
+        if self._startup_orders_unconfirmed:
+            try:
+                await self.client.cancel_bot_orders(self.symbol)
+                self._startup_orders_unconfirmed = False
+            except Exception as e:  # noqa: BLE001
+                logger.warning("startup 주문 정리 재확인 실패 — 신규 진입 보류: %s", e)
+                if self.active_position is not None:
+                    await self._sync_position_state()
+                return ICTSignal(
+                    action=SignalAction.NO_ACTION, setup=None, symbol=self.symbol,
+                    ts_ms=int(time.time() * 1000), reason="이전 진입 주문 정리 확인 대기",
+                )
         # #LIVE-1: marketable limit 미체결 추적 — 체결되면 active_position 승격,
         # TTL 만료면 취소. 대기 중이면 신규 진입 안 함 (중복 주문 방지).
         if self._pending_entry is not None:
@@ -1269,6 +1309,13 @@ class BotIctInstance:
                     ts_ms=int(time.time() * 1000),
                     reason="marketable limit 체결 대기",
                 )
+
+        if self.multi_tf:
+            return await self._step_multi_tf()
+
+        # flat에서도 고아 체결/복원 실패를 재확인한다. 신호가 없어도 보호 복구는 필요하다.
+        if self.active_position is None:
+            await self._sync_position_state()
 
         # #BUG-7 fix: today 실현손익을 거래소 closed-pnl 로 동기화 (NY 자정 reset 포함).
         # daily loss limit / UI today_pnl 이 거래소와 일치하게 (내부 누적 대체).
@@ -2113,6 +2160,10 @@ class BotIctInstance:
         """
         side = "buy" if setup.direction is Direction.LONG else "sell"
 
+        if self.entry_paused or self._pending_entry is not None or self._pending_close is not None:
+            logger.info("신규 진입 보류 — 모델 전환 또는 기존 주문 확인 대기 (%s)", self.symbol)
+            return
+
         # #REENTRY-BLOCK 2026-07-23 (파트너): 사용자가 TP 전 수동청산한 동일 setup
         # (방향+진입가 1% 이내)은 쿨다운 동안 재진입 억제 — 조기 익절 의도 존중.
         # flip(active_position 보유)은 해당 없음. API 호출 전 먼저 검사(비용 0).
@@ -2319,18 +2370,35 @@ class BotIctInstance:
         # setup.entry 는 위 max_entry_distance 보정에서 이미 갱신됨(보정 시 SL/TP 도
         # 평행 이동해 RR 보존). 계획가 limit 으로 그대로 사용.
         entry_price = None if self.use_market_entry else setup.entry
+        if not self._is_protective_sl(setup.direction, setup.stop_loss, setup.entry):
+            logger.error("유효한 진입 손절 없음 — 보호 없는 주문 금지 (%s)", self.symbol)
+            return
 
-        # #LIVE-4 fix: SL/TP 는 entry 주문에 동봉하지 않는다. 계획가(limit) 가 현재가에서
-        # 벗어나면 Bybit 가 동봉 SL/TP 의 현재가 기준 방향 검증 (10001 "StopLoss should
-        # greater/lower base_price") 으로 주문 자체를 거부 → 진입 0. 대신 체결되어 포지션이
-        # 생긴 뒤 set_position_tpsl 로 conditional SL/TP 를 박는다 (체결 시점 가격=계획가라
-        # 방향 유효). 즉시 체결은 아래, 미체결(pending) 은 _check_pending_entry 가 처리.
+        # 2026-09-13: 과거 10001 회피를 위해 SL을 뺀 주문은 서버 중단 중 체결되면
+        # 무방비였다. Bybit V5 create-order의 stopLoss 계약을 사용하고 거절되면 진입을
+        # 포기한다. SL 없는 재주문은 금지한다. TP는 체결 후 별도로 검증·등록한다.
+        # https://bybit-exchange.github.io/docs/v5/order/create-order
+        pe = _PendingEntry(
+            direction=setup.direction,
+            entry=setup.entry,
+            stop_loss=setup.stop_loss,
+            take_profit=setup.take_profit,
+            qty=qty,
+            setup_ts_ms=setup.ts_ms,
+            placed_ts_ms=int(time.time() * 1000),
+            htf_flip_target=htf_flip_target,
+            ltf_weight=TF_WEIGHT.get(self.timeframe, 1),
+            context_json=self._build_entry_context_json(setup, setup.entry, qty, htf_flip_target),
+        )
+        # 응답 유실/태스크 취소도 주문 실패의 증거가 아니다. 전송 전 의도를 보존한다.
+        self._pending_entry = pe
         try:
             order_resp = await self.client.place_order(
                 symbol=self.symbol,
                 side=side,
                 qty=qty,
                 price=entry_price,
+                stop_loss=setup.stop_loss,
             )
         except Exception as e:  # noqa: BLE001 — 주문 실패도 봇은 계속 돌아야 함
             # 2026-05-29 #SILENT-3: 진입 주문 실패 가시화.
@@ -2349,191 +2417,237 @@ class BotIctInstance:
             notify_order_error(
                 str(e), self.notify_cb, self.user_code, self._order_error_alert_ts,
             )
+            if getattr(e, "order_definitively_rejected", False) is True:
+                self._pending_entry = None
+                return  # 어댑터가 원시 주문 거절을 확증한 경우만 새 신호 재시도를 허용.
+            # 예외 클래스만으로 실제 미접수를 단정할 수 없다. 주문 조회 식별자를
+            # 보존하고 취소·조회에서 잔여 진입 없음이 확인될 때만 의도를 정리한다.
+            pe.order_id = str(getattr(e, "order_lookup_id", "") or "")
+            pe.cancel_requested = True
+            logger.error("진입 응답 불명 — 주문 의도 유지, 잔여 주문 확인 전 재진입 금지 (%s)", self.symbol)
             return
 
-        # 체결 여부 — filled_qty / avg_fill_price 로 즉시 체결 판정.
-        filled = False
-        fill_price = entry_price if entry_price is not None else setup.entry
+        # 접수 응답만으로 체결을 가정하지 않는다. 실제 체결 수량·평균가가 모두
+        # 확인된 응답만 기록하고 나머지는 지정가/시장가 모두 pending에서 확인한다.
         if isinstance(order_resp, dict):
-            fq = order_resp.get("filled_qty")
-            if isinstance(fq, (int, float)) and fq > 0:
-                filled = True
-            avg = order_resp.get("avg_fill_price")
-            if isinstance(avg, (int, float)) and avg > 0:
-                fill_price = float(avg)
+            pe.order_id = str(order_resp.get("id") or order_resp.get("order_id") or order_resp.get("orderId") or "")
+            fq, avg = self._confirmed_order_fill(order_resp)
+            if fq > 0 and avg > 0:
+                await self._record_pending_fill(pe, fq, avg)
+                if fq >= qty:
+                    self._pending_entry = None
+                    return
+                pe.cancel_requested = True
+        logger.info(
+            "진입 주문 확인 대기 — %s %s qty=%.6f SL=%.4f order=%s",
+            self.symbol, side, qty, setup.stop_loss, pe.order_id or "미확인",
+        )
 
-        if not filled and not self.use_market_entry:
-            # 계획가 limit 미체결 → pending 등록. step 의 _check_pending_entry 가
-            # 체결 승격 (+ SL/TP 박기) / TTL 취소 추적. active_position 은 아직 X.
-            self._pending_entry = _PendingEntry(
-                direction=setup.direction,
-                entry=fill_price,
-                stop_loss=setup.stop_loss,
-                take_profit=setup.take_profit,
-                qty=qty,
-                setup_ts_ms=setup.ts_ms,
-                placed_ts_ms=int(time.time() * 1000),
-                htf_flip_target=htf_flip_target,
-                ltf_weight=TF_WEIGHT.get(self.timeframe, 1),
-                # 등록 시점에 컨텍스트 미리 빌드 — 체결되면 ENTRY 기록에 그대로 사용.
-                context_json=self._build_entry_context_json(
-                    setup, fill_price, qty, htf_flip_target,
-                ),
-            )
-            logger.info(
-                "지정가 entry 등록 (계획가 미체결 대기, TTL %ds) — %s %s limit=%.4f "
-                "sl=%.4f tp=%.4f qty=%.4f",
-                self.entry_limit_ttl_sec, self.symbol, side, fill_price,
-                setup.stop_loss, setup.take_profit, qty,
-            )
+    @staticmethod
+    def _order_fill_known(order: dict[str, Any]) -> bool:
+        """체결 필드 부재와 실제 0체결을 구분한다.
+
+        Args:
+            order: 거래소 주문 응답.
+        Returns:
+            유한한 0 이상 체결 수량이 명시되어 있으면 True.
+        """
+        for key in ("filled_qty", "filled"):
+            value = order.get(key)
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(value) and value >= 0:
+                return True
+        return False
+
+    @staticmethod
+    def _confirmed_order_fill(order: dict[str, Any]) -> tuple[float, float]:
+        """요청 수량·가격을 제외하고 확인된 누적 체결 수량·평균가만 읽는다.
+
+        Args:
+            order: 거래소 주문 응답.
+        Returns:
+            누적 체결 수량, 평균 체결가. 미확인 값은 0.
+        """
+        values = []
+        for keys in (("filled_qty", "filled"), ("avg_fill_price", "average")):
+            value = 0.0
+            for key in keys:
+                raw = order.get(key)
+                try:
+                    number = float(raw) if raw is not None and not isinstance(raw, bool) else 0.0
+                except (TypeError, ValueError):
+                    continue
+                if np.isfinite(number) and number > 0:
+                    value = number
+                    break
+            values.append(value)
+        return values[0], values[1]
+
+    async def _record_pending_fill(
+        self, pe: _PendingEntry, qty: float, average: float, *,
+        manage_position: bool = True, live_qty: float | None = None,
+    ) -> None:
+        """주문의 누적 체결에서 새 체결분만 기록하고 실제 수량으로 보호한다.
+
+        Args:
+            pe: 추적 중인 진입 주문.
+            qty: 확인된 누적 체결 수량.
+            average: 누적 평균 체결가.
+            manage_position: 실제 포지션 방향이 맞을 때만 보호·상태 갱신 허용.
+            live_qty: 별도 조회로 확인된 현재 잔량. 없으면 이번 체결분을 더한다.
+        Returns:
+            없음. 포지션과 진입 장부를 갱신한다.
+        """
+        delta = qty - pe.recorded_qty
+        if delta < 0 or average <= 0:
             return
-
-        # 즉시 체결 (시장가 or 계획가==현재가) → active_position 확정 + SL/TP conditional 박기.
-        # 2026-05-28: 학습/복기 dataset 위해 진입 context + equity snapshot 같이 박음.
-        _market_entry_equity = 0.0
+        delta_price = (qty * average - pe.recorded_notional) / delta if delta > 0 else average
+        if not np.isfinite(delta_price) or delta_price <= 0:
+            logger.error("진입 체결 누계 불일치 — 기록/추적 유지 (%s)", self.symbol)
+            return
         try:
-            _market_entry_equity = float(await self._fetch_equity())
-        except Exception:  # noqa: BLE001
-            pass
-        _market_entry_ctx = self._build_entry_context_json(setup, fill_price, qty, htf_flip_target)
-        self.active_position = _ActivePosition(
-            direction=setup.direction,
-            entry=fill_price,
-            stop_loss=setup.stop_loss,
-            take_profit=setup.take_profit,
-            qty=qty,
-            setup_ts_ms=setup.ts_ms,
-            htf_flip_target=htf_flip_target,
-            ltf_weight=TF_WEIGHT.get(self.timeframe, 1),
-            entry_ts_ms=int(time.time() * 1000),
-            context_json=_market_entry_ctx,
-            equity_at_entry=_market_entry_equity,
-            tp1_price=self._calc_tp1(fill_price, setup.stop_loss, setup.direction),
-        )
-        self._reentry_block = None  # 신규 진입 확정 — 재진입 차단 해제
-        # #BUG-2 해소: ENTRY 이벤트 기록 (체결됨 — 먼저 기록).
-        self._record_trade(
-            TradeEventType.ENTRY,
-            direction=setup.direction,
-            price=fill_price,
-            qty=qty,
-            setup_ts_ms=setup.ts_ms,
-            reason=(
-                f"confluence={setup.confluence_score} "
-                f"window={setup.window} rr={setup.risk_reward:.2f}"
-            ),
-            context_json=self._build_entry_context_json(
-                setup, fill_price, qty, htf_flip_target,
-            ),
-        )
-        # #LIVE-4 + P1(#LIVE-6): 체결 후 유효한 보호 SL 보장. 계획가~체결 괴리로
-        # SL 이 현재가 너머면 현재가 기준 재계산, 그래도 실패 시 무SL 방치 금지 위해 청산.
-        sl_applied = await self._ensure_protective_sl(
-            setup.take_profit, abs(setup.entry - setup.stop_loss),
-        )
-        # #TRAIL-EXCHANGE: SL 확보 후 트레일 무장 — 성공 시 분할익절 skip.
-        _trail_armed = sl_applied and await self._arm_trailing()
-        # #PARTIAL-TP-ORDER: SL+swing(Entire) 박힌 후 1.5R 부분 TP(Partial) 추가 등록.
-        if sl_applied and self.partial_tp_exchange and not _trail_armed:
-            await self._setup_partial_tps()
-        if sl_applied and htf_flip_target is not None:
-            logger.info(
-                "HTF flip target armed — %s zone=[%.4f,%.4f] weight=%d",
-                htf_flip_target.tf, htf_flip_target.low, htf_flip_target.high,
-                htf_flip_target.weight,
+            context = json.loads(pe.context_json or "{}")
+        except (TypeError, ValueError):
+            context = {}
+        context.update(entry=average, qty=qty, filled_delta=delta, order_id=pe.order_id)
+        ctx_json = json.dumps(context, ensure_ascii=False)
+        created = manage_position and self.active_position is None
+        if created:
+            self.active_position = _ActivePosition(
+                direction=pe.direction, entry=average if pe.recorded_qty == 0 else delta_price,
+                stop_loss=pe.stop_loss, take_profit=pe.take_profit,
+                qty=live_qty if live_qty is not None else delta,
+                setup_ts_ms=pe.setup_ts_ms, htf_flip_target=pe.htf_flip_target,
+                ltf_weight=pe.ltf_weight, entry_ts_ms=int(time.time() * 1000),
+                context_json=ctx_json,
+                tp1_price=self._calc_tp1(average, pe.stop_loss, pe.direction),
             )
+        elif manage_position and self.active_position is not None:
+            self.active_position.qty = live_qty if live_qty is not None else self.active_position.qty + delta
+            self.active_position.entry = average
+            self.active_position.context_json = ctx_json
+        if delta > 0:
+            pe.recorded_qty = qty
+            pe.recorded_notional = qty * average
+            self._reentry_block = None
+            self._record_trade(
+                TradeEventType.ENTRY, direction=pe.direction, price=delta_price, qty=delta,
+                setup_ts_ms=pe.setup_ts_ms, reason="진입 주문 실제 체결 확인", context_json=ctx_json,
+            )
+        if not manage_position or self._pending_close is not None or (delta == 0 and not created):
+            return
+        if await self._ensure_protective_sl(pe.take_profit, abs(pe.entry - pe.stop_loss)):
+            if created and self.active_position is not None:
+                self.active_position.equity_at_entry = await self._fetch_equity()
+            armed = await self._arm_trailing()
+            # 부분 체결 중에는 수량이 더 변할 수 있으므로 잔여 진입 취소 전 Partial TP 금지.
+            if self.partial_tp_exchange and not armed and qty >= pe.qty:
+                await self._setup_partial_tps()
+
+    async def _pending_order_snapshot(self, pe: _PendingEntry) -> dict[str, Any] | None:
+        """식별 가능한 주문은 주문별 상태를 확인하고 조회 불명은 예외로 보존한다.
+
+        Args:
+            pe: 추적할 주문.
+        Returns:
+            주문 상태. 식별자가 없는 이전 상태는 None.
+        Raises:
+            RuntimeError: 식별자가 있지만 조회 결과가 불명확함.
+        """
+        if not pe.order_id:
+            return None
+        order = await self.client.fetch_order(pe.order_id, self.symbol)
+        if not isinstance(order, dict):
+            raise RuntimeError("진입 주문 상태 미확인")
+        if not self._order_fill_known(order):
+            raise RuntimeError("진입 주문 체결 수량 미확인")
+        return order
 
     async def _check_pending_entry(self) -> bool:
-        """marketable limit 미체결 추적 (#LIVE-1 fix).
-
-        - 체결됨 (거래소 포지션 contracts > 0) → active_position 승격 + ENTRY 기록.
-        - 미체결 + TTL(entry_limit_ttl_sec) 경과 → 주문 취소, pending 해제 (타점 포기).
-        - 미체결 + TTL 내 → 계속 대기.
+        """부분 체결은 보호하며 잔여 진입 취소·최종 조회가 확인될 때까지 추적한다.
 
         Returns:
-            True = 아직 미체결 대기 중 (step 이 신규 진입 skip).
-            False = pending 해소 (체결 승격 or 취소) — step 진행 가능.
+            True면 확인 대기 중으로 신규 진입 금지. False면 잔여 진입 주문 없음.
         """
         pe = self._pending_entry
         if pe is None:
             return False
         try:
+            order = await self._pending_order_snapshot(pe)
             pos = await self.client.fetch_position(self.symbol)
+            qty, average = self._confirmed_order_fill(order or {})
+            contracts = float((pos or {}).get("contracts", 0) or 0)
+            direction = self._exchange_position_direction(pos or {})
+            # 응답을 잃어 식별자가 없는 주문만 포지션 증가를 보조 근거로 사용한다.
+            if order is None and contracts > 0 and direction is pe.direction:
+                qty = max(pe.recorded_qty, contracts)
+                average = float(pos.get("entryPrice") or pos.get("entry_price") or 0)
+            if qty > 0 and average > 0:
+                await self._record_pending_fill(
+                    pe, qty, average, manage_position=contracts > 0 and direction is pe.direction,
+                    live_qty=contracts,
+                )
+            terminal = str((order or {}).get("status") or "").lower() in {
+                "closed", "canceled", "cancelled", "rejected", "expired",
+            }
+            expired = int(time.time() * 1000) - pe.placed_ts_ms >= self.entry_limit_ttl_sec * 1000
+            if not (pe.cancel_requested or qty > 0 or terminal or expired):
+                return True
+            pe.cancel_requested = True
+            # 반환값 0도 잔여 진입 없음이 재조회로 확인됨을 뜻한다. 실패·불명은 예외다.
+            await self.client.cancel_bot_orders(self.symbol)
+            final_order = await self._pending_order_snapshot(pe)
+            final_pos = await self.client.fetch_position(self.symbol)
+            final_qty, final_avg = self._confirmed_order_fill(final_order or {})
+            final_contracts = float((final_pos or {}).get("contracts", 0) or 0)
+            final_dir = self._exchange_position_direction(final_pos or {})
+            if final_order is None and final_contracts > 0 and final_dir is pe.direction:
+                final_qty = max(pe.recorded_qty, final_contracts)
+                final_avg = float(final_pos.get("entryPrice") or final_pos.get("entry_price") or 0)
+            if final_qty > 0 and final_avg > 0:
+                await self._record_pending_fill(
+                    pe, final_qty, final_avg,
+                    manage_position=final_contracts > 0 and final_dir is pe.direction,
+                    live_qty=final_contracts,
+                )
+            if final_order is not None and str(final_order.get("status") or "").lower() not in {
+                "closed", "canceled", "cancelled", "rejected", "expired",
+            }:
+                return True  # 취소 접수와 체결 최종 상태 전파는 비동기다.
+            if final_qty > pe.recorded_qty:
+                return True  # 체결 수량은 있지만 평균 체결가가 아직 오지 않았다.
+            if final_qty == 0 and final_order is not None:
+                self._pending_entry = None  # 무체결 취소: 다른 포지션의 소유권은 별도 검증.
+                return False
+            if final_contracts > 0:
+                if final_dir is not None and final_dir is not pe.direction:
+                    self._pending_entry = None
+                    logger.error("취소 확정 후 다른 방향 포지션 — 진입 종료, 별도 소유권 동기화 (%s)", self.symbol)
+                    return False
+                if final_dir is None or self.active_position is None:
+                    logger.error("진입 주문과 실제 포지션 불일치 — pending 유지 (%s)", self.symbol)
+                    return True
+                self.active_position.qty = final_contracts
+                self.active_position.entry = float(
+                    final_pos.get("entryPrice") or final_pos.get("entry_price")
+                    or self.active_position.entry,
+                )
+            elif self.active_position is not None and self._pending_close is None:
+                await self._sync_position_state()
+            self._pending_entry = None
+            logger.info("진입 주문 추적 종료 — 실제 누적 체결 %.6f, 잔여 진입 주문 없음 (%s)", pe.recorded_qty, self.symbol)
+            return False
         except Exception as e:  # noqa: BLE001
-            logger.warning("pending 체결 확인 fetch_position 실패: %s — 대기 유지", e)
+            logger.warning("진입 주문 확인/취소 실패 — pending 유지, 신규 진입 보류 (%s): %s", self.symbol, e)
             return True
-        contracts = float(pos.get("contracts", 0) or 0) if pos else 0.0
-        if contracts > 0:
-            # 체결됨 → active_position 승격. entry 는 거래소 체결가 우선.
-            entry_px = pe.entry
-            if pos:
-                ep = (
-                    pos.get("entryPrice")
-                    or pos.get("entry_price")
-                    or pos.get("averagePrice")
-                )
-                if isinstance(ep, (int, float)) and float(ep) > 0:
-                    entry_px = float(ep)
-            # 2026-05-28: 학습/복기 dataset 위해 진입 시점 equity snapshot.
-            entry_equity = 0.0
-            try:
-                entry_equity = float(await self._fetch_equity())
-            except Exception:  # noqa: BLE001
-                pass
-            self.active_position = _ActivePosition(
-                direction=pe.direction,
-                entry=entry_px,
-                stop_loss=pe.stop_loss,
-                take_profit=pe.take_profit,
-                qty=pe.qty,
-                setup_ts_ms=pe.setup_ts_ms,
-                htf_flip_target=pe.htf_flip_target,
-                ltf_weight=pe.ltf_weight,
-                entry_ts_ms=int(time.time() * 1000),
-                context_json=pe.context_json,
-                equity_at_entry=entry_equity,
-                tp1_price=self._calc_tp1(entry_px, pe.stop_loss, pe.direction),
-            )
-            self._reentry_block = None  # 신규 진입 확정 — 재진입 차단 해제
-            # #BUG-2: ENTRY 기록 (체결됨 — 먼저 기록).
-            self._record_trade(
-                TradeEventType.ENTRY,
-                direction=pe.direction,
-                price=entry_px,
-                qty=pe.qty,
-                setup_ts_ms=pe.setup_ts_ms,
-                reason=f"limit filled entry={entry_px:.4f}",
-                context_json=pe.context_json,
-            )
-            # #LIVE-4 + P1: 체결 후 유효한 보호 SL 보장 (안 되면 청산).
-            if await self._ensure_protective_sl(
-                pe.take_profit, abs(pe.entry - pe.stop_loss),
-            ):
-                logger.info(
-                    "지정가 체결 — active_position 승격 entry=%.4f sl=%.4f tp=%.4f",
-                    entry_px, self.active_position.stop_loss, pe.take_profit,
-                )
-                # #TRAIL-EXCHANGE: SL 확보 후 트레일 무장 — 성공 시 분할익절 skip.
-                _trail_armed = await self._arm_trailing()
-                # #PARTIAL-TP-ORDER: SL+swing(Entire) 박힌 후 1.5R 부분 TP(Partial) 추가.
-                if self.partial_tp_exchange and not _trail_armed:
-                    await self._setup_partial_tps()
-            self._pending_entry = None
-            return False
-        # 미체결 — TTL 만료 체크.
-        now_ms = int(time.time() * 1000)
-        if now_ms - pe.placed_ts_ms >= self.entry_limit_ttl_sec * 1000:
-            try:
-                await self.client.cancel_bot_orders(self.symbol)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("pending limit 취소 실패: %s", e)
-            logger.info(
-                "marketable limit TTL 만료 (%ds 미체결) — 취소, 타점 포기 (setup_ts=%d)",
-                self.entry_limit_ttl_sec, pe.setup_ts_ms,
-            )
-            self._pending_entry = None
-            return False
-        return True
+        finally:
+            if self._pending_entry is not None and self._pending_close is None:
+                await self._maintain_pending_protection()
 
     async def cancel_pending_entry(self) -> bool:
         """사용자 명령 — pending limit entry 즉시 취소 (TTL 만료 기다리지 않음).
@@ -2547,16 +2661,8 @@ class BotIctInstance:
         """
         if self._pending_entry is None:
             return False
-        try:
-            await self.client.cancel_bot_orders(self.symbol)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("pending entry 수동 취소 — cancel_all_orders 실패: %s", e)
-        logger.info(
-            "pending entry 사용자 취소 (setup_ts=%d)",
-            self._pending_entry.setup_ts_ms,
-        )
-        self._pending_entry = None
-        return True
+        self._pending_entry.cancel_requested = True
+        return not await self._check_pending_entry()
 
     async def _tick_trail(self, df: pd.DataFrame) -> None:
         """진입 중 새 swing 형성 시 SL 을 그 자리로 이동 (structure-based trail).
@@ -2596,7 +2702,7 @@ class BotIctInstance:
 
         bybit 는 SHORT SL ≤ 현재가 / LONG SL ≥ 현재가 면 거부(10001).
         """
-        if sl <= 0:
+        if not np.isfinite(sl) or not np.isfinite(ref_price) or sl <= 0 or ref_price <= 0:
             return False
         if direction is Direction.SHORT:
             return sl > ref_price
@@ -2726,6 +2832,34 @@ class BotIctInstance:
         )
         return False
 
+    async def _post_entry_extremes(self, df: pd.DataFrame) -> tuple[float, float] | None:
+        """진입 이후 관찰한 가격으로만 수익 도달 여부를 판단한다.
+
+        Args:
+            df: 최신 거래 봉. 진입 포함 봉의 극값은 진입 이전일 수 있다.
+        Returns:
+            진입 이후 시작한 봉의 고가·저가, 또는 현재가 두 개. 조회 불명은 None.
+        """
+        pos = self.active_position
+        if pos is None or len(df) == 0:
+            return None
+        last = df.iloc[-1]
+        if isinstance(df.index, pd.DatetimeIndex) and pos.entry_ts_ms > 0:
+            bar_ts = int(df.index[-1].value // 10**6)
+            if bar_ts >= pos.entry_ts_ms:
+                return float(last["high"]), float(last["low"])
+        # 진입 포함 봉·복원 시각 불명·오래된 봉은 최신 ticker만 증거로 쓴다.
+        try:
+            price = await self.client.fetch_ticker(self.symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("진입 후 현재가 확인 실패 — 수익 트리거 보류: %s", e)
+            return None
+        if not isinstance(price, (int, float)) or isinstance(price, bool):
+            return None
+        if not np.isfinite(price) or price <= 0:
+            return None
+        return float(price), float(price)
+
     async def _maybe_be_lock(self, df: pd.DataFrame) -> None:
         """#BE-LOCK (Origo 1.5): 이익 be_trigger_r×R 도달 시 SL 본전 이동 (1회).
 
@@ -2739,11 +2873,13 @@ class BotIctInstance:
         risk = abs(pos.entry - pos.stop_loss)
         if risk <= 0:
             return
-        last = df.iloc[-1]
+        extremes = await self._post_entry_extremes(df)
+        if extremes is None:
+            return
         is_long = pos.direction is Direction.LONG
         prof = (
-            float(last["high"]) - pos.entry if is_long
-            else pos.entry - float(last["low"])
+            extremes[0] - pos.entry if is_long
+            else pos.entry - extremes[1]
         )
         if prof < risk * self.be_trigger_r:
             return
@@ -3035,6 +3171,225 @@ class BotIctInstance:
             except Exception as e:  # noqa: BLE001
                 logger.error("#TPSL-VERIFY 재장착 예외 — %s: %s", self.symbol, e)
 
+    async def _request_close(
+        self, qty: float, event_type: TradeEventType, reason: str,
+    ) -> bool:
+        """청산 의도를 한 번만 전송하고 확인 전에는 추가 주문을 내지 않는다.
+
+        Args:
+            qty: 닫을 수량. 실제 포지션 수량 이내로 제한한다.
+            event_type: 실제 체결 확인 후 남길 이벤트.
+            reason: 청산 사유.
+        Returns:
+            청산 의도가 완료되어 추적 상태가 비었으면 True.
+        """
+        pos = self.active_position
+        if pos is None:
+            return self._pending_close is None
+        if self._pending_close is None:
+            self._pending_close = _PendingClose(
+                direction=pos.direction, entry=pos.entry, remaining=qty,
+                event_type=event_type, reason=reason, setup_ts_ms=pos.setup_ts_ms,
+                close_all=event_type is not TradeEventType.TP_HIT,
+            )
+        elif event_type is TradeEventType.MANUAL_CLOSE:
+            # 이미 접수한 부분 청산 결과부터 확인하되, 이후 목표는 전량 청산으로 높인다.
+            self._pending_close.close_all = True
+            self._pending_close.event_type = event_type
+            self._pending_close.reason = reason
+        await self._check_pending_close()
+        return self._pending_close is None
+
+    async def _check_pending_close(self) -> None:
+        """같은 청산 주문의 체결과 실제 잔량을 확인하고 불명확한 상태를 보존한다.
+
+        Returns:
+            없음. terminal인 주문만 잔여 목표 수량으로 다음 회차 재시도한다.
+        """
+        async with self._close_check_lock:
+            close = self._pending_close
+            if close is None:
+                return
+            try:
+                if not close.sent:
+                    if self._pending_entry is not None:
+                        self._pending_entry.cancel_requested = True
+                        if await self._check_pending_entry():
+                            return  # 잔여 진입 미확인 상태에서 청산 후 재노출을 만들지 않는다.
+                    before = await self.client.fetch_position(self.symbol)
+                    pre_qty = float((before or {}).get("contracts", 0) or 0)
+                    if pre_qty <= 0:
+                        self._pending_close = None
+                        await self._sync_position_state()
+                        return
+                    direction = self._exchange_position_direction(before or {})
+                    if direction is None:
+                        return
+                    if direction is not close.direction:
+                        if close.event_type is not TradeEventType.MANUAL_CLOSE:
+                            logger.error("청산 전 방향 불일치 — 주문 보류 (%s)", self.symbol)
+                            return
+                        close.direction = direction
+                        close.entry = float(before.get("entryPrice") or before.get("entry_price") or close.entry)
+                    close.pre_qty = pre_qty
+                    close.attempt_qty = pre_qty if close.close_all else min(close.remaining, pre_qty)
+                    close.recorded_qty = 0.0
+                    close.recorded_notional = 0.0
+                    close.sent = True  # await 전에 세워 WS/step 중복 전송을 막는다.
+                    try:
+                        response = await self.client.place_order(
+                            symbol=self.symbol,
+                            side="sell" if close.direction is Direction.LONG else "buy",
+                            qty=close.attempt_qty, price=None, reduce_only=True,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        close.order_id = str(getattr(e, "order_lookup_id", "") or "")
+                        logger.error("청산 응답 실패/불명 — 포지션과 주문 의도 유지 (%s): %s", self.symbol, e)
+                        return
+                    close.receipt = response if isinstance(response, dict) else None
+                    close.order_id = str(
+                        (close.receipt or {}).get("id") or (close.receipt or {}).get("order_id")
+                        or (close.receipt or {}).get("orderId") or "",
+                    )
+
+                order = close.receipt or {}
+                filled, average = self._confirmed_order_fill(order)
+                status = str(order.get("status") or "").lower()
+                terminal = status in {"closed", "canceled", "cancelled", "rejected", "expired"}
+                needs_detail = not self._order_fill_known(order) or (filled > 0 and average <= 0)
+                if needs_detail or (not terminal and filled < close.attempt_qty):
+                    if not close.order_id:
+                        logger.warning("청산 식별자 미확인 — 재주문 금지 (%s)", self.symbol)
+                        return
+                    order = await self.client.fetch_order(close.order_id, self.symbol)
+                    if not isinstance(order, dict):
+                        return
+                    filled, average = self._confirmed_order_fill(order)
+                    status = str(order.get("status") or "").lower()
+                    terminal = status in {"closed", "canceled", "cancelled", "rejected", "expired"}
+                    close.receipt = order
+                if not self._order_fill_known(order):
+                    return
+                terminal = terminal or filled >= close.attempt_qty
+                after = await self.client.fetch_position(self.symbol)
+                actual_qty = float((after or {}).get("contracts", 0) or 0)
+                if actual_qty > 0 and self._exchange_position_direction(after or {}) is not close.direction:
+                    logger.error("청산 후 방향 불일치 — 상태 유지 (%s)", self.symbol)
+                    return
+                if filled > close.attempt_qty or filled < close.recorded_qty:
+                    logger.error("청산 체결 누계 불일치 — 상태 유지 (%s)", self.symbol)
+                    return
+                delta = filled - close.recorded_qty
+                if delta > 0:
+                    if average <= 0:
+                        return  # 주문가·신호가를 체결가로 만들어 기록하지 않는다.
+                    notional = filled * average
+                    delta_price = (notional - close.recorded_notional) / delta
+                    if not np.isfinite(delta_price) or delta_price <= 0:
+                        return
+                    self._record_trade(
+                        close.event_type, direction=close.direction, price=delta_price,
+                        qty=delta, entry_for_pnl=close.entry, setup_ts_ms=close.setup_ts_ms or None,
+                        reason=close.reason,
+                    )
+                    close.recorded_qty = filled
+                    close.recorded_notional = notional
+                    close.remaining = max(0.0, close.remaining - delta)
+                pos = self.active_position
+                if pos is not None and actual_qty > 0:
+                    pos.qty = actual_qty
+                if not terminal:
+                    return
+                # 체결 알림이 포지션 조회보다 먼저 올 수 있다. 실제 잔량 반영도 확인한다.
+                expected_max = max(0.0, close.pre_qty - filled)
+                if actual_qty > expected_max + max(close.pre_qty, 1.0) * 1e-9:
+                    return
+                if actual_qty <= 0:
+                    self._pending_close = None
+                    other_closed = max(0.0, close.pre_qty - filled)
+                    if pos is not None and other_closed > 0:
+                        pos.qty = other_closed
+                        await self._sync_position_state()
+                    else:
+                        self.active_position = None
+                    return
+                if close.close_all:
+                    close.remaining = actual_qty
+                if close.remaining > max(close.attempt_qty, 1.0) * 1e-9:
+                    close.sent = False
+                    close.order_id = ""
+                    close.receipt = None
+                    return  # 미체결 잔량은 terminal 확인 이후 다음 step에서만 재시도.
+                self._pending_close = None
+                if pos is not None and close.event_type is TradeEventType.TP_HIT:
+                    pos.partial_done = True
+                    await self._apply_partial_be()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("청산 체결/잔량 조회 실패 — 상태 유지, 재주문 금지 (%s): %s", self.symbol, e)
+            finally:
+                if self._pending_close is not None:
+                    await self._maintain_pending_protection()
+
+    async def _maintain_pending_protection(self) -> None:
+        """주문 확인 중에도 무SL 잔량을 보호하며 비상청산을 재귀 호출하지 않는다.
+
+        Returns:
+            없음. 포지션·가격 확인 또는 SL 설정 실패 시 기존 intent를 그대로 둔다.
+        """
+        pos = self.active_position
+        if pos is None:
+            return
+        try:
+            actual = await self.client.fetch_position(self.symbol)
+            qty = float((actual or {}).get("contracts", 0) or 0)
+            if not np.isfinite(qty) or qty <= 0:
+                return
+            if self._exchange_position_direction(actual or {}) is not pos.direction:
+                return
+            sl = float(actual.get("stopLossPrice") or actual.get("stop_loss") or 0)
+            if np.isfinite(sl) and sl > 0:
+                return
+            ref = float(actual.get("markPrice") or 0)
+            if not np.isfinite(ref) or ref <= 0:
+                ref = await self.client.fetch_ticker(self.symbol)
+            if ref is None or not np.isfinite(ref) or ref <= 0:
+                return
+            distance = abs(pos.entry - pos.stop_loss)
+            if not np.isfinite(distance) or distance <= 0:
+                distance = ref * _FALLBACK_SL_PCT
+            desired = (
+                pos.stop_loss if self._is_protective_sl(pos.direction, pos.stop_loss, ref)
+                else self._protective_sl(pos.direction, ref, distance)
+            )
+            if not self._is_protective_sl(pos.direction, desired, ref):
+                return
+            result = await self.client.set_position_tpsl(self.symbol, stop_loss=desired)
+            if result:
+                pos.stop_loss = desired
+                logger.warning("주문 확인 대기 중 무SL 잔량 보호 복구 (%s qty=%.6f)", self.symbol, qty)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("주문 확인 대기 중 SL 복구 실패 — intent 유지 (%s): %s", self.symbol, e)
+
+    async def _apply_partial_be(self) -> None:
+        """부분 청산 후 본전 손절은 거래소 수락 확인 이후에만 적용 완료로 기록한다.
+
+        Returns:
+            없음. 실패하면 기존 SL을 유지하고 다음 step에서 재시도한다.
+        """
+        pos = self.active_position
+        if pos is None or not self.partial_be or pos.be_moved:
+            return
+        try:
+            result = await self.client.set_position_tpsl(
+                self.symbol, stop_loss=pos.entry, take_profit=pos.take_profit,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("부분익절 후 본전 손절 확인 실패 — 기존 SL 유지: %s", e)
+            return
+        if result:
+            pos.stop_loss = pos.entry
+            pos.be_moved = True
+
     async def _emergency_close(
         self, reason: str = "SL 적용 실패 비상청산 (무SL 방지)",
     ) -> None:
@@ -3051,60 +3406,13 @@ class BotIctInstance:
 
         #POS-SYNC 2026-06-06 (04:14 사건): 봇 인식 방향이 거래소 실제와 어긋났을
         수 있다(봇=숏 vs 거래소=롱 → reduce_only same-side 110017 거부 → 무SL 방치).
-        fetch_position 으로 실제 방향·수량을 진실로 삼아 청산한다. 조회 실패 시에만
-        봇 인식으로 fallback.
+        fetch_position 으로 실제 방향·수량을 확인한다. 조회 실패나 주문 결과 불명은
+        의도를 보존하고 재조회하며, 주문 접수만으로 청산 완료를 기록하지 않는다.
         """
         pos = self.active_position
         if pos is None:
             return
-        close_dir = pos.direction
-        close_qty = pos.qty
-        try:
-            ex_pos = await self.client.fetch_position(self.symbol)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("비상청산 전 fetch_position 실패: %s — 봇 인식 방향으로 진행", e)
-            ex_pos = None
-        if ex_pos is not None:
-            contracts = float(ex_pos.get("contracts", 0) or 0)
-            if contracts <= 0:
-                # 거래소엔 이미 포지션 없음 — 봇 상태만 정리 (중복 reduce_only 방지).
-                logger.info("비상청산 불필요 — 거래소 포지션 없음. active_position 정리.")
-                self.active_position = None
-                return
-            ex_dir = self._exchange_position_direction(ex_pos)
-            if ex_dir is not None:
-                close_dir = ex_dir
-                close_qty = contracts
-        # 청산 = 포지션 반대 방향 reduce_only.
-        close_side = "buy" if close_dir is Direction.SHORT else "sell"
-        try:
-            await self.client.place_order(
-                self.symbol, side=close_side, qty=close_qty,
-                price=None, reduce_only=True,
-            )
-            self._record_trade(
-                TradeEventType.MANUAL_CLOSE,
-                direction=close_dir,
-                price=pos.entry,
-                qty=close_qty,
-                # 2026-06-12 리뷰 #3: setup_ts 누락 시 원 ENTRY 가 영구 미청산
-                # 으로 남아 reconcile 이중 기록 + TP 복원 오염 — 반드시 전달.
-                setup_ts_ms=pos.setup_ts_ms or None,
-                reason=reason,
-            )
-            logger.info(
-                "비상청산 완료 — %s %s qty=%.4f",
-                self.symbol, close_dir.value, close_qty,
-            )
-            self.active_position = None
-        except Exception as e:  # noqa: BLE001
-            # 비상청산 실패 — 거래소에 포지션 남아있을 가능성 매우 큼.
-            # active_position 유지로 다음 step 에서 _sync_position_state 가
-            # 거래소 상태와 다시 맞춰보도록 한다.
-            logger.error(
-                "비상청산 실패: %s — active_position 유지, 수동 확인 + 다음 step 재시도",
-                e,
-            )
+        await self._request_close(pos.qty, TradeEventType.MANUAL_CLOSE, reason)
 
     def _log_step_market_snapshot(
         self, df: pd.DataFrame, bias: TrendDirection | None,
@@ -3415,39 +3723,23 @@ class BotIctInstance:
         if _pos is not None and _pos.trail_armed:
             return
         pos = self.active_position
-        if pos is None or pos.partial_done or pos.tp1_price <= 0:
+        if pos is not None and pos.partial_done:
+            await self._apply_partial_be()
+            return
+        if pos is None or pos.tp1_price <= 0:
             return
         if len(df) == 0:
             return
-        last = df.iloc[-1]
-        hi = float(last["high"])
-        lo = float(last["low"])
+        extremes = await self._post_entry_extremes(df)
+        if extremes is None:
+            return
+        hi, lo = extremes
         hit = (hi >= pos.tp1_price) if pos.direction is Direction.LONG else (lo <= pos.tp1_price)
         if not hit:
             return
         half = pos.qty * 0.5
-        side = "sell" if pos.direction is Direction.LONG else "buy"
-        try:
-            await self.client.place_order(
-                symbol=self.symbol, side=side, qty=half, price=None, reduce_only=True,
-            )
-        except Exception as e:  # noqa: BLE001 — 부분익절 실패해도 원 포지션 유지하고 계속
-            logger.error("[%s] 부분익절 청산 실패 — %s", self.symbol, e)
-            return
-        pos.qty -= half
-        pos.partial_done = True
-        # partial_be: 나머지 50% SL 을 본전으로 — TP1 닿은 거래는 최악이 본전(무손실).
-        if self.partial_be:
-            pos.stop_loss = pos.entry
-            try:
-                await self.client.set_position_tpsl(
-                    self.symbol, stop_loss=pos.entry, take_profit=pos.take_profit,
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.error("[%s] 부분익절 후 본전 SL 설정 실패 — %s", self.symbol, e)
-        logger.info(
-            "부분익절 — TP1=%.4f 도달, 50%% 청산 + SL 본전 (%s %s, 잔여 qty=%.4f)",
-            pos.tp1_price, self.symbol, pos.direction.value, pos.qty,
+        await self._request_close(
+            half, TradeEventType.TP_HIT, f"부분익절 TP1={pos.tp1_price:.4f} 도달",
         )
 
     def _apply_ote_boost(self, setup: SilverBulletSetup, df: pd.DataFrame) -> None:
@@ -4375,6 +4667,9 @@ class BotIctInstance:
         실제 exit_price/PnL 회수하고 가능하면 SL_HIT vs TP_HIT 구분해 정확한
         TradeEvent 로 기록.
         """
+        if self._pending_close is not None:
+            await self._check_pending_close()
+            return
         try:
             pos = await self.client.fetch_position(self.symbol)
         except Exception as e:  # noqa: BLE001
@@ -4700,6 +4995,9 @@ class BotIctInstance:
         pos = self.active_position
         if pos is None:
             return
+        if self._pending_close is not None:
+            await self._check_pending_close()
+            return
         # #FLIP-MIN-R 2026-07-30: 이익이 최소 R 미만이면 flip 무시 — 조기 절단 방지.
         # WS watcher / step() 공통 경로라 여기 한 곳에서 막는다. flag 설정 **전에**
         # return 해서 다음 tick 에 재평가되게 한다(가격이 더 가면 그때 flip 발동).
@@ -4717,7 +5015,6 @@ class BotIctInstance:
         new_direction = (
             Direction.SHORT if pos.direction is Direction.LONG else Direction.LONG
         )
-        exit_side = "sell" if pos.direction is Direction.LONG else "buy"
         new_side = "buy" if new_direction is Direction.LONG else "sell"
         logger.info(
             "HTF flip — ltf_%s_%.2f → htf_%s_%.2f (%s FVG, weight %d)",
@@ -4725,53 +5022,12 @@ class BotIctInstance:
             new_side, trigger_price, target.tf, target.weight,
         )
 
-        # 1) 기존 포지션 시장가 청산 — 응답 검증, 실패 시 1회 retry.
-        exit_ok = False
-        for attempt in (1, 2):
-            try:
-                resp = await self.client.place_order(
-                    symbol=self.symbol, side=exit_side, qty=pos.qty,
-                    price=None, reduce_only=True,
-                )
-                if isinstance(resp, dict) and resp.get("error"):
-                    raise RuntimeError(str(resp.get("error")))
-                exit_ok = True
-                break
-            except Exception as e:  # noqa: BLE001
-                logger.error(
-                    "flip — 기존 포지션 청산 실패 (시도 %d): %s", attempt, e,
-                )
-                await asyncio.sleep(0.5)
-        if not exit_ok:
-            # 2026-05-29 #SILENT-5: flip 청산 최종 실패 가시화 강화.
-            # 단순 ERROR 로그 → 봇 일관성 위험 (HTF FVG flip 인식했는데 거래소
-            # 측 포지션은 유지 → 신호와 실제 상태 어긋남). 운영자가 즉시 인지
-            # 필요. 신규 진입 차단 + 사용자별 거래 기록에도 실패 이벤트 박음.
-            logger.error(
-                "flip 청산 최종 실패 — 신규 진입 중단 + 사용자 알람 필요. "
-                "거래소 상태와 봇 인식 어긋남: symbol=%s direction=%s qty=%.4f",
-                self.symbol, pos.direction.value, pos.qty,
-            )
-            # trades 기록에 alarm 이벤트 — UI / 텔레그램에서 즉시 검색 가능.
-            self._record_trade(
-                TradeEventType.SYNC_CLOSE,
-                direction=pos.direction,
-                price=pos.entry,  # placeholder
-                qty=pos.qty,
-                reason="ALARM: flip 청산 실패 — 거래소 측 포지션 유지 가능",
-            )
+        # 실패 알람을 SYNC_CLOSE로 기록하거나 불명확한 주문을 즉시 재전송하지 않는다.
+        if not await self._request_close(
+            pos.qty, TradeEventType.FLIP_CLOSE,
+            f"htf flip target hit @{target.tf} (weight={target.weight})",
+        ):
             return
-
-        # #BUG-2: FLIP_CLOSE 기록 — trigger_price 가 실제 청산 가격에 가장 가까운 추정.
-        self._record_trade(
-            TradeEventType.FLIP_CLOSE,
-            direction=pos.direction,
-            price=trigger_price,
-            qty=pos.qty,
-            entry_for_pnl=pos.entry,
-            setup_ts_ms=pos.setup_ts_ms,
-            reason=f"htf flip target hit @{target.tf} (weight={target.weight})",
-        )
 
         # #FLIP-REFINE (2026-07-02): 역진입 제거 — 청산(방어)까지만.
         # 실측 flip_open 113건 net -301 USDT·승률 19%·전 TF 적자(robust).
@@ -4802,11 +5058,7 @@ class BotIctInstance:
         else:
             new_tp = new_entry - sl_dist * self.min_rr
 
-        # qty 재산정 — 기존 _calc_qty 재사용 (confluence_score=0 → base pct).
-        try:
-            equity = await self._fetch_equity()
-        except Exception:  # noqa: BLE001
-            equity = 1000.0
+        # 비활성 레거시를 다시 켜더라도 일반 진입의 잔고·SL·체결 검증을 공유한다.
         fake_setup = SilverBulletSetup(
             ts_ms=last_ts,
             direction=new_direction,
@@ -4818,60 +5070,7 @@ class BotIctInstance:
             fvg=None,  # type: ignore[arg-type]
             confluence_score=0,
         )
-        new_qty = self._calc_qty(fake_setup, equity)
-        try:
-            # #FLIP-SL fix: 일반 진입(#LIVE-4)과 동일하게 SL/TP 를 진입 주문에 동봉하지
-            # 않는다. flip 은 시장가(price=None)라 대개 통과하지만, 변동성 큰 flip 순간
-            # FVG 경계 SL 이 현재가 너머로 가면 Bybit 10001(StopLoss 방향 검증)로 주문
-            # 자체가 거부 → 신규 진입 0. SL/TP 는 체결 후 아래 _ensure_protective_sl 가
-            # set_position_tpsl 로 박는다 (체결가 기준이라 방향 유효).
-            resp = await self.client.place_order(
-                symbol=self.symbol, side=new_side, qty=new_qty,
-                price=None, stop_loss=None, take_profit=None,
-            )
-            if isinstance(resp, dict) and resp.get("error"):
-                raise RuntimeError(str(resp.get("error")))
-        except Exception as e:  # noqa: BLE001
-            logger.error(
-                "flip — 신규 진입 실패: %s — 포지션 없는 상태 (봇 가동 유지)", e,
-            )
-            self.active_position = None
-            return
-
-        # 2026-05-28: flip 케이스도 진입 컨텍스트 박음 — 학습/복기 dataset 정합.
-        _flip_entry_equity = 0.0
-        try:
-            _flip_entry_equity = float(await self._fetch_equity())
-        except Exception:  # noqa: BLE001
-            pass
-        self.active_position = _ActivePosition(
-            direction=new_direction,
-            entry=new_entry,
-            stop_loss=new_sl,
-            take_profit=new_tp,
-            qty=new_qty,
-            setup_ts_ms=last_ts,
-            htf_flip_target=None,  # flip 완료 — 같은 target 재발동 방지.
-            ltf_weight=TF_WEIGHT.get(self.timeframe, 1),
-            entry_ts_ms=int(time.time() * 1000),
-            context_json=f'{{"source":"flip","htf_target_tf":"{target.tf}","htf_target_weight":{target.weight}}}',
-            equity_at_entry=_flip_entry_equity,
-            tp1_price=self._calc_tp1(new_entry, new_sl, new_direction),
-        )
-        # #BUG-2: FLIP_OPEN 기록 — 반대 방향 신규 진입.
-        self._record_trade(
-            TradeEventType.FLIP_OPEN,
-            direction=new_direction,
-            price=new_entry,
-            qty=new_qty,
-            setup_ts_ms=last_ts,
-            reason=f"htf flip into {target.tf} (weight={target.weight})",
-        )
-        # #FLIP-TP: flip 진입도 일반 진입과 동일하게 SL+TP 를 거래소에 함께 박는다.
-        # 기존엔 modify_stop_loss 로 SL 만 걸어 TP conditional 이 거래소에 없었음 →
-        # 봇이 죽으면 TP 미실현 + SYNC_CLOSE 분류 오차. _ensure_protective_sl 가
-        # set_position_tpsl 로 SL+TP 동시 적용, 실패 시 무SL 방치 금지로 비상청산.
-        await self._ensure_protective_sl(new_tp, sl_dist)
+        await self._execute_setup(fake_setup)
 
     # ============================================================
     # 2026-05-28: 거래 학습/복기 dataset — per-trade JSON sidecar

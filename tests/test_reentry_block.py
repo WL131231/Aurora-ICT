@@ -34,7 +34,9 @@ def _setup(direction: Direction, entry: float) -> SilverBulletSetup:
     fvg = FVG(type=FVGType.BULLISH, idx=5, ts_ms=1, low=98, high=102)
     return SilverBulletSetup(
         ts_ms=1, direction=direction, window="any",
-        entry=entry, stop_loss=95.0, take_profit=115.0, risk_reward=3.0, fvg=fvg)
+        entry=entry, stop_loss=entry - 5 if direction is Direction.LONG else entry + 5,
+        take_profit=entry + 15 if direction is Direction.LONG else entry - 15,
+        risk_reward=3.0, fvg=fvg)
 
 
 def test_arm_and_block_same_setup() -> None:

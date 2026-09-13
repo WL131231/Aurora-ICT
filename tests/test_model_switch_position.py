@@ -125,6 +125,7 @@ async def test_idle_slot_is_switchable(mu: MultiUserBotManager) -> None:
 async def test_deferred_switch_completes_when_flat(mu: MultiUserBotManager) -> None:
     """★ 거래가 끝나면 사용자가 아무것도 안 해도 새 모델로 교체된다."""
     users_db.set_last_model(mu.db_path, CODE, CURSUS_MODEL_NAME)
+    users_db.set_bot_running(mu.db_path, CODE, True, symbol=BTC)
     mu._slots[(CODE, BTC)] = _Slot(BTC, _Client(), _OrigoBot())   # 포지션 없음
     calls: list[tuple[str, str]] = []
 

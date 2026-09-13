@@ -134,7 +134,7 @@ async def test_limit_entry_default_uses_setup_entry() -> None:
     # limit = setup.entry (계획가 100.0), 현재가(ticker 100.5) 아님
     assert first_call.kwargs["price"] == 100.0
     # #LIVE-4: SL/TP 는 entry 주문에 동봉하지 않음 (체결 후 set_position_tpsl 로)
-    assert "stop_loss" not in first_call.kwargs
+    assert first_call.kwargs["stop_loss"] == 95.0
     assert "take_profit" not in first_call.kwargs
     # 즉시 체결 → set_position_tpsl 로 SL/TP 박음
     client.set_position_tpsl.assert_awaited_once()
@@ -164,7 +164,7 @@ async def test_entry_then_set_tpsl_after_fill() -> None:
     call = client.place_order.await_args_list[0].kwargs
     assert call.get("reduce_only", False) is False
     # entry 주문엔 SL/TP 동봉 안 함
-    assert "stop_loss" not in call
+    assert call["stop_loss"] == 95.0
     assert "take_profit" not in call
     # 체결 후 set_position_tpsl 로 SL/TP conditional 설정
     client.set_position_tpsl.assert_awaited_once()

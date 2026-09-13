@@ -27,7 +27,7 @@ def _bot(client: AsyncMock, be: float = 1.0) -> BotIctInstance:
     # LONG entry=100, SL=96 → R=4. BE 트리거 = 104.
     bot.active_position = _ActivePosition(
         direction=Direction.LONG, entry=100.0, stop_loss=96.0,
-        take_profit=120.0, qty=1.0, setup_ts_ms=0,
+        take_profit=120.0, qty=1.0, setup_ts_ms=0, entry_ts_ms=1,
     )
     return bot
 
