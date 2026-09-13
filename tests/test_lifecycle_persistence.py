@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -242,7 +243,9 @@ async def test_saved_timeframe_obeys_subscription_and_model_policy(manager, lice
 
 
 @pytest.mark.asyncio
-async def test_blocked_registration_cannot_unlock_without_verifier(manager):
+@pytest.mark.parametrize("model", [ORIGO_MODEL_NAME, CURSUS_MODEL_NAME])
+async def test_blocked_registration_cannot_unlock_without_verifier(manager, model):
+    users_db.set_last_model(manager.db_path, USER, model)
     state = users_db.get_credential_state(manager.db_path, USER, "demo")
     users_db.block_credentials(manager.db_path, USER, "demo", state["version"], "auth_expired")
     router = create_auth_router(manager.db_path, master_key=manager.master_key)
@@ -293,3 +296,38 @@ async def test_cursus_defer_does_not_inject_origo_lifecycle_fields(manager):
     assert manager._slots[(USER, ETH)].bot is bot
     assert bot._pending_limit is pending
     assert users_db.get_deferred_models(manager.db_path, USER) == {}
+
+
+@pytest.mark.asyncio
+async def test_cursus_cached_running_start_keeps_legacy_noop_after_key_removal(manager):
+    users_db.set_last_model(manager.db_path, USER, CURSUS_MODEL_NAME)
+    bot = BotTrendInstance(client=None, symbol=ETH, state=BotState.RUNNING)
+    manager._slots[(USER, ETH)] = _UserBotSlot(ETH, manager._build_user_settings(USER, ETH), bot)
+    users_db.delete_api_keys(manager.db_path, USER, mode="demo")
+    await manager.start(USER, ETH)
+    assert manager._slots[(USER, ETH)].bot is bot
+    assert bot.state is BotState.RUNNING
+    result = await manager.status(USER, ETH)
+    for key in ("entry_paused", "has_pending_entry", "has_pending_close", "requires_order_review"):
+        assert key not in result
+
+
+@pytest.mark.asyncio
+async def test_cursus_no_slot_status_keeps_base_timeframe(manager):
+    users_db.set_last_model(manager.db_path, USER, CURSUS_MODEL_NAME)
+    users_db.set_last_timeframe(manager.db_path, USER, "15m")
+    users_db.set_license(manager.db_path, code=USER, license_type="sub_30d", expires_at=None)
+    result = await manager.status(USER, ETH)
+    assert result["timeframe"] == manager.base_settings.timeframe == "1h"
+    assert "stop_reason" not in result
+
+
+def test_deferred_origo_uses_origo_factory_under_cursus_preference(manager):
+    origo_factory = partial(aurora_client_factory)
+    split = MultiUserBotManager(
+        client_factory=aurora_client_factory, origo_client_factory=origo_factory,
+        db_path=manager.db_path, base_settings=manager.base_settings, master_key=manager.master_key,
+    )
+    users_db.set_model_selection(manager.db_path, USER, CURSUS_MODEL_NAME, {ETH: ORIGO_MODEL_NAME})
+    assert split.client_factory_for_slot(USER, ETH) is origo_factory
+    assert split.client_factory_for_slot(USER, BTC) is aurora_client_factory

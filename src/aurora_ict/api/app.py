@@ -1125,6 +1125,7 @@ def _register_multi_user_routes(
                 # 자가치유가 다음 접근 때 재생성.
                 try:
                     _slot = mu_manager._slots.get((user_code, sym))
+                    _was_origo = _slot is not None and isinstance(_slot.bot, BotIctInstance)
                     _running = (
                         _slot is not None and _slot.bot is not None
                         and _slot.bot.state.value == "running"
@@ -1141,7 +1142,8 @@ def _register_multi_user_routes(
                         try:
                             await mu_manager.start(user_code, sym)
                         except Exception:
-                            _users_db.set_bot_running(mu_manager.db_path, user_code, True, symbol=sym)
+                            if _was_origo:
+                                _users_db.set_bot_running(mu_manager.db_path, user_code, True, symbol=sym)
                             raise
                 except Exception as e:  # noqa: BLE001 — 다음 페어 계속
                     logger.warning("모델 전환 — %s 처리 실패(다음 페어 계속): %s", sym, e)
