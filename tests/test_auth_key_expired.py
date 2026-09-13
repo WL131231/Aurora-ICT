@@ -21,13 +21,18 @@ from aurora_ict.bot import auth_stop_notify
 from aurora_ict.bot.aurora_adapter import AuroraClientAdapter
 from aurora_ict.bot.bot_ict_instance import (
     _AUTH_FAIL_STOP_THRESHOLD as _ORIGO_THRESHOLD,
+)
+from aurora_ict.bot.bot_ict_instance import (
     BotIctInstance,
     BotState,
 )
 from aurora_ict.bot.bot_trend_instance import (
     _AUTH_FAIL_STOP_THRESHOLD as _CURSUS_THRESHOLD,
+)
+from aurora_ict.bot.bot_trend_instance import (
     BotTrendInstance,
 )
+
 
 @pytest.fixture(autouse=True)
 def _reset_notify_registry() -> None:

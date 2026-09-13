@@ -31,7 +31,6 @@ import pandas as pd
 from ccxt.base.errors import AuthenticationError
 
 from aurora_ict.bot.auth_stop_notify import notify_auth_stop
-
 from aurora_ict.bot.margin_guard import cap_qty_to_available
 from aurora_ict.bot.order_error_notify import notify_order_error
 from aurora_ict.bot.shared_ohlcv_cache import GLOBAL_OHLCV_CACHE, SharedOhlcvCache

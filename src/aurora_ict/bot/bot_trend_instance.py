@@ -22,10 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-
-from ccxt.base.errors import AuthenticationError
-
-from aurora_ict.bot.auth_stop_notify import notify_auth_stop
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -34,7 +30,9 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+from ccxt.base.errors import AuthenticationError
 
+from aurora_ict.bot.auth_stop_notify import notify_auth_stop
 from aurora_ict.bot.bot_ict_instance import (
     BotState,
     ExchangeClientProtocol,
