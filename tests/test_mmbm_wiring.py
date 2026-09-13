@@ -124,11 +124,11 @@ async def test_mmbm_not_routed_when_no_fire(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_mmbm_blocked_on_recovery_failed(monkeypatch) -> None:
-    """복원 실패 상태면 MMBM 신규진입 차단(SB 게이트 우회분 직접확인)."""
+async def test_mmbm_recovery_flag_cleared_after_successful_flat_sync(monkeypatch) -> None:
+    """복원 실패 이후 정상 무포지션 조회가 되면 신호 평가를 다시 허용한다."""
     routed = await _run_wiring(monkeypatch, mmbm_enabled=True, mmbm_fires=True,
                                recovery_failed=True)
-    assert routed == []
+    assert len(routed) == 1
 
 
 @pytest.mark.asyncio

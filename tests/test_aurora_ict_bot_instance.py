@@ -264,7 +264,7 @@ async def test_step_executes_long_setup() -> None:
     assert entry_call["side"] == "buy"
     assert entry_call["qty"] > 0
     assert entry_call["price"] > 0                          # setup.entry (계획가) limit
-    assert "stop_loss" not in entry_call                   # 동봉 X (#LIVE-4)
+    assert entry_call["stop_loss"] > 0                    # 진입 순간부터 거래소 보호
     assert "take_profit" not in entry_call
     assert entry_call.get("reduce_only", False) is False
     # 즉시 체결 → active position + SL/TP 는 set_position_tpsl 로
@@ -792,11 +792,11 @@ async def test_marketable_limit_pending_when_unfilled() -> None:
         regime_filter_enabled=False,  # 미체결 pending 검증 — 횡보 게이트 격리
     )
     await bot.step()
-    # entry 1회 — #LIVE-4: SL/TP 동봉 안 함 (체결 후 set_position_tpsl)
+    # entry 1회 — SL 동봉, TP는 체결 후 set_position_tpsl로 등록.
     assert client.place_order.await_count == 1
     entry_call = client.place_order.await_args_list[0].kwargs
     assert "take_profit" not in entry_call
-    assert "stop_loss" not in entry_call
+    assert entry_call["stop_loss"] > 0
     # 미체결 → pending 등록, active_position 아직 X. SL/TP 도 아직 안 박음 (체결 후).
     assert bot.active_position is None
     assert bot._pending_entry is not None
@@ -813,7 +813,7 @@ async def test_pending_entry_promoted_on_fill() -> None:
 
     client = _mock_client([[1, 100, 101, 99, 100, 10]])
     client.fetch_position = AsyncMock(
-        return_value={"contracts": 0.01, "entryPrice": 100.5},
+        return_value={"contracts": 0.01, "entryPrice": 100.5, "side": "long"},
     )
     bot = BotIctInstance(client=client)
     bot._pending_entry = _PendingEntry(
@@ -1232,8 +1232,8 @@ def test_daily_pair_limit_resets_on_new_day() -> None:
 
 
 @pytest.mark.asyncio
-async def test_startup_cancel_skipped_when_position_recovered() -> None:
-    """#TPSL-STRIP 회귀: 활성 포지션 복구 시 startup 주문청소 금지 (SL/TP 보존)."""
+async def test_startup_cancels_entry_remainder_when_position_recovered() -> None:
+    """보호주문을 제외하는 취소 계약으로 복원 포지션의 진입 잔량만 정리한다."""
     client = _mock_client([[1, 100, 101, 99, 100, 10]])
     client.fetch_position = AsyncMock(return_value={
         "contracts": 1.0, "side": "short", "entryPrice": 100.0,
@@ -1243,7 +1243,7 @@ async def test_startup_cancel_skipped_when_position_recovered() -> None:
     bot = BotIctInstance(client=client, step_interval_sec=3600)
     await bot.start()
     assert bot.active_position is not None
-    client.cancel_bot_orders.assert_not_awaited()  # 보호장치 벗기면 안 됨
+    client.cancel_bot_orders.assert_awaited_once()
     await bot.stop()
 
 
@@ -1342,10 +1342,11 @@ async def test_partial_exit_closes_half_and_moves_sl_to_breakeven() -> None:
     # 롱: entry 100, SL 98(risk 2) → tp1 102(1R), swing TP 110
     bot.active_position = _ActivePosition(
         direction=Direction.LONG, entry=100.0, stop_loss=98.0,
-        take_profit=110.0, qty=0.1, setup_ts_ms=1, tp1_price=102.0,
+        take_profit=110.0, qty=0.1, setup_ts_ms=1, tp1_price=102.0, entry_ts_ms=1,
     )
     df = pd.DataFrame(
         [{"open": 101.0, "high": 103.0, "low": 101.0, "close": 102.5, "volume": 1.0}],
+        index=pd.to_datetime(["2026-06-23T10:00:00Z"]),
     )
     await bot._maybe_partial_exit(df)
     assert client.place_order.await_count == 1
