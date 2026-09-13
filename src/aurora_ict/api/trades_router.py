@@ -390,7 +390,7 @@ def purge_user_trades(
 
     2026-09-11 #WRITE-DENIED 뒷정리용 — 읽기 전용 키 사용자에서 1분마다 쌓인 가짜
     청산/진입 기록(4,274건)을 지운다. JSONL 이 source of truth 라 **먼저 백업**
-    (``trades.jsonl.bak-<ts>``)하고 필터링한 뒤 ``TradesStore.rebuild_sqlite`` 로
+    (``trades.jsonl.bak-<ts>-<unique>``)하고 필터링한 뒤 ``TradesStore.rebuild_sqlite`` 로
     trades.db 를 다시 만든다. 조건은 전부 AND. 아무 조건도 없으면 거부한다.
 
     Args:
@@ -406,6 +406,7 @@ def purge_user_trades(
     """
     import json as _json
     import shutil as _shutil
+    import tempfile as _tempfile
     import time as _time
 
     if since_ms is None and until_ms is None and not reason_contains and not event_types:
@@ -449,8 +450,13 @@ def purge_user_trades(
     }
     if dry_run or matched == 0:
         return out
-    backup = user_dir / f"trades.jsonl.bak-{int(_time.time())}"
-    _shutil.copy2(jsonl, backup)
+    # 같은 초에 연속 정리해도 이전 원본 백업을 덮어쓰지 않는다.
+    with _tempfile.NamedTemporaryFile(
+        prefix=f"trades.jsonl.bak-{int(_time.time())}-", dir=user_dir, delete=False,
+    ) as backup_file:
+        backup = Path(backup_file.name)
+        with jsonl.open("rb") as source:
+            _shutil.copyfileobj(source, backup_file)
     tmp = user_dir / "trades.jsonl.tmp"
     with tmp.open("w", encoding="utf-8") as f:
         f.writelines(kept_lines)
