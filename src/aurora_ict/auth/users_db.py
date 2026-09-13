@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sqlite3
 import time
 from datetime import UTC, datetime
@@ -103,6 +104,25 @@ CREATE TABLE IF NOT EXISTS sessions (
 _DDL_INDEX_SESSIONS_EXPIRES = (
     "CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)"
 )
+
+_DDL_DEFERRED_MODELS = """
+CREATE TABLE IF NOT EXISTS deferred_bot_models (
+    user_code TEXT NOT NULL REFERENCES users(code),
+    symbol TEXT NOT NULL,
+    model TEXT NOT NULL,
+    PRIMARY KEY (user_code, symbol)
+)
+"""
+
+_DDL_CREDENTIAL_STATE = """
+CREATE TABLE IF NOT EXISTS credential_state (
+    user_code TEXT NOT NULL REFERENCES users(code),
+    mode TEXT NOT NULL CHECK (mode IN ('demo', 'live')),
+    version INTEGER NOT NULL DEFAULT 0,
+    stop_reason TEXT,
+    PRIMARY KEY (user_code, mode)
+)
+"""
 
 
 def _utcnow_iso() -> str:
@@ -409,6 +429,11 @@ def _init_db_inner(path: Path) -> None:
         # 2026-06-08: 매매 알림 텔레그램 연동 — 사용자별 chat_id.
         _ensure_telegram_chat_id_column(conn)
         _ensure_pref_columns(conn)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+        if "daily_loss_limit_pct" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN daily_loss_limit_pct REAL")
+        conn.execute(_DDL_DEFERRED_MODELS)
+        conn.execute(_DDL_CREDENTIAL_STATE)
         conn.commit()
     finally:
         # Windows: 핸들 열려 있으면 손상 파일 rename(격리)이 막힘 — 확실히 닫기.
@@ -536,6 +561,8 @@ def set_api_keys(
     api_key: str,
     api_secret_enc: str,
     mode: str = "demo",
+    *,
+    verified: bool = False,
 ) -> bool:
     """거래소 API 키 등록 — ``mode`` 슬롯 (demo/live) 에 저장.
 
@@ -590,6 +617,16 @@ def set_api_keys(
                 WHERE code = ?
                 """,
                 (api_key, api_secret_enc, now, code),
+            )
+        if cur.rowcount:
+            conn.execute(
+                """INSERT INTO credential_state (user_code, mode, version)
+                   VALUES (?, ?, 1)
+                   ON CONFLICT(user_code, mode) DO UPDATE SET
+                       version = credential_state.version + 1,
+                       stop_reason = CASE WHEN ? THEN NULL
+                                          ELSE credential_state.stop_reason END""",
+                (code, mode, verified),
             )
         conn.commit()
         return cur.rowcount > 0
@@ -1063,6 +1100,115 @@ def set_last_model(db_path: Path | str, code: str, model: str) -> bool:
         return cur.rowcount > 0
 
 
+def set_model_selection(
+    db_path: Path | str, code: str, model: str, deferred: dict[str, str],
+) -> bool:
+    """선택 모델과 진행 중 거래의 종목별 기존 모델을 한 트랜잭션으로 저장.
+
+    Args:
+        db_path: 사용자 DB 경로.
+        code: 사용자 코드.
+        model: 새 선택 모델.
+        deferred: 거래 종료 전까지 유지할 {symbol: 기존 모델}.
+
+    Returns:
+        사용자가 있으면 True.
+    """
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE users SET last_model = ?, updated_at = ? WHERE code = ?",
+            (model, _utcnow_iso(), code),
+        )
+        if not cur.rowcount:
+            return False
+        conn.execute("DELETE FROM deferred_bot_models WHERE user_code = ?", (code,))
+        conn.executemany(
+            "INSERT INTO deferred_bot_models (user_code, symbol, model) VALUES (?, ?, ?)",
+            [(code, symbol, old) for symbol, old in deferred.items() if old != model],
+        )
+        conn.commit()
+        return True
+
+
+def get_deferred_models(db_path: Path | str, code: str) -> dict[str, str]:
+    """종목별 유예 모델 반환. Args: DB 경로, 사용자 코드. Returns: 모델 사전."""
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT symbol, model FROM deferred_bot_models WHERE user_code = ?", (code,),
+        ).fetchall()
+    return {row["symbol"]: row["model"] for row in rows}
+
+
+def clear_deferred_model(db_path: Path | str, code: str, symbol: str) -> None:
+    """노출 해소를 확인한 종목의 유예 해제. Args: DB, 코드, 종목. Returns: 없음."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "DELETE FROM deferred_bot_models WHERE user_code = ? AND symbol = ?",
+            (code, symbol),
+        )
+        conn.commit()
+
+
+def set_daily_loss_limit(db_path: Path | str, code: str, pct: float) -> bool:
+    """사용자 손실 한도 저장. Args: DB, 코드, 0~50 비율. Returns: 저장 성공 여부.
+
+    Raises:
+        ValueError: 비율이 유한한 0~50 값이 아님.
+    """
+    if not math.isfinite(pct) or not 0 <= pct <= 50:
+        raise ValueError("일일 손실 한도는 유한한 0~50 값이어야 합니다.")
+    with _connect(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE users SET daily_loss_limit_pct = ?, updated_at = ? WHERE code = ?",
+            (pct, _utcnow_iso(), code),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_credential_state(db_path: Path | str, code: str, mode: str) -> dict[str, Any]:
+    """키 등록 버전과 영속 정지 사유. Args: DB, 코드, 모드. Returns: 상태 사전."""
+    if mode not in ("demo", "live"):
+        raise ValueError("키 모드는 demo 또는 live여야 합니다.")
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT version, stop_reason FROM credential_state WHERE user_code = ? AND mode = ?",
+            (code, mode),
+        ).fetchone()
+    return dict(row) if row else {"version": 0, "stop_reason": None}
+
+
+def block_credentials(
+    db_path: Path | str, code: str, mode: str, expected_version: int, reason: str,
+) -> bool:
+    """실패한 키 버전만 정지시켜 새 키 등록과의 경합을 방지.
+
+    Args:
+        db_path: 사용자 DB.
+        code: 사용자 코드.
+        mode: demo/live.
+        expected_version: 실패한 클라이언트가 생성될 때의 키 버전.
+        reason: auth_expired/auth_invalid/write_denied 등 정지 분류.
+
+    Returns:
+        해당 버전이 현재 키와 같아 정지를 저장했으면 True.
+    """
+    if mode not in ("demo", "live") or not reason:
+        raise ValueError("정지 모드와 사유가 필요합니다.")
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO credential_state (user_code, mode) VALUES (?, ?)",
+            (code, mode),
+        )
+        cur = conn.execute(
+            """UPDATE credential_state SET stop_reason = ?
+               WHERE user_code = ? AND mode = ? AND version = ?""",
+            (reason, code, mode, expected_version),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def get_last_model(db_path: Path | str, code: str) -> str | None:
     """사용자 선택 봇 모델 조회 — 미설정/미존재면 None (호출처 DEFAULT_MODEL_NAME fallback)."""
     with _connect(db_path) as conn:
@@ -1456,6 +1602,12 @@ def cleanup_expired_sessions(db_path: Path | str) -> int:
 
 
 __all__ = [
+    "block_credentials",
+    "clear_deferred_model",
+    "get_credential_state",
+    "get_deferred_models",
+    "set_daily_loss_limit",
+    "set_model_selection",
     "cleanup_expired_sessions",
     "create_session_row",
     "create_user",

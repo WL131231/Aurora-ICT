@@ -40,6 +40,7 @@ from aurora_ict.bot.bot_ict_instance import (
     BotState,
     ExchangeClientProtocol,
 )
+from aurora_ict.bot.bot_trend_instance import BotTrendInstance
 from aurora_ict.bot.pair_registry import (
     CURSUS_FIXED_PAIRS,
     EXCLUDED_PAIRS,
@@ -97,6 +98,14 @@ _PARTIAL_TP_USERS: frozenset[str] = frozenset(
 )
 
 
+def _requires_lifecycle_tracking(bot: Any) -> bool:
+    """주문/청산 회계 확인이 남으면 봇과 클라이언트를 유지한다."""
+    return any(
+        getattr(bot, name, None) is not None
+        for name in ("_pending_entry", "_pending_close")
+    )
+
+
 @dataclass(slots=True)
 class _UserBotSlot:
     """사용자 1명 × 1 symbol 의 봇 슬롯 — bot/client/settings 함께 보관."""
@@ -105,6 +114,7 @@ class _UserBotSlot:
     settings: IctSettings
     bot: BotIctInstance | None = None
     client: ExchangeClientProtocol | None = None
+    credential_version: int = 0
 
 
 @dataclass
@@ -123,6 +133,8 @@ class MultiUserBotManager:
     db_path: Path | str
     base_settings: IctSettings | None = None
     master_key: bytes | None = None
+    origo_client_factory: ClientFactory | None = None
+    _origo_client_factory: ClientFactory = field(init=False, repr=False)
     # 2026-06-08: 텔레그램 매매 알림 발송기(TelegramAlerter) — saas 가 주입.
     # None 이면 알림 비활성(콜백 미주입).
     alerter: Any = None
@@ -136,6 +148,18 @@ class MultiUserBotManager:
     # (user_code, symbol) 별 start lock — 같은 사용자×symbol 동시 start race 방지.
     # 다른 사용자 / 다른 symbol 끼리는 병렬 가능.
     _locks: dict[SlotKey, asyncio.Lock] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self._origo_client_factory = self.origo_client_factory or self.client_factory
+
+    def client_factory_for_slot(self, user_code: str, symbol: str) -> ClientFactory:
+        """실행 모델별 어댑터 선택. Cursus는 기존 factory를 그대로 사용한다."""
+        from aurora_ict.config.settings import AVAILABLE_MODELS
+
+        model = self.model_for_slot(user_code, symbol)
+        if AVAILABLE_MODELS.get(model, "origo") == "origo":
+            return self._origo_client_factory
+        return self.client_factory
 
     def _get_lock(
         self, user_code: str, symbol: str = _DEFAULT_SYMBOL,
@@ -299,8 +323,54 @@ class MultiUserBotManager:
             )
 
         # 모델 validator 재실행 — license_type 변경에 따른 disable_time_filter 강제.
-        settings = settings.model_validate(settings.model_dump())
-        return settings
+        return self.apply_user_preferences(settings, user_code)
+
+    def model_for_slot(self, user_code: str, symbol: str) -> str:
+        """Origo 거래 유예를 우선한 실행 모델.
+
+        Args:
+            user_code: 사용자 코드.
+            symbol: 거래 종목.
+        Returns:
+            실행할 모델 이름. Cursus의 기존 재시작 동작은 변경하지 않음.
+        """
+        from aurora_ict.config.settings import AVAILABLE_MODELS, DEFAULT_MODEL_NAME
+
+        deferred = users_db.get_deferred_models(self.db_path, user_code)
+        old = deferred.get(symbol)
+        if AVAILABLE_MODELS.get(old) == "cursus":
+            old = None
+        return (
+            old
+            or users_db.get_last_model(self.db_path, user_code)
+            or DEFAULT_MODEL_NAME
+        )
+
+    def apply_user_preferences(self, settings: IctSettings, user_code: str) -> IctSettings:
+        """사용자 저장값과 모델 정책을 사본에 적용.
+
+        Args:
+            settings: 기본 또는 슬롯 설정.
+            user_code: 사용자 코드.
+        Returns:
+            구독 정책을 검증한 새 설정. 손실 한도 영속 복원은 Origo만 적용.
+        Raises:
+            ValueError: 사용자가 없음.
+        """
+        from aurora_ict.config.settings import AVAILABLE_MODELS
+
+        user = users_db.get_user_by_code(self.db_path, user_code)
+        if user is None:
+            raise ValueError("사용자가 없습니다.")
+        result = settings.model_copy(deep=True)
+        result.license_type = user.get("license_type", "referral")
+        if user.get("last_timeframe") in TRADE_TIMEFRAMES:
+            result.timeframe = user["last_timeframe"]
+        is_cursus = AVAILABLE_MODELS.get(self.model_for_slot(user_code, result.symbol)) == "cursus"
+        if not is_cursus and user.get("daily_loss_limit_pct") is not None:
+            result.daily_loss_limit_pct = user["daily_loss_limit_pct"]
+        result = IctSettings.model_validate(result.model_dump())
+        return result
 
     async def get_or_create_bot(
         self,
@@ -337,14 +407,17 @@ class MultiUserBotManager:
                 from aurora_ict.config.settings import (
                     AVAILABLE_MODELS as _AM,
                 )
-                from aurora_ict.config.settings import (
-                    DEFAULT_MODEL_NAME as _DM,
-                )
-                _sel = users_db.get_last_model(self.db_path, user_code) or _DM
+                _sel = self.model_for_slot(user_code, symbol)
                 _want_cursus = _AM.get(_sel) == "cursus"
                 _is_cursus = type(slot.bot).__name__ == "BotTrendInstance"
                 if _want_cursus != _is_cursus:
-                    if slot.bot.state.value != "running":
+                    if (
+                        slot.bot.state.value != "running"
+                        and (
+                            isinstance(slot.bot, BotTrendInstance)
+                            or await self._has_live_exposure(user_code, symbol) is False
+                        )
+                    ):
                         await self._safe_close_client(slot.client)
                         self._slots.pop(key, None)
                         slot = None
@@ -401,7 +474,10 @@ class MultiUserBotManager:
         settings = self._build_user_settings(
             user_code, symbol, force_run_mode=force_run_mode,
         )
-        client = await self.client_factory(settings)
+        credential_version = users_db.get_credential_state(
+            self.db_path, user_code, settings.run_mode.value,
+        )["version"]
+        client = await self.client_factory_for_slot(user_code, symbol)(settings)
         # 거래소 호출 실패 로그(retCode 10003 키 무효 등)에 어느 사용자/심볼인지
         # 식별되도록 라벨 주입 — 멀티유저 운영에서 문제 키 특정용.
         _set_label = getattr(client, "set_log_label", None)
@@ -517,10 +593,9 @@ class MultiUserBotManager:
         # 2026-06-25 #CURSUS: 사용자 선택 모델이 Cursus 면 추세형 봇으로 교체.
         # BotIctInstance 는 dataclass 생성(거래소 호출 없음 — start() 에서 호출)이라
         # 교체 비용 무시 가능. 모델 미선택(NULL)은 DEFAULT_MODEL_NAME(Origo) fallback.
-        from aurora_ict.config.settings import AVAILABLE_MODELS, DEFAULT_MODEL_NAME
-        _model = users_db.get_last_model(self.db_path, user_code) or DEFAULT_MODEL_NAME
+        from aurora_ict.config.settings import AVAILABLE_MODELS
+        _model = self.model_for_slot(user_code, symbol)
         if AVAILABLE_MODELS.get(_model) == "cursus":
-            from aurora_ict.bot.bot_trend_instance import BotTrendInstance
             from aurora_ict.strategy.dual_st import DualSTConfig
             bot = BotTrendInstance(
                 client=client,
@@ -559,8 +634,18 @@ class MultiUserBotManager:
                 ),
             )
             logger.info("Cursus(추세형) 봇 생성 — %s %s (원본 엔진)", user_code, symbol)
+        async def _save_safety_stop(reason: str) -> None:
+            users_db.block_credentials(
+                self.db_path, user_code, settings.run_mode.value,
+                credential_version, reason,
+            )
+
+        if isinstance(bot, BotIctInstance):
+            bot.entry_paused = symbol in users_db.get_deferred_models(self.db_path, user_code)
+            bot.safety_stop_cb = _save_safety_stop
         self._slots[key] = _UserBotSlot(
             symbol=symbol, settings=settings, bot=bot, client=client,
+            credential_version=credential_version,
         )
         return bot
 
@@ -706,18 +791,36 @@ class MultiUserBotManager:
             # 매매한다 — 사용자는 Cycle 을 골랐는데 다른 모델이 도는 셈이라
             # 조용히 틀리느니 기동을 거부한다.
             from aurora_ict.config.settings import (  # noqa: PLC0415
-                DEFAULT_MODEL_NAME,
+                AVAILABLE_MODELS,
                 is_chart_only_model,
             )
-            _sel_model = (
-                users_db.get_last_model(self.db_path, user_code)
-                or DEFAULT_MODEL_NAME
-            )
+            _sel_model = self.model_for_slot(user_code, symbol)
             if is_chart_only_model(_sel_model):
                 raise ValueError(
                     f"{_sel_model} 은 아직 차트 관찰 전용 모델입니다 — "
                     "매매를 시작하려면 Origo 나 Cursus 를 선택하세요.",
                 )
+            requested = self._build_user_settings(
+                user_code, symbol, force_run_mode=force_run_mode,
+            )
+            blocked = users_db.get_credential_state(
+                self.db_path, user_code, requested.run_mode.value,
+            )
+            is_cursus = AVAILABLE_MODELS.get(_sel_model) == "cursus"
+            if not is_cursus and blocked["stop_reason"]:
+                raise ValueError("API 키 인증/거래 권한 확인이 필요합니다. 키를 다시 등록해 주세요.")
+            old_slot = self._slots.get((user_code, symbol))
+            if not is_cursus and old_slot is not None and not isinstance(old_slot.bot, BotTrendInstance) and (
+                old_slot.settings.run_mode != requested.run_mode
+                or getattr(old_slot, "credential_version", 0) != blocked["version"]
+            ):
+                if old_slot.bot is not None:
+                    old_slot.bot.entry_paused = True
+                    await old_slot.bot.stop()
+                    if _requires_lifecycle_tracking(old_slot.bot):
+                        raise ValueError("이전 API 키의 미확인 주문 처리 후 재시작해 주세요.")
+                await self._close_client(old_slot)
+                self._slots.pop((user_code, symbol), None)
             bot = await self.get_or_create_bot(
                 user_code, symbol, force_run_mode=force_run_mode,
             )
@@ -870,6 +973,9 @@ class MultiUserBotManager:
                 return
             if slot.bot is not None:
                 await slot.bot.stop()
+                if isinstance(slot.bot, BotIctInstance) and _requires_lifecycle_tracking(slot.bot):
+                    slot.bot.entry_paused = True
+                    raise ValueError("주문/청산 결과가 확인되지 않아 봇 연결을 유지합니다.")
             await self._close_client(slot)
             # 2026-06-11 버그픽스: 정지한 슬롯을 _slots 에서 제거.
             # 안 그러면 페어 카운트(start 의 existing = 사용자 슬롯 수)에 정지된
@@ -915,10 +1021,11 @@ class MultiUserBotManager:
         if bot is not None:
             if getattr(bot, "active_position", None) is not None:
                 return True
-            # 지정가 진입 대기(#LIMIT-ENTRY) 중이면 주문이 거래소에 걸려 있다.
-            if getattr(bot, "_pending_limit", None) is not None:
-                return True
-            if getattr(bot, "_pending_entry", None) is not None:
+            # 회계 확정 대기도 모델 교체 시 기록을 잃지 않도록 보수적으로 보류.
+            if isinstance(bot, BotTrendInstance):
+                if getattr(bot, "_pending_limit", None) is not None:
+                    return True
+            elif _requires_lifecycle_tracking(bot):
                 return True
         client = getattr(slot, "client", None)
         if client is None:
@@ -1015,8 +1122,8 @@ class MultiUserBotManager:
         SL/TP 를 자기 방식으로 덮어써 계획과 다른 청산이 된다). 이 주기 작업이
         거래 종료를 감지해 그때 교체한다 — 사용자는 아무것도 하지 않아도 된다.
 
-        판정은 "슬롯 봇의 종류가 사용자의 선택 모델과 다른가"로 한다. 별도 상태를
-        저장하지 않으므로 재시작에도 안전하다(사실이 곧 상태).
+        슬롯별 이전 모델을 DB에 보존해 재시작에도 같은 모델이 관리한다.
+        거래소 노출 없음이 확인된 뒤에만 유예 기록을 제거한다.
 
         Returns:
             ``{"switched": int, "held": int}`` 통계.
@@ -1038,15 +1145,33 @@ class MultiUserBotManager:
                 if bot is None:
                     continue
                 if isinstance(bot, BotTrendInstance) == want_cursus:
+                    if isinstance(bot, BotIctInstance) and sym in users_db.get_deferred_models(self.db_path, user):
+                        users_db.clear_deferred_model(self.db_path, user, sym)
+                        if (
+                            sym in users_db.get_bot_running_symbols(self.db_path, user)
+                            and not getattr(bot, "stop_reason", None)
+                        ):
+                            bot.entry_paused = False
                     continue                      # 이미 선택 모델 — 할 일 없음
                 if await self._has_live_exposure(user, sym) is not False:
                     stats["held"] += 1
                     continue                      # 거래 진행 중 — 다음 주기에
-                running = getattr(getattr(bot, "state", None), "value", "") == "running"
+                running = (
+                    getattr(getattr(bot, "state", None), "value", "") == "running"
+                    and (
+                        isinstance(bot, BotTrendInstance)
+                        or sym in users_db.get_bot_running_symbols(self.db_path, user)
+                    )
+                )
                 try:
                     await self.stop(user, sym, forget_preference=False)
+                    users_db.clear_deferred_model(self.db_path, user, sym)
                     if running:
-                        await self.start(user, sym)
+                        try:
+                            await self.start(user, sym)
+                        except Exception:
+                            users_db.set_bot_running(self.db_path, user, True, symbol=sym)
+                            raise
                 except Exception as e:  # noqa: BLE001
                     logger.warning("[%s/%s] 유예 모델 전환 실패: %s", user, sym, e)
                     continue
@@ -1167,6 +1292,37 @@ class MultiUserBotManager:
         except Exception as e:  # noqa: BLE001
             logger.debug("ccxt exchange close 실패 (무시): %s", e)
 
+    async def validate_key_registration(
+        self, user_code: str, mode: str, api_key: str, api_secret: str,
+    ) -> bool:
+        """영속 정지 해제에 필요한 후보 키 인증/거래 권한 검증.
+
+        Args:
+            user_code: 사용자 코드.
+            mode: 키 모드.
+            api_key: 새 등록 후보 키.
+            api_secret: 새 등록 후보 비밀값.
+        Returns:
+            영속 정지 상태에서 실제 권한까지 확인했으면 True.
+        Raises:
+            ValueError: 키 검증 실패 또는 검증 API 미지원.
+        """
+        if not users_db.get_credential_state(self.db_path, user_code, mode)["stop_reason"]:
+            return False
+        base = self.base_settings or IctSettings()
+        candidate = self.apply_user_preferences(base, user_code)
+        candidate.run_mode = RunMode(mode)
+        setattr(candidate, f"{mode}_api_key", SecretStr(api_key))
+        setattr(candidate, f"{mode}_api_secret", SecretStr(api_secret))
+        client = await self._origo_client_factory(candidate)
+        try:
+            validate = getattr(client, "validate_trading_credentials", None)
+            if not callable(validate) or await validate() is not True:
+                raise ValueError("API 키 인증과 주문/포지션 권한을 확인하지 못했습니다.")
+            return True
+        finally:
+            await self._safe_close_client(client)
+
     async def status(
         self, user_code: str, symbol: str = _DEFAULT_SYMBOL,
     ) -> dict[str, Any]:
@@ -1213,8 +1369,16 @@ class MultiUserBotManager:
             last_mode = None
         if slot is None or slot.bot is None:
             base = self.base_settings if self.base_settings is not None else IctSettings()
+            base = base.model_copy(update={"symbol": symbol})
+            if users_db.get_user_by_code(self.db_path, user_code) is not None:
+                base = self.apply_user_preferences(base, user_code)
             # last_run_mode 우선 — 사용자가 LIVE 로 가동했었으면 새로고침 후에도 LIVE.
             run_mode = last_mode if last_mode in ("demo", "live") else base.run_mode.value
+            stop_reason = users_db.get_credential_state(self.db_path, user_code, run_mode)["stop_reason"]
+            from aurora_ict.config.settings import AVAILABLE_MODELS
+
+            if AVAILABLE_MODELS.get(self.model_for_slot(user_code, symbol)) == "cursus":
+                stop_reason = None
             # 현재 모드 기준 등록 여부 — UI 가 "키 등록" CTA 결정에 사용.
             has_creds = has_live if run_mode == "live" else has_demo
             # 2026-05-29: DB 에 가동 중 symbol 이 있는데 슬롯이 없으면 = fly machine
@@ -1222,7 +1386,7 @@ class MultiUserBotManager:
             # 응답하면 UI 가 STOP 버튼을 active 로 표시해 "정지됨" 으로 오해. 대신
             # "resuming" 상태로 응답해 UI 가 복원 진행 중임을 표시할 수 있게 한다.
             # 파트너 보고 2026-05-29: "또 데모로 넘어가고 STOP 에 불들어와" 의 원인.
-            this_symbol_running = symbol in running_symbols
+            this_symbol_running = symbol in running_symbols and not stop_reason
             state_val = (
                 "resuming" if this_symbol_running else BotState.STOPPED.value
             )
@@ -1237,7 +1401,8 @@ class MultiUserBotManager:
                 "has_live_credentials": has_live,
                 "has_active_position": False,
                 "last_setup_ts_ms": 0,
-                "running_symbols": running_symbols,
+                "running_symbols": [] if stop_reason else running_symbols,
+                "stop_reason": stop_reason,
             }
         bot = slot.bot
         run_mode = slot.settings.run_mode.value
@@ -1257,6 +1422,13 @@ class MultiUserBotManager:
             "auth_error": getattr(slot.client, "auth_error_kind", None),
             "auth_error_msg": getattr(slot.client, "last_auth_error", None),
             "stop_reason": getattr(bot, "stop_reason", None),
+            "entry_paused": getattr(bot, "entry_paused", False),
+            "has_pending_entry": (
+                getattr(bot, "_pending_entry", None) is not None
+                or getattr(bot, "_pending_limit", None) is not None
+            ),
+            "has_pending_close": getattr(bot, "_pending_close", None) is not None,
+            "requires_order_review": _requires_lifecycle_tracking(bot),
         }
 
     async def get_seed_usdt(self, user_code: str) -> float | None:
