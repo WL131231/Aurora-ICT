@@ -273,6 +273,9 @@ class TradesStore:
                     self._conn.commit()
                     break
                 except sqlite3.Error as e:
+                    # commit이 잠겨 실패해도 INSERT는 열린 트랜잭션에 남아 있다.
+                    # 재시도 전에 되돌려 다음 거래가 이전 INSERT를 중복 확정하지 않게 한다.
+                    self._conn.rollback()
                     if attempt < 2:
                         time.sleep(0.1 * (attempt + 1))
                         continue

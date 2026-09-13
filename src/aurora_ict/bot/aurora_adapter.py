@@ -18,11 +18,14 @@ Aurora-ICT가 기대하는 ``ExchangeClientProtocol``:
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict, is_dataclass
 from typing import Any
 
 import pandas as pd
-from ccxt.base.errors import AuthenticationError, PermissionDenied
+from ccxt.base.errors import AuthenticationError, ExchangeError, PermissionDenied
 
+from aurora.exchange.base import normalize_side
+from aurora.exchange.ccxt_client import _optional_order_number
 from aurora_ict.bot.margin_guard import parse_available_usdt, parse_bybit_available_usdt
 
 logger = logging.getLogger(__name__)
@@ -142,26 +145,6 @@ class AuroraClientAdapter:
         self.write_fail_streak = 0
         self.last_write_error = None
 
-    async def _position_qty(self, symbol: str) -> float | None:
-        """현재 포지션 수량. 조회 실패면 None(= 모름)."""
-        try:
-            pos = await self.fetch_position(symbol)
-            return float((pos or {}).get("contracts") or 0)
-        except Exception:  # noqa: BLE001 — 조회 실패·형식 이상은 '모름'
-            return None
-
-    async def _bot_open_order_count(self, symbol: str) -> int:
-        """봇 태그(AUR*)가 붙은 미체결 주문 수. 조회 불가면 -1."""
-        ex = getattr(self._client, "_ex", None)
-        if ex is None:
-            return -1
-        try:
-            from aurora.exchange.ccxt_client import _is_bot_order
-            orders = await ex.fetch_open_orders(symbol)
-            return sum(1 for o in orders or [] if _is_bot_order(o))
-        except Exception:  # noqa: BLE001 — 조회 실패·형식 이상은 '모름'
-            return -1
-
     def _wlog(self, msg: str, *args: Any) -> None:
         """라벨 prefix 를 붙여 WARNING 로깅. 라벨 없으면 기존과 동일.
 
@@ -209,7 +192,7 @@ class AuroraClientAdapter:
         except AuthenticationError as e:
             self._note_auth_fail("fetch_ohlcv", e)
             raise
-        self._note_auth_ok()
+        # 공개 시세 조회 성공은 비공개 API 키의 유효성을 증명하지 않는다.
         if not isinstance(df, pd.DataFrame) or df.empty:
             return []
         rows: list[list[Any]] = []
@@ -258,17 +241,6 @@ class AuroraClientAdapter:
           문제 (#LIVE-1) 를 해소. 동봉은 지정가 미체결 주문에도 예약된다.
         - reduce_only=True (청산 주문) 는 SL/TP 인자 무시.
         """
-        # #LEV-8 (2026-06-02): Bybit demo + ccxt 조합에서 create_order 가 raw
-        # API 호출 후 query-api (/user/v3/private/query-api) UTA 체크 응답을
-        # 받고 exception throw — set_leverage 와 같은 false positive.
-        # 실제로는 Bybit 측에 주문이 들어가 limit pending 으로 살아있음
-        # (실측 2026-06-02 KST 23:30 BTC short 1.3184 — UI pending 표시 확인).
-        # ccxt exception 이 retCode 10005 + query-api 메시지면 fetch_position
-        # 으로 실제 진입 확인 → 활성 포지션 또는 pending order 있으면 success
-        # 처리. 없으면 진짜 실패.
-        # #WRITE-DENIED: 10005 를 '효과'로 검증하려면 주문 **전** 상태가 필요하다.
-        pre_qty = await self._position_qty(symbol)
-        pre_open = await self._bot_open_order_count(symbol)
         try:
             order = await self._client.place_order(
                 symbol=symbol,
@@ -282,104 +254,87 @@ class AuroraClientAdapter:
             self._note_write_ok()
         except Exception as e:  # noqa: BLE001
             msg = str(e)
-            # #LEV-8b: query-api 메시지 없이 단순 retCode 10005 만 응답하는
-            # 케이스도 false positive (실측 2026-06-03 KST 00:02 — Bybit limit
-            # 들어간 상태에서 ERROR). retCode 10005 모두 false positive 처리,
-            # 다음 sync_position_state 가 거래소 상태와 reconcile.
-            if "10005" in msg:
-                # #WRITE-DENIED 2026-09-11: 예전엔 '포지션이 있으면 성공'으로 봤다.
-                # 6월 데모+ccxt 의 UTA 체크 false positive 를 넘기려는 우회였는데,
-                # **거래 권한이 없는 키**(읽기 전용)에서는 진짜 10005 가 매 주문에
-                # 나오고, 청산 주문은 '포지션이 남아 있음' 이 곧 실패인데도 성공으로
-                # 기록됐다 → 1분마다 가짜 청산 4,202건(TDAF 9/10~11 실측).
-                # 이제는 주문 **전후 상태 변화**로만 성공을 인정한다.
-                post_qty = await self._position_qty(symbol)
-                post_open = await self._bot_open_order_count(symbol)
-                if reduce_only:
-                    ok = (pre_qty is not None and post_qty is not None
-                          and post_qty < pre_qty)
-                else:
-                    grew = (pre_qty is not None and post_qty is not None
-                            and post_qty > pre_qty)
-                    pending = pre_open >= 0 and post_open > pre_open
-                    ok = grew or pending
-                if ok:
+            if "10005" in msg or isinstance(e, PermissionDenied):
+                # 다른 주문/수동 매매의 수량 변화는 이 주문의 성공 근거가 아니다.
+                lookup = getattr(e, "order_lookup_id", None)
+                recovered = None
+                if isinstance(lookup, str) and lookup:
+                    try:
+                        recovered = await self.fetch_order(lookup, symbol)
+                    except Exception:  # 조회 불능은 원래 권한 오류와 함께 보류한다.
+                        pass
+                if recovered and recovered.get("status") in ("open", "closed", "canceled", "expired"):
                     self._note_write_ok()
-                    self._wlog(
-                        "place_order (%s %s qty=%s): 10005 응답이나 거래소 상태 변화 "
-                        "확인(수량 %s→%s · 대기주문 %s→%s) — 성공 처리.",
-                        symbol, side, qty, pre_qty, post_qty, pre_open, post_open,
-                    )
-                    return {
-                        "id": None, "symbol": symbol, "side": side, "qty": qty,
-                        "price": price, "status": "open_uta_false_positive",
-                        "info": {"retCode": 10005, "ccxt_false_positive": True},
-                    }
+                    return recovered
                 self._note_write_fail("place_order", e)
-                raise PermissionDenied(
-                    f"place_order {symbol} {side} qty={qty} 거부(10005) — 거래소 상태 "
-                    f"변화 없음(수량 {pre_qty}→{post_qty} · 대기주문 {pre_open}→"
-                    f"{post_open}). API 키 거래 권한 확인 필요: {msg[:160]}"
-                ) from e
+                denied = PermissionDenied("주문 권한 거부(10005) — 동일 주문 접수/체결 미확인")
+                if isinstance(lookup, str):
+                    denied.order_lookup_id = lookup
+                raise denied from e
             if isinstance(e, AuthenticationError):
                 self._note_auth_fail("place_order", e)
             raise
-        order_dict: dict[str, Any]
-        if hasattr(order, "__dict__"):
-            order_dict = dict(order.__dict__)
+        return self._order_dict(order)
+
+    @staticmethod
+    def _order_dict(order: Any) -> dict[str, Any]:
+        """slots 자료형과 거래소 응답을 체결 정보 손실 없이 정규화한다.
+
+        Args:
+            order: 실제 Order 또는 ccxt 주문 dict.
+        Returns:
+            주문 ID, 접수 상태, 실제 체결 수량/평균가를 보존한 dict.
+        Raises:
+            ExchangeError: 구조 미확인. 요청 가격/수량을 체결로 추정하지 않는다.
+        """
+        if is_dataclass(order) and not isinstance(order, type):
+            data = asdict(order)
         elif isinstance(order, dict):
-            order_dict = order
+            data = dict(order)
+        elif hasattr(order, "__dict__"):
+            data = dict(vars(order))
         else:
-            order_dict = {"raw": str(order)}
+            raise ExchangeError("주문 응답 자료형 미확인")
+        raw = data.pop("raw", None)
+        if isinstance(raw, dict):
+            data = {**raw, **data}
+        order_id = data.get("id") or data.get("order_id") or data.get("orderId")
+        data["id"] = data["order_id"] = str(order_id) if order_id else None
+        for names in (
+            ("filled_qty", "filled"), ("avg_fill_price", "average", "avgPrice"),
+            ("qty", "amount"), ("remaining",),
+        ):
+            number = next((
+                parsed for key in names
+                if (parsed := _optional_order_number(data.get(key))) is not None
+            ), None)
+            if names[0] == "avg_fill_price" and number == 0:
+                number = None
+            for key in names:
+                data[key] = number
+        data["status"] = str(data.get("status") or "").lower()
+        return data
 
-        # Entry 주문 (reduce_only False) — 실제 fill 가격 / qty 를 거래소 응답에서 추출.
-        # 시장가(price=None) 진입 시 setup 가격과 실제 체결가가 다름 (slippage / spread).
-        if not reduce_only:
-            avg_fill, filled_qty = await self._extract_fill(order_dict, symbol)
-            if avg_fill is not None:
-                order_dict["avg_fill_price"] = avg_fill
-            if filled_qty is not None:
-                order_dict["filled_qty"] = filled_qty
+    async def fetch_order(self, order_id: str, symbol: str) -> dict[str, Any]:
+        """요청한 단일 주문의 실제 상태를 재조회한다.
 
-        return order_dict
-
-    async def _extract_fill(
-        self, order_dict: dict[str, Any], symbol: str,
-    ) -> tuple[float | None, float | None]:
-        """주문 응답에서 평균 체결가 / 체결 qty 추출. 없으면 fetch_position fallback."""
-        # 1차: order_dict 안 ccxt 표준 필드.
-        avg_keys = ("average", "avgPrice", "avg_price", "fill_price", "price")
-        qty_keys = ("filled", "filled_qty", "amount", "qty")
-        avg: float | None = None
-        filled: float | None = None
-        for k in avg_keys:
-            v = order_dict.get(k)
-            if isinstance(v, (int, float)) and v > 0:
-                avg = float(v)
-                break
-        for k in qty_keys:
-            v = order_dict.get(k)
-            if isinstance(v, (int, float)) and v > 0:
-                filled = float(v)
-                break
-        if avg is not None:
-            return avg, filled
-        # 2차 fallback: 거래소 fetch_position 으로 entryPrice 조회 (시장가 즉시 fill).
+        Args:
+            order_id: 거래소 ID 또는 client:AUR... 조회 키.
+            symbol: ccxt 통합 심볼.
+        Returns:
+            정규화한 주문. 조회 실패는 빈 주문으로 바꾸지 않는다.
+        Raises:
+            Exception: 인증/네트워크/주문 조회 실패.
+        """
         try:
-            pos = await self.fetch_position(symbol)
-        except Exception as e:  # noqa: BLE001
-            logger.debug("fill 가격 fallback fetch_position 실패: %s", e)
-            return None, filled
-        if pos is None:
-            return None, filled
-        ep = pos.get("entryPrice") or pos.get("entry_price") or pos.get("averagePrice")
-        if isinstance(ep, (int, float)) and ep > 0:
-            avg = float(ep)
-        if filled is None:
-            c = pos.get("contracts") or pos.get("qty")
-            if isinstance(c, (int, float)) and c > 0:
-                filled = float(c)
-        return avg, filled
+            result = self._order_dict(await self._client.fetch_order(order_id, symbol))
+        except AuthenticationError as exc:
+            self._note_auth_fail("fetch_order", exc)
+            raise
+        if not result.get("id"):
+            raise ExchangeError("조회한 주문 ID 미확인")
+        self._note_auth_ok()
+        return result
 
     async def fetch_position(self, symbol: str) -> dict[str, Any] | None:
         """포지션 조회. Aurora client → fallback: ccxt _ex 직접 호출.
@@ -388,7 +343,7 @@ class AuroraClientAdapter:
         ccxt _ex.fetch_positions([symbol]) 로 직접 fetch fallback. Bybit V5 가 빈
         포지션도 contracts=0 으로 반환하므로 0인 항목은 제외.
         """
-        # 1차: Aurora client.fetch_position
+        primary_error: Exception | None = None
         try:
             pos = await self._client.fetch_position(symbol)
         except AuthenticationError as e:
@@ -398,22 +353,19 @@ class AuroraClientAdapter:
             raise
         except Exception as e:  # noqa: BLE001
             self._wlog("Aurora fetch_position 실패: %s — ccxt fallback", e)
+            primary_error = e
             pos = None
         if pos is not None:
+            result = self._position_dict(pos, symbol)
             self._note_auth_ok()
-            if hasattr(pos, "__dict__"):
-                d = dict(pos.__dict__)
-                if "qty" in d and "contracts" not in d:
-                    d["contracts"] = d["qty"]
-                if float(d.get("contracts") or 0) > 0:
-                    return d
-            elif isinstance(pos, dict):
-                if float(pos.get("contracts") or pos.get("qty") or 0) > 0:
-                    return pos
+            if result is not None:
+                return result
 
         # 2차 fallback: ccxt _ex 직접 fetch_positions
         ex = getattr(self._client, "_ex", None)
         if ex is None:
+            if primary_error is not None:
+                raise primary_error
             return None
         await self._ensure_time_sync()
         try:
@@ -423,16 +375,59 @@ class AuroraClientAdapter:
             raise
         except Exception as e:  # noqa: BLE001
             self._wlog("ccxt fetch_positions 실패: %s", e)
-            return None
+            raise
+        if not isinstance(positions, list):
+            raise ExchangeError("포지션 목록 미확인")
+        active = [
+            result for position in positions
+            if (result := self._position_dict(position, symbol)) is not None
+        ]
+        if len(active) > 1:
+            raise ExchangeError("단일 심볼 포지션이 복수임 — 원웨이 상태 미확인")
         self._note_auth_ok()
-        for p in positions or []:
-            contracts = float(p.get("contracts") or 0)
-            if contracts > 0:
-                # ccxt 표준 dict 그대로 반환 (entryPrice / side / contracts 박힘).
-                if "qty" not in p:
-                    p["qty"] = contracts
-                return p
-        return None
+        return active[0] if active else None
+
+    @staticmethod
+    def _position_dict(position: Any, symbol: str) -> dict[str, Any] | None:
+        """조회 성공 포지션을 검증하고 보호 정보까지 보존한다.
+
+        Args:
+            position: Position 자료형 또는 ccxt dict.
+            symbol: 요청 심볼.
+        Returns:
+            검증한 포지션. 수량 0이 명시된 때만 None.
+        Raises:
+            ExchangeError: 심볼/방향/수량이 불명확한 응답.
+        """
+        if is_dataclass(position) and not isinstance(position, type):
+            data = asdict(position)
+        elif isinstance(position, dict):
+            data = dict(position)
+        elif hasattr(position, "__dict__"):
+            data = dict(vars(position))
+        else:
+            raise ExchangeError("포지션 응답 자료형 미확인")
+        raw = data.pop("raw", None)
+        if isinstance(raw, dict):
+            data = {**raw, **data}
+        if data.get("symbol") and data["symbol"] != symbol:
+            raise ExchangeError("요청한 심볼과 포지션 응답이 다름")
+        quantity = data.get("contracts")
+        if quantity is None:
+            quantity = data.get("qty")
+        quantity = _optional_order_number(quantity)
+        if quantity is None:
+            raise ExchangeError("포지션 수량 미확인")
+        if quantity == 0:
+            return None
+        side = normalize_side(data.get("side"))
+        if side is None:
+            raise ExchangeError("포지션 방향 미확인")
+        data["contracts"] = data["qty"] = quantity
+        data["side"] = side
+        if data.get("entryPrice") is None:
+            data["entryPrice"] = data.get("entry_price")
+        return data
 
     async def fetch_all_positions(self) -> list[dict[str, Any]]:
         """계정 전체 열린 포지션 조회 — admin 전체 포지션 미추적 스캔용 (2026-06-12).
@@ -656,17 +651,68 @@ class AuroraClientAdapter:
     async def cancel_bot_orders(self, symbol: str) -> int:
         """봇 태그(orderLinkId) 붙은 미체결 주문만 취소 — 유저 수동 주문 보존.
 
-        Aurora client.cancel_bot_orders 위임. 하위 client 가 미지원(구버전/덕타입)
-        이면 안전하게 0 반환(취소 안 함 — 유저 주문 보호 우선). 실패도 0.
+        Args:
+            symbol: ccxt 통합 심볼.
+        Returns:
+            대기 진입 주문이 없다고 확인한 뒤 취소 접수 수.
+        Raises:
+            Exception: 미지원/취소/조회 실패. 0으로 숨기지 않는다.
         """
         try:
-            return await self._client.cancel_bot_orders(symbol)
-        except AttributeError:
-            self._wlog("cancel_bot_orders 미지원 client — skip (유저 주문 보호)")
-            return 0
+            count = await self._client.cancel_bot_orders(symbol)
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise ExchangeError("진입 주문 취소 결과 미확인")
+            self._note_auth_ok()
+            return count
         except Exception as e:  # noqa: BLE001
+            if isinstance(e, AuthenticationError):
+                self._note_auth_fail("cancel_bot_orders", e)
+            if isinstance(e, PermissionDenied) or "10005" in str(e):
+                self._note_write_fail("cancel_bot_orders", e)
             self._wlog("cancel_bot_orders 실패: %s", e)
-            return 0
+            raise
+
+    async def validate_trading_credentials(self) -> bool:
+        """인증 정지 해제 전에 키의 선물 주문/포지션 쓰기 권한을 확인한다.
+
+        Args:
+            없음.
+        Returns:
+            비공개 읽기 API로 필수 권한 확인 후 True. 키/UID는 반환하지 않는다.
+        Raises:
+            AuthenticationError: 키 조회 실패.
+            PermissionDenied: 읽기 전용 또는 선물 주문/포지션 권한 누락.
+            ExchangeError: 응답 미확인 또는 미지원 거래소.
+        """
+        ex = getattr(self._client, "_ex", None)
+        if ex is None or getattr(ex, "id", None) != "bybit":
+            raise ExchangeError("Bybit 거래 권한 확인 클라이언트 없음")
+        await self._ensure_time_sync()
+        try:
+            response = await ex.private_get_v5_user_query_api()
+        except AuthenticationError as exc:
+            self._note_auth_fail("validate_trading_credentials", exc)
+            raise
+        if (
+            not isinstance(response, dict)
+            or isinstance(response.get("retCode"), bool)
+            or response.get("retCode") not in (0, "0")
+        ):
+            raise AuthenticationError("API 키 정보 조회 실패")
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise ExchangeError("API 키 권한 정보 미확인")
+        read_only = result.get("readOnly")
+        permissions = result.get("permissions")
+        contract = permissions.get("ContractTrade") if isinstance(permissions, dict) else None
+        if (
+            isinstance(read_only, bool) or read_only not in (0, "0")
+            or not isinstance(contract, list)
+            or not {"Order", "Position"}.issubset(contract)
+        ):
+            raise PermissionDenied("Read-Write 및 Contract Orders/Positions 권한 필요")
+        self._note_auth_ok()
+        return True
 
     async def position_opened_by_bot(
         self, symbol: str, side: str, entry_price: float, qty: float = 0.0,

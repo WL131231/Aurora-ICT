@@ -310,9 +310,14 @@ async def test_fetch_position_dataclass_to_dict() -> None:
 @pytest.mark.asyncio
 async def test_fetch_position_none() -> None:
     """Position None → None."""
-    inner = AsyncMock()
-    inner.fetch_position = AsyncMock(return_value=None)
-    adapter = AuroraClientAdapter(inner)
+    class FlatPositionSource:
+        """조회 성공과 빈 보유 상태를 명시하는 합성 입력."""
+
+        async def fetch_position(self, symbol: str) -> None:
+            """주어진 심볼의 빈 보유 상태를 반환한다."""
+            return None
+
+    adapter = AuroraClientAdapter(FlatPositionSource())
     pos = await adapter.fetch_position("BTCUSDT")
     assert pos is None
 
