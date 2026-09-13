@@ -30,7 +30,7 @@ SIG_TS = 1_700_000_000_000
 
 def _client() -> AsyncMock:
     c = AsyncMock()
-    c.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0}})
+    c.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0, "free": 1000.0}})
     c.fetch_ticker = AsyncMock(return_value=100.0)
     c.place_order = AsyncMock(return_value={"orderId": "L1"})
     c.set_position_tpsl = AsyncMock(return_value={"retCode": 0})

@@ -69,7 +69,7 @@ def _mock_client(ohlcv_rows: list[list[Any]]) -> AsyncMock:
         "avg_fill_price": last_close,
     })
     client.fetch_position = AsyncMock(return_value=None)
-    client.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0}})
+    client.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0, "free": 1000.0}})
     client.cancel_all_orders = AsyncMock(return_value=None)
     # 2026-07-22 주문 태그: 선별 취소 0건 / 소유권 판정 기본 False(보수적).
     client.cancel_bot_orders = AsyncMock(return_value=0)

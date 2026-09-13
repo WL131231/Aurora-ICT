@@ -35,7 +35,7 @@ def _mock_client() -> AsyncMock:
         "orderId": "T1", "filled_qty": 1.0, "avg_fill_price": 100.5,
     })
     client.fetch_position = AsyncMock(return_value=None)
-    client.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0}})
+    client.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0, "free": 1000.0}})
     client.modify_stop_loss = AsyncMock(return_value={"retCode": 0})
     client.cancel_all_orders = AsyncMock(return_value=None)
     client.fetch_closed_positions = AsyncMock(return_value=[])

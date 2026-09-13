@@ -21,7 +21,7 @@ def _bot(**kw) -> BotIctInstance:
     c = AsyncMock()
     c.fetch_position = AsyncMock(return_value=None)
     c.fetch_ticker = AsyncMock(return_value=100.0)
-    c.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0}})
+    c.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0, "free": 1000.0}})
     c.place_order = AsyncMock(return_value={
         "orderId": "T", "filled_qty": 1.0, "avg_fill_price": 100.0})
     c.set_position_tpsl = AsyncMock(return_value=True)
