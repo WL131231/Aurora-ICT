@@ -69,7 +69,7 @@ async def _equity_payload(bot: Any, session: Any) -> dict[str, Any]:
             "message": getattr(cli, "last_auth_error", None),
             "session_status": session,
         }
-    fetch = getattr(bot, "_fetch_equity_or_none", None) or getattr(bot, "_fetch_equity")
+    fetch = getattr(bot, "_fetch_equity_or_none", None) or bot._fetch_equity
     try:
         eq = await fetch()
     except Exception as e:  # noqa: BLE001
