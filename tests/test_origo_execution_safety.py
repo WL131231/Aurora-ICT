@@ -32,10 +32,13 @@ class OrderLedger:
         self.position: dict[str, Any] | None = None
         self.price: float | None = 100.0
         self.reject_entry = False
+        self.entry_rejection_code = 10001
+        self.definitive_rejection_marker: object = False
         self.lose_response = False
         self.cancel_fails = False
         self.position_read_fails = False
         self.order_unknown = False
+        self.order_read_error: Exception | None = None
         self.immediate_fill_fraction = 0.0
         self.cancel_fill_fraction = 0.0
         self.cancel_calls = 0
@@ -62,6 +65,8 @@ class OrderLedger:
         return dict(self.position) if self.position is not None else None
 
     async def fetch_order(self, order_id: str, symbol: str) -> dict[str, Any] | None:
+        if self.order_read_error is not None:
+            raise self.order_read_error
         if self.order_unknown:
             return None
         order = self.orders.get(order_id.removeprefix("client:"))
@@ -74,7 +79,11 @@ class OrderLedger:
         request = dict(symbol=symbol, side=side, qty=qty, price=price, reduce_only=reduce_only, **params)
         self.requests.append(request)
         if self.reject_entry and not reduce_only:
-            raise ExchangeError("10001: StopLoss is on the wrong side")
+            error = ExchangeError(f"{self.entry_rejection_code}: synthetic entry rejection")
+            error.order_definitively_rejected = self.definitive_rejection_marker
+            if self.entry_rejection_code == 110007:
+                error.order_lookup_id = "client:rejected"
+            raise error
         if reduce_only:
             assert self.position is not None
             oid = f"close{len(self.orders) + 1}"
@@ -615,3 +624,88 @@ async def test_historical_entry_fill_does_not_create_flat_or_opposite_position(t
         assert ledger.protection == []
         assert sum(e.qty for e in entries(bot)) == 80.0
         assert bot._pending_entry is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", ["filled_qty", "avg_fill_price"])
+async def test_terminal_close_missing_fill_details_are_refetched(tmp_path: Path, missing: str) -> None:
+    ledger = OrderLedger()
+    ledger.close_fill_fraction = 0.0
+    bot = make_bot(tmp_path, ledger)
+    be_position(bot, ledger)
+    await bot._emergency_close()
+    ledger.fill_close("close1", 1.0)
+    confirmed = ledger.orders["close1"][missing]
+    ledger.orders["close1"][missing] = None
+    await bot._check_pending_close()
+    assert bot._pending_close is not None
+    assert bot.active_position is not None
+    assert close_events(bot) == []
+    ledger.orders["close1"][missing] = confirmed
+    await bot._check_pending_close()
+    assert bot.active_position is None
+    assert bot._pending_close is None
+    assert len(ledger.requests) == 1
+    assert sum(e.qty for e in close_events(bot)) == 1.0
+
+
+@pytest.mark.asyncio
+async def test_terminal_entry_missing_filled_qty_is_not_zero_fill(tmp_path: Path) -> None:
+    ledger = OrderLedger()
+    bot = make_bot(tmp_path, ledger)
+    await bot._execute_setup(setup())
+    ledger.fill("1", 80.0)
+    ledger.orders["1"]["filled_qty"] = None
+    assert await bot._check_pending_entry()
+    assert bot._pending_entry is not None
+    assert bot.active_position is None
+    ledger.orders["1"]["filled_qty"] = 80.0
+    assert not await bot._check_pending_entry()
+    assert bot.active_position.qty == 80.0
+    assert sum(e.qty for e in entries(bot)) == 80.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["missing", "exception"])
+async def test_pending_close_keeps_restoring_missing_sl_without_resubmission(
+    tmp_path: Path, failure: str,
+) -> None:
+    ledger = OrderLedger()
+    ledger.close_fill_fraction = 0.0
+    ledger.protection_fails = True
+    bot = make_bot(tmp_path, ledger)
+    be_position(bot, ledger)
+    ledger.position["stopLossPrice"] = 0.0
+    assert not await bot._ensure_protective_sl(110.0, 2.0)
+    assert ledger.position["stopLossPrice"] == 0.0
+    intent = bot._pending_close
+    assert intent is not None
+    ledger.protection_fails = False
+    ledger.order_unknown = failure == "missing"
+    ledger.order_read_error = ExchangeError("order lookup denied") if failure == "exception" else None
+    await bot._check_pending_close()
+    assert ledger.position["stopLossPrice"] == 98.0
+    assert bot.active_position.qty == 1.0
+    assert bot._pending_close is intent
+    assert len(ledger.requests) == 1
+    assert close_events(bot) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marker", [True, False, 1, "true"])
+async def test_entry_clears_only_with_explicit_definitive_rejection(tmp_path: Path, marker: object) -> None:
+    ledger = OrderLedger()
+    ledger.reject_entry = True
+    ledger.entry_rejection_code = 110007
+    ledger.definitive_rejection_marker = marker
+    bot = make_bot(tmp_path, ledger)
+    await bot._execute_setup(setup())
+    if marker is True:
+        assert bot._pending_entry is None
+        ledger.reject_entry = False
+        await bot._execute_setup(setup())
+        assert len(ledger.requests) == 2
+    else:
+        assert bot._pending_entry.order_id == "client:rejected"
+        await bot._execute_setup(setup())
+        assert len(ledger.requests) == 1

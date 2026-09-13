@@ -2417,6 +2417,9 @@ class BotIctInstance:
             notify_order_error(
                 str(e), self.notify_cb, self.user_code, self._order_error_alert_ts,
             )
+            if getattr(e, "order_definitively_rejected", False) is True:
+                self._pending_entry = None
+                return  # 어댑터가 원시 주문 거절을 확증한 경우만 새 신호 재시도를 허용.
             # 예외 클래스만으로 실제 미접수를 단정할 수 없다. 주문 조회 식별자를
             # 보존하고 취소·조회에서 잔여 진입 없음이 확인될 때만 의도를 정리한다.
             pe.order_id = str(getattr(e, "order_lookup_id", "") or "")
@@ -2439,6 +2442,27 @@ class BotIctInstance:
             "진입 주문 확인 대기 — %s %s qty=%.6f SL=%.4f order=%s",
             self.symbol, side, qty, setup.stop_loss, pe.order_id or "미확인",
         )
+
+    @staticmethod
+    def _order_fill_known(order: dict[str, Any]) -> bool:
+        """체결 필드 부재와 실제 0체결을 구분한다.
+
+        Args:
+            order: 거래소 주문 응답.
+        Returns:
+            유한한 0 이상 체결 수량이 명시되어 있으면 True.
+        """
+        for key in ("filled_qty", "filled"):
+            value = order.get(key)
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(value) and value >= 0:
+                return True
+        return False
 
     @staticmethod
     def _confirmed_order_fill(order: dict[str, Any]) -> tuple[float, float]:
@@ -2540,6 +2564,8 @@ class BotIctInstance:
         order = await self.client.fetch_order(pe.order_id, self.symbol)
         if not isinstance(order, dict):
             raise RuntimeError("진입 주문 상태 미확인")
+        if not self._order_fill_known(order):
+            raise RuntimeError("진입 주문 체결 수량 미확인")
         return order
 
     async def _check_pending_entry(self) -> bool:
@@ -2619,6 +2645,9 @@ class BotIctInstance:
         except Exception as e:  # noqa: BLE001
             logger.warning("진입 주문 확인/취소 실패 — pending 유지, 신규 진입 보류 (%s): %s", self.symbol, e)
             return True
+        finally:
+            if self._pending_entry is not None and self._pending_close is None:
+                await self._maintain_pending_protection()
 
     async def cancel_pending_entry(self) -> bool:
         """사용자 명령 — pending limit entry 즉시 취소 (TTL 만료 기다리지 않음).
@@ -3227,7 +3256,8 @@ class BotIctInstance:
                 filled, average = self._confirmed_order_fill(order)
                 status = str(order.get("status") or "").lower()
                 terminal = status in {"closed", "canceled", "cancelled", "rejected", "expired"}
-                if not terminal and filled < close.attempt_qty:
+                needs_detail = not self._order_fill_known(order) or (filled > 0 and average <= 0)
+                if needs_detail or (not terminal and filled < close.attempt_qty):
                     if not close.order_id:
                         logger.warning("청산 식별자 미확인 — 재주문 금지 (%s)", self.symbol)
                         return
@@ -3238,6 +3268,8 @@ class BotIctInstance:
                     status = str(order.get("status") or "").lower()
                     terminal = status in {"closed", "canceled", "cancelled", "rejected", "expired"}
                     close.receipt = order
+                if not self._order_fill_known(order):
+                    return
                 terminal = terminal or filled >= close.attempt_qty
                 after = await self.client.fetch_position(self.symbol)
                 actual_qty = float((after or {}).get("contracts", 0) or 0)
@@ -3294,6 +3326,49 @@ class BotIctInstance:
                     await self._apply_partial_be()
             except Exception as e:  # noqa: BLE001
                 logger.warning("청산 체결/잔량 조회 실패 — 상태 유지, 재주문 금지 (%s): %s", self.symbol, e)
+            finally:
+                if self._pending_close is not None:
+                    await self._maintain_pending_protection()
+
+    async def _maintain_pending_protection(self) -> None:
+        """주문 확인 중에도 무SL 잔량을 보호하며 비상청산을 재귀 호출하지 않는다.
+
+        Returns:
+            없음. 포지션·가격 확인 또는 SL 설정 실패 시 기존 intent를 그대로 둔다.
+        """
+        pos = self.active_position
+        if pos is None:
+            return
+        try:
+            actual = await self.client.fetch_position(self.symbol)
+            qty = float((actual or {}).get("contracts", 0) or 0)
+            if not np.isfinite(qty) or qty <= 0:
+                return
+            if self._exchange_position_direction(actual or {}) is not pos.direction:
+                return
+            sl = float(actual.get("stopLossPrice") or actual.get("stop_loss") or 0)
+            if np.isfinite(sl) and sl > 0:
+                return
+            ref = float(actual.get("markPrice") or 0)
+            if not np.isfinite(ref) or ref <= 0:
+                ref = await self.client.fetch_ticker(self.symbol)
+            if ref is None or not np.isfinite(ref) or ref <= 0:
+                return
+            distance = abs(pos.entry - pos.stop_loss)
+            if not np.isfinite(distance) or distance <= 0:
+                distance = ref * _FALLBACK_SL_PCT
+            desired = (
+                pos.stop_loss if self._is_protective_sl(pos.direction, pos.stop_loss, ref)
+                else self._protective_sl(pos.direction, ref, distance)
+            )
+            if not self._is_protective_sl(pos.direction, desired, ref):
+                return
+            result = await self.client.set_position_tpsl(self.symbol, stop_loss=desired)
+            if result:
+                pos.stop_loss = desired
+                logger.warning("주문 확인 대기 중 무SL 잔량 보호 복구 (%s qty=%.6f)", self.symbol, qty)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("주문 확인 대기 중 SL 복구 실패 — intent 유지 (%s): %s", self.symbol, e)
 
     async def _apply_partial_be(self) -> None:
         """부분 청산 후 본전 손절은 거래소 수락 확인 이후에만 적용 완료로 기록한다.
