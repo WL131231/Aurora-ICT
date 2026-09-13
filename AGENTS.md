@@ -64,6 +64,9 @@ C:\Users\지영민\Desktop\aurora-ict-license\    ← 라이선스 admin 텔레�
    **교훈: "오류를 성공으로 우회"하는 코드는 우회 근거가 사라지면 반대로 작동한다.**
 
 **미해결 큐**:
+- 잔고 검사(2026-09-13): Bybit 통합계정은 CCXT 코인별 free 대신 계정 모드별
+  실제 주문 가용액을 사용한다. 조회 실패/음수 가용액은 신규 진입만 보류하며 SL·청산은
+  유지한다. `docs/BYBIT_AVAILABLE_MARGIN_FIX.md` 참고. 계좌별 동시 주문 예약은 미구현.
 - 고정 egress IP 결정 (위)
 - 키 만료로 정지된 슬롯이 재배포 때 `auto_resume` 으로 다시 뜨면서 안내 1통 재발송 —
   `users_db` 에 플래그 두고 키 재등록 전까지 auto_resume 제외 (미구현)

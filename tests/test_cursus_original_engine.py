@@ -16,7 +16,7 @@ from aurora_ict.strategy.silver_bullet import Direction
 
 def _client() -> AsyncMock:
     client = AsyncMock()
-    client.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0}})
+    client.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0, "free": 1000.0}})
     client.fetch_ticker = AsyncMock(return_value=100.0)
     client.place_order = AsyncMock(return_value={"orderId": "C1"})
     client.set_position_tpsl = AsyncMock(return_value={"retCode": 0})

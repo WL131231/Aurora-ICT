@@ -23,6 +23,8 @@ from typing import Any
 import pandas as pd
 from ccxt.base.errors import AuthenticationError, PermissionDenied
 
+from aurora_ict.bot.margin_guard import parse_available_usdt, parse_bybit_available_usdt
+
 logger = logging.getLogger(__name__)
 
 
@@ -543,6 +545,55 @@ class AuroraClientAdapter:
         except Exception as e:  # noqa: BLE001
             self._wlog("fetch_balance 실패: %s", e)
             return {}
+
+    async def fetch_available_usdt(self) -> float | None:
+        """신규 진입에 쓸 가용 증거금만 조회한다 (담당: Codex, 2026-09-13).
+
+        Args:
+            없음.
+        Returns:
+            가용 USDT. 조회 실패, 계정 모드 또는 환산 정보 미확인 시 None.
+        Raises:
+            취소 예외는 호출자에게 전파한다.
+        """
+        ex = getattr(self._client, "_ex", None)
+        if ex is None:
+            return None
+        if getattr(ex, "id", None) != "bybit":
+            return parse_available_usdt(await self.fetch_balance())
+        try:
+            await self._ensure_time_sync()
+            account_info = await ex.private_get_v5_account_info()
+            result = account_info.get("result") if isinstance(account_info, dict) else None
+            if (
+                not isinstance(result, dict)
+                or isinstance(account_info.get("retCode"), bool)
+                or account_info.get("retCode") not in (0, "0")
+            ):
+                self._wlog("계정 모드 응답 이상 — 신규 진입 보류")
+                return None
+            mode = result.get("marginMode")
+            if mode not in ("REGULAR_MARGIN", "PORTFOLIO_MARGIN", "ISOLATED_MARGIN"):
+                self._wlog("계정 모드 미확인 — 신규 진입 보류")
+                return None
+            # 계정 정보 성공만으로 인증 실패 누적을 초기화하지 않는다.
+            # 총잔고/UI용 fetch_balance는 유지하고, 진입 직전 최신 응답만 해석한다.
+            balance = await self.fetch_balance()
+            available = parse_bybit_available_usdt(balance, mode)
+            if available is None:
+                self._wlog("가용 증거금 해석 불가 (모드=%s) — 신규 진입 보류", mode)
+            else:
+                logger.info(
+                    "[%s] 진입 가용 증거금 %.8f USDT (Bybit 모드=%s)",
+                    self._log_label, available, mode,
+                )
+            return available
+        except AuthenticationError as e:
+            self._note_auth_fail("fetch_available_usdt", e)
+            return None
+        except Exception as e:  # noqa: BLE001
+            self._wlog("가용 증거금 조회 실패 (%s) — 신규 진입 보류", type(e).__name__)
+            return None
 
     async def fetch_ticker(self, symbol: str) -> float | None:
         """현재 시장가 (last price) — marketable limit entry 가격 계산용.
