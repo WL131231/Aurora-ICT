@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import time
 from dataclasses import fields
 from types import SimpleNamespace
@@ -276,11 +277,66 @@ async def test_response_loss_can_lookup_same_order_without_resubmit(exchange):
     adapter = adapter_for(exchange)
     with pytest.raises(ccxt.NetworkError) as captured:
         await adapter.place_order(SYMBOL, "buy", 4, price=100, stop_loss=98)
+    assert getattr(captured.value, "order_definitively_rejected", False) is False
     result = await adapter.fetch_order(captured.value.order_lookup_id, SYMBOL)
     assert result["id"] == "order-1"
     assert result["filled_qty"] == 0
     assert len(exchange.orders) == 1
     assert [name for name, _ in exchange.calls].count("create") == 1
+
+
+@pytest.mark.parametrize("ret_code,definitive", [
+    (110007, True), ("110007", True), (110004, False), (10005, False),
+])
+async def test_raw_bybit_insufficient_funds_is_definitively_rejected(exchange, ret_code, definitive):
+    """실제 CCXT 오류 분류와 원시 retCode를 함께 확인한 110007만 미접수로 판정한다."""
+    response = {"retCode": ret_code, "retMsg": "synthetic exchange rejection", "result": {}}
+    body = json.dumps(response)
+    with pytest.raises(ccxt.BaseError) as parsed:
+        exchange.parser.handle_errors(
+            200, "OK", "https://api.bybit.com/v5/order/create", "POST",
+            {}, body, response, {}, "{}",
+        )
+    exchange.create_error = parsed.value
+    adapter = adapter_for(exchange)
+    with pytest.raises(ccxt.BaseError) as captured:
+        await adapter.place_order(SYMBOL, "buy", 4, price=100, stop_loss=98)
+    assert getattr(captured.value, "order_definitively_rejected", False) is definitive
+    assert captured.value.order_lookup_id.startswith("client:AUR")
+    assert exchange.orders == []
+    assert [name for name, _ in exchange.calls].count("create") == 1
+
+
+@pytest.mark.parametrize("error_type,message", [
+    (ccxt.InsufficientFunds, "110007 balance insufficient"),
+    (ccxt.InsufficientFunds, 'bybit {"retCode":110004}'),
+    (ccxt.InsufficientFunds, 'bybit {"retCode":110007.0}'),
+    (ccxt.InsufficientFunds, 'another-exchange {"retCode":110007}'),
+    (ccxt.NetworkError, 'bybit {"retCode":110007}'),
+    (ccxt.ExchangeError, 'bybit {"retCode":110007}'),
+])
+async def test_rejection_text_or_untyped_error_is_not_proof(exchange, error_type, message):
+    """문구 일치나 일반 예외만으로 주문이 미접수됐다고 추정하지 않는다."""
+    exchange.create_error = error_type(message)
+    with pytest.raises(ccxt.BaseError) as captured:
+        await adapter_for(exchange).place_order(SYMBOL, "buy", 4, price=100, stop_loss=98)
+    assert getattr(captured.value, "order_definitively_rejected", False) is False
+    assert captured.value.order_lookup_id.startswith("client:AUR")
+
+
+@pytest.mark.parametrize("price", [None, 100.0])
+async def test_attached_sl_survives_actual_ccxt_request_conversion(exchange, price):
+    """Origo SL 파라미터가 실제 CCXT 시장가/지정가 요청에도 보존된다."""
+    await adapter_for(exchange).place_order(SYMBOL, "buy", 4, price=price, stop_loss=98)
+    params = next(value for name, value in exchange.calls if name == "create")
+    request = exchange.parser.create_order_request(
+        SYMBOL, "market" if price is None else "limit", "buy", 4, price, params, True,
+    )
+    assert request["stopLoss"] == "98"
+    assert request["tpslMode"] == "Full"
+    assert request["slOrderType"] == "Market"
+    assert request["orderLinkId"].startswith("AUR")
+    assert "reduceOnly" not in request
 
 
 async def test_order_history_fallback_is_exact_and_notfound_is_unknown(exchange):

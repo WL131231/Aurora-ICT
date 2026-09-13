@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import time
@@ -14,7 +15,7 @@ from typing import Any, Literal
 
 import ccxt
 import pandas as pd
-from ccxt.base.errors import AuthenticationError, ExchangeError, PermissionDenied
+from ccxt.base.errors import AuthenticationError, ExchangeError, InsufficientFunds, PermissionDenied
 
 from aurora.config import settings
 from aurora.exchange.base import Order, Position, normalize_side
@@ -183,6 +184,17 @@ class OrigoCcxtClient(CcxtClient):
         except Exception as exc:
             # 응답 유실 후에는 동일 태그로 조회만 한다. 새 UUID로 재주문하지 않는다.
             exc.order_lookup_id = "client:" + params["orderLinkId"]
+            if getattr(self._ex, "id", None) == "bybit" and isinstance(exc, InsufficientFunds):
+                # ccxt 4.4 create_order는 주문 응답 뒤 private 호출을 하지 않는다.
+                # 명시적 110007 거절만 미접수 증거로 인정하고 일반 오류는 보존한다.
+                prefix, _, body = str(exc).partition(" ")
+                try:
+                    response = json.loads(body) if prefix == "bybit" else None
+                except (TypeError, ValueError):
+                    response = None
+                code = response.get("retCode") if isinstance(response, dict) else None
+                if type(code) in (int, str) and code in (110007, "110007"):
+                    exc.order_definitively_rejected = True
             raise
         return self._parse_order(raw, symbol, side, qty, price)
 
