@@ -44,6 +44,7 @@ C:\Users\지영민\Desktop\aurora-ict-license\    ← 라이선스 admin 텔레�
 - `src/aurora_ict/api/trades_router.py` — 매매기록(JSONL = source of truth, sqlite 는 조회용)
 - `ui_ict/` — 실제 서빙되는 웹 UI (`ui/` 는 옛것, 건드리지 말 것)
 - `docs/RUNBOOK_INCIDENT.md` — 장애 복구 절차(실측 기록). `docs/FST.md` — 장기 로드맵
+- `docs/LEARNING_SOURCES.md` — PDF·공개 노션 학습 출처, 열람 범위, 불일치(학습은 전략 채택 아님)
 - `docs/*.pine` — 트뷰 파인 지표(차트용). 봇 로직과 규칙을 맞춰야 하는 것들이 있다(아래 §7)
 
 ## 3. 지금 상태 (2026-09-13)
@@ -80,6 +81,10 @@ C:\Users\지영민\Desktop\aurora-ict-license\    ← 라이선스 admin 텔레�
   실제 포지션·SL 유무) · `/admin/trades/purge`. 헤더 `X-Admin-Token` 필요 — **토큰은 파트너에게
   받는다. 이 파일·코드·커밋 어디에도 적지 않는다.**
 - **매매기록 수집은 파트너가 CSV 를 주기 전에 위 API 로 직접 당긴다** (허용됨).
+- **로컬 수집·분석 도구**: `python scripts/trade_analysis.py sync` — 프로세스의
+  `AURORA_ICT_ADMIN_TOKEN` 필요. 토큰 부재 시 비밀을 탐색하지 않고 중단한다.
+  저장·인증·포지션 집계 한계는 `docs/TRADE_ANALYSIS.md` 필독. 결과는 Git 제외
+  `data/trade_analysis/`에 보관하며 기록 손익을 검증된 순손익으로 부르지 않는다.
 - fly 앱 3개: `aurora-ict-one`(봇+UI, sin) · `aurora-admin-bot`(라이선스, nrt) · `star-alert-bot`(알림, sin).
   admin-bot 은 `fly deploy` 후 머신이 stopped 로 남는 버릇이 있어 `fly machine start` 필요.
 - Supabase(라이선스 DB, 무료 티어)는 무활동 시 자동 정지된 적이 있다(7/7, 9/8). 증상 =
