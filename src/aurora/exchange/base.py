@@ -13,8 +13,8 @@ Protocol 과 도메인 dataclass (``Order`` / ``Position`` / ``Balance``) 를 �
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from dataclasses import dataclass
+from typing import Literal, Protocol
 
 import pandas as pd
 
@@ -58,12 +58,6 @@ class Order:
     price: float | None  # None이면 시장가
     status: str
     timestamp_ms: int
-    # 담당: Codex. 주문 수량/지정가는 체결 수량/평균가와 구분해 보존한다.
-    filled_qty: float | None = None
-    avg_fill_price: float | None = None
-    remaining: float | None = None
-    client_order_id: str | None = None
-    raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
 @dataclass(slots=True)
@@ -77,8 +71,6 @@ class Position:
     leverage: int
     unrealized_pnl: float
     margin_mode: Literal["isolated", "cross"]
-    # SL/청산가/거래소 방향 등 표준 필드 밖의 보호 정보를 어댑터까지 유지한다.
-    raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
 @dataclass(slots=True)

@@ -2,10 +2,10 @@
 
 9/10~11 실측(TDAF): 읽기 전용 키로 재등록 → SL 등록 10005 → 비상청산 10005 →
 어댑터가 '포지션 있으니 성공' 으로 처리 → 가짜 청산 기록 → 재입양 → 1분마다 반복
-(4,202건). 이 파일은 (1) 어댑터가 해당 주문의 실제 조회 근거 없이 성공을 인정하지 않는지,
+(4,202건). 이 파일은 (1) 어댑터가 주문 전후 상태 변화로만 성공을 인정하는지,
 (2) 봇이 쓰기 거부 연속이면 정지+안내하는지, (3) 정리 도구가 안전한지 본다.
 
-기존 모의 객체 회귀 테스트. 실제 어댑터 연결 검증은 test_execution_adapter_contracts.py에 있다.
+mock 0 — 결정론적 AsyncMock 만.
 """
 
 from __future__ import annotations
@@ -81,13 +81,13 @@ async def test_reduce_only_10005_with_position_unchanged_is_failure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reduce_only_10005_with_unattributed_reduction_is_failure() -> None:
-    """다른 청산의 수량 감소만으로 권한 거부된 주문의 성공을 인정하지 않는다."""
+async def test_reduce_only_10005_with_position_reduced_is_success() -> None:
+    """청산 주문 10005 인데 수량이 줄었으면 진짜 false positive → 성공."""
     inner = _inner(pos_qty_seq=[0.05, 0.0], open_orders_seq=[0, 0])
     adapter = AuroraClientAdapter(inner)
-    with pytest.raises(PermissionDenied):
-        await adapter.place_order("BTC/USDT:USDT", "sell", 0.05, reduce_only=True)
-    assert adapter.write_fail_streak == 1
+    r = await adapter.place_order("BTC/USDT:USDT", "sell", 0.05, reduce_only=True)
+    assert r["info"]["ccxt_false_positive"] is True
+    assert adapter.write_fail_streak == 0
 
 
 @pytest.mark.asyncio
@@ -104,23 +104,22 @@ async def test_entry_10005_with_existing_position_unchanged_is_failure() -> None
 
 
 @pytest.mark.asyncio
-async def test_entry_10005_with_unattributed_pending_order_is_failure() -> None:
-    """다른 봇 주문 증가만으로 해당 요청의 접수 성공을 추정하지 않는다."""
+async def test_entry_10005_with_new_pending_order_is_success() -> None:
+    """진입 지정가 10005 인데 봇 태그 대기주문이 새로 생겼으면 성공(6월 false positive)."""
     inner = _inner(pos_qty_seq=[0.0, 0.0], open_orders_seq=[0, 1])
     adapter = AuroraClientAdapter(inner)
-    with pytest.raises(PermissionDenied):
-        await adapter.place_order("BTC/USDT:USDT", "buy", 0.005, price=78650.0)
-    assert adapter.write_fail_streak == 1
+    r = await adapter.place_order("BTC/USDT:USDT", "buy", 0.005, price=78650.0)
+    assert r["status"] == "open_uta_false_positive"
+    assert adapter.write_fail_streak == 0
 
 
 @pytest.mark.asyncio
-async def test_entry_10005_with_unattributed_growth_is_failure() -> None:
-    """수동 증액이나 다른 주문 체결을 해당 주문 성공으로 오인하지 않는다."""
+async def test_entry_10005_with_position_grown_is_success() -> None:
     inner = _inner(pos_qty_seq=[0.0, 0.005], open_orders_seq=[0, 0])
     adapter = AuroraClientAdapter(inner)
-    with pytest.raises(PermissionDenied):
-        await adapter.place_order("BTC/USDT:USDT", "buy", 0.005)
-    assert adapter.write_fail_streak == 1
+    r = await adapter.place_order("BTC/USDT:USDT", "buy", 0.005)
+    assert r["info"]["retCode"] == 10005
+    assert adapter.write_fail_streak == 0
 
 
 @pytest.mark.asyncio

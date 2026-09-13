@@ -15,7 +15,6 @@ DESIGN.md §3.1 ~ §3.3 / §11 E-1 ~ E-14 정합:
 from __future__ import annotations
 
 import logging
-import math
 import time
 from typing import Any, Literal
 
@@ -63,47 +62,6 @@ def _is_bot_order(o: dict[str, Any]) -> bool:
     if not cid:
         cid = (o.get("info") or {}).get("orderLinkId") or ""
     return isinstance(cid, str) and cid.startswith(BOT_ORDER_TAG)
-
-
-def _is_bot_entry_order(order: dict[str, Any]) -> bool:
-    """보호/청산 주문을 제외한 봇 진입 주문인지 판정한다 (담당: Codex).
-
-    Args:
-        order: ccxt 표준 주문.
-    Returns:
-        봇 태그가 있고 청산/보호 목적이 아닐 때 True.
-    Raises:
-        없음.
-    """
-    if not _is_bot_order(order):
-        return False
-    info = order.get("info") or {}
-    for key in ("reduceOnly", "closeOnTrigger"):
-        value = order.get(key)
-        if value is None:
-            value = info.get(key)
-        if value not in (None, False, 0, "", "false", "False"):
-            return False
-    return not info.get("stopOrderType") and not order.get("stopOrderType")
-
-
-def _optional_order_number(value: Any) -> float | None:
-    """체결 응답의 유한한 비음수 숫자만 반환한다.
-
-    Args:
-        value: 거래소 원시 값.
-    Returns:
-        유효한 숫자 또는 미확인 None.
-    Raises:
-        없음.
-    """
-    if value is None or isinstance(value, bool) or value == "":
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) and number >= 0 else None
 
 
 # tenacity retry — DESIGN.md §3.3 / E-12. PR-2 #31 _fetch_page 와 동일 정책.
@@ -359,20 +317,10 @@ class CcxtClient:
             return None
         await self._ensure_init()
         positions = await self._ex.fetch_positions([symbol])
-        if not isinstance(positions, list):
-            raise ccxt.ExchangeError("포지션 목록 미확인")
-        active = []
         for raw in positions:
-            if not isinstance(raw, dict) or raw.get("symbol", symbol) != symbol:
-                raise ccxt.ExchangeError("포지션 응답 심볼/자료형 미확인")
-            quantity = _optional_order_number(raw.get("contracts"))
-            if quantity is None:
-                raise ccxt.ExchangeError("포지션 응답 수량 미확인")
-            if quantity > 0:
-                active.append(self._parse_position(raw))
-        if len(active) > 1:
-            raise ccxt.ExchangeError("복수 포지션 — 원웨이 상태 미확인")
-        return active[0] if active else None
+            if (raw.get("contracts") or 0) > 0:
+                return self._parse_position(raw)
+        return None
 
     async def get_positions(self) -> list[Position]:
         """모든 페어 포지션 — 대시보드 / multi-pair 운영용.
@@ -420,8 +368,13 @@ class CcxtClient:
         # normalize_side 는 long/buy · short/sell 을 모두 인식한다.
         _side = normalize_side(raw.get("side"))
         if _side is None:
-            raise ccxt.ExchangeError("포지션 방향 미확인 — 임의 방향으로 관리하지 않음")
-        side: Literal["long", "short"] = _side
+            # 인식 불가 — 임의 단정은 위험하지만 Position.side 는 필수 필드다.
+            # 크게 로그를 남기고 기존 기본값을 유지한다(호출측이 qty/entry 로 교차 확인).
+            logger.error(
+                "position side 인식 실패 (symbol=%s side=%r) — long 으로 가정",
+                raw.get("symbol"), raw.get("side"),
+            )
+        side: Literal["long", "short"] = _side or "long"
         margin_raw = raw.get("marginMode", "isolated")
         margin_mode: Literal["isolated", "cross"] = (
             "cross" if margin_raw == "cross" else "isolated"
@@ -434,7 +387,6 @@ class CcxtClient:
             leverage=int(raw.get("leverage") or 1),
             unrealized_pnl=float(raw.get("unrealizedPnl") or 0),
             margin_mode=margin_mode,
-            raw=dict(raw),
         )
 
     # ============================================================
@@ -470,134 +422,12 @@ class CcxtClient:
         params["orderLinkId"] = _gen_bot_order_link_id()
         if reduce_only:
             params["reduceOnly"] = True
-        if stop_loss is not None and not reduce_only:
+        if stop_loss is not None:
             params["stopLoss"] = str(stop_loss)
-            if getattr(self._ex, "id", None) == "bybit":
-                params["tpslMode"] = "Full"
-                params["slOrderType"] = "Market"
-        if take_profit is not None and not reduce_only:
+        if take_profit is not None:
             params["takeProfit"] = str(take_profit)
-        try:
-            raw = await self._ex.create_order(symbol, order_type, side, qty, price, params)
-        except Exception as exc:
-            # 응답 유실 후에는 동일 태그로 조회만 한다. 새 UUID로 재주문하지 않는다.
-            exc.order_lookup_id = "client:" + params["orderLinkId"]
-            raise
+        raw = await self._ex.create_order(symbol, order_type, side, qty, price, params)
         return self._parse_order(raw, symbol, side, qty, price)
-
-    async def fetch_order(self, order_id: str, symbol: str) -> Order:
-        """특정 주문의 접수/체결 상태를 재조회한다 (담당: Codex).
-
-        Args:
-            order_id: 거래소 ID 또는 응답 유실 때 저장한 client:AUR... 조회 키.
-            symbol: ccxt 통합 심볼.
-        Returns:
-            실제 주문 응답. 수량/가격 미확인은 None 필드로 보존한다.
-        Raises:
-            ccxt.BaseError: 조회 실패 또는 주문 상태 미확인.
-        """
-        if not order_id:
-            raise ccxt.OrderNotFound("주문 ID 미확인")
-        if settings.run_mode == "paper":
-            raise ccxt.OrderNotFound("paper 주문 조회 장부가 없음")
-        await self._ensure_init()
-        if getattr(self._ex, "id", None) == "bybit":
-            market = self._ex.market(symbol)
-            key = "orderLinkId" if order_id.startswith("client:") else "orderId"
-            lookup = order_id.removeprefix("client:") if key == "orderLinkId" else order_id
-            request = {"category": "linear", "symbol": market["id"], key: lookup}
-            raw = None
-            # 실시간 캐시에서 사라진 종료 주문은 거래 이력으로 다시 확인한다.
-            for endpoint in (
-                self._ex.private_get_v5_order_realtime,
-                self._ex.private_get_v5_order_history,
-            ):
-                response = await endpoint(request)
-                rows, _ = self._bybit_order_page(response)
-                matches = [row for row in rows if row.get(key) == lookup]
-                if matches:
-                    if len(matches) != 1:
-                        raise ccxt.ExchangeError("단일 주문 조회 결과가 중복됨")
-                    raw = self._ex.parse_order(matches[0], market)
-                    break
-            if raw is None:
-                raise ccxt.OrderNotFound("주문 미확인 — 미접수/종료로 단정하지 않음")
-        else:
-            if order_id.startswith("client:"):
-                raise ccxt.NotSupported("이 거래소의 사용자 주문 ID 조회는 미지원")
-            raw = await self._ex.fetch_order(order_id, symbol)
-        side = normalize_side(raw.get("side"))
-        if side is None or not raw.get("id"):
-            raise ccxt.ExchangeError("주문 ID/방향 미확인")
-        return self._parse_order(
-            raw, symbol, "buy" if side == "long" else "sell",
-            _optional_order_number(raw.get("amount")) or 0.0, None,
-        )
-
-    @staticmethod
-    def _bybit_order_page(response: Any) -> tuple[list[dict[str, Any]], str]:
-        """Bybit 주문 조회 응답을 검증하고 페이지를 반환한다.
-
-        Args:
-            response: 거래소 JSON 응답.
-        Returns:
-            주문 행과 다음 페이지 커서.
-        Raises:
-            ccxt.ExchangeError: 실패 응답 또는 잘못된 구조.
-        """
-        if (
-            not isinstance(response, dict)
-            or isinstance(response.get("retCode"), bool)
-            or response.get("retCode") not in (0, "0")
-        ):
-            raise ccxt.ExchangeError("Bybit 주문 조회 응답 실패")
-        result = response.get("result")
-        rows = result.get("list") if isinstance(result, dict) else None
-        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
-            raise ccxt.ExchangeError("Bybit 주문 목록 미확인")
-        cursor = result.get("nextPageCursor") or ""
-        if not isinstance(cursor, str):
-            raise ccxt.ExchangeError("Bybit 주문 페이지 커서 미확인")
-        return rows, cursor
-
-    async def fetch_open_entry_orders(self, symbol: str) -> list[dict[str, Any]]:
-        """해당 심볼의 봇 진입 주문을 누락 없이 조회한다.
-
-        Args:
-            symbol: ccxt 통합 심볼.
-        Returns:
-            청산/보호 주문을 제외한 봇 진입 대기 주문.
-        Raises:
-            ccxt.BaseError: 조회 실패, 반복 커서 또는 페이지 상한 초과.
-        """
-        if settings.run_mode == "paper":
-            return []
-        await self._ensure_init()
-        if getattr(self._ex, "id", None) != "bybit":
-            orders = await self._ex.fetch_open_orders(symbol)
-        else:
-            market = self._ex.market(symbol)
-            request: dict[str, Any] = {
-                "category": "linear", "symbol": market["id"], "openOnly": 0, "limit": 50,
-            }
-            orders = []
-            cursors: set[str] = set()
-            # 거래소 심볼별 상한보다 큰 1,000행. 잘린 목록을 취소 완료로 쓰지 않는다.
-            for _ in range(20):
-                response = await self._ex.private_get_v5_order_realtime(request)
-                rows, cursor = self._bybit_order_page(response)
-                orders.extend(self._ex.parse_order(row, market) for row in rows)
-                if not cursor:
-                    break
-                if cursor in cursors:
-                    raise ccxt.ExchangeError("진입 주문 목록 페이지가 반복됨")
-                cursors.add(cursor)
-                request["cursor"] = cursor
-            else:
-                raise ccxt.ExchangeError("진입 주문 목록 페이지 상한 초과")
-        if not isinstance(orders, list) or any(not isinstance(o, dict) for o in orders):
-            raise ccxt.ExchangeError("진입 주문 목록 미확인")
-        return [order for order in orders if _is_bot_entry_order(order)]
 
     async def fetch_symbol_meta(self, symbol: str) -> dict[str, float | None]:
         """심볼별 거래소 메타 — 최소수량 / lot step / 최대 레버리지.
@@ -724,33 +554,28 @@ class CcxtClient:
         await self._ex.cancel_all_orders(symbol)
 
     async def cancel_bot_orders(self, symbol: str) -> int:
-        """봇 진입 주문만 취소하고 실제 대기 잔량이 없음을 확인한다.
+        """봇이 낸 주문(orderLinkId=BOT_ORDER_TAG*)만 취소 — 유저 수동 주문 보존.
 
         cancel_all(전체 취소)과 달리 미체결 주문을 조회해 봇 태그가 붙은 것만
         개별 취소. 재시작 고아 주문 청소가 유저 수동 지정가를 지우지 않게 한다.
         paper 모드는 noop.
 
         Returns:
-            취소 접수 수. 0도 대기 주문이 없다고 확인한 결과다.
-        Raises:
-            ccxt.BaseError: 취소/조회 실패 또는 취소 접수 후에도 대기 주문이 남음.
+            취소한 주문 수.
         """
         if settings.run_mode == "paper":
             return 0
         await self._ensure_init()
-        orders = await self.fetch_open_entry_orders(symbol)
+        orders = await self._ex.fetch_open_orders(symbol)
         n = 0
         for o in orders:
-            if not o.get("id"):
-                raise ccxt.ExchangeError("취소할 진입 주문 ID 미확인")
+            if not _is_bot_order(o):
+                continue
             try:
                 await self._ex.cancel_order(o["id"], symbol)
                 n += 1
-            except ccxt.OrderNotFound:
-                # 취소와 체결 경합은 최종 대기 주문 조회로 판단한다.
-                continue
-        if await self.fetch_open_entry_orders(symbol):
-            raise ccxt.ExchangeError("봇 진입 주문 취소 미확인 — 대기 상태 보존")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("cancel_bot_orders: %s 취소 실패: %s", o.get("id"), e)
         return n
 
     async def position_opened_by_bot(
@@ -1013,11 +838,6 @@ class CcxtClient:
             price=float(raw["price"]) if raw.get("price") is not None else price,
             status=str(raw.get("status") or ""),
             timestamp_ms=int(raw.get("timestamp") or 0),
-            filled_qty=_optional_order_number(raw.get("filled")),
-            avg_fill_price=_optional_order_number(raw.get("average")),
-            remaining=_optional_order_number(raw.get("remaining")),
-            client_order_id=raw.get("clientOrderId"),
-            raw=dict(raw),
         )
 
     @staticmethod
@@ -1037,7 +857,4 @@ class CcxtClient:
             price=price,
             status="filled",
             timestamp_ms=ts_ms,
-            filled_qty=qty,
-            avg_fill_price=price,
-            remaining=0.0,
         )

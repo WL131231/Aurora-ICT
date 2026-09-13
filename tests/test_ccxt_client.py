@@ -745,8 +745,7 @@ async def test_place_order_adds_bot_tag() -> None:
 
 @pytest.mark.asyncio
 async def test_cancel_bot_orders_only_cancels_tagged() -> None:
-    """봇 주문만 취소 시도하고, 목록에 남으면 완료로 오인하지 않는다."""
-    from ccxt.base.errors import ExchangeError
+    """cancel_bot_orders 는 봇 태그 주문만 취소, 유저 수동 주문 보존."""
     from aurora.exchange.ccxt_client import _gen_bot_order_link_id
 
     bot_oid = _gen_bot_order_link_id()
@@ -757,8 +756,8 @@ async def test_cancel_bot_orders_only_cancels_tagged() -> None:
         {"id": "bot2", "info": {"orderLinkId": _gen_bot_order_link_id()}},
     ])
     client._mock_ex.cancel_order = AsyncMock(return_value=None)  # type: ignore[attr-defined]
-    with pytest.raises(ExchangeError, match="취소 미확인"):
-        await client.cancel_bot_orders("BTC/USDT:USDT")
+    n = await client.cancel_bot_orders("BTC/USDT:USDT")
+    assert n == 2  # 봇 주문 2건만
     cancelled_ids = {
         c.args[0] for c in client._mock_ex.cancel_order.call_args_list  # type: ignore[attr-defined]
     }

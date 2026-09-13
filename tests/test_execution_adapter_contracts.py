@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import copy
 import time
+from dataclasses import fields
+from types import SimpleNamespace
 from typing import Any
 
 import ccxt
@@ -14,8 +16,8 @@ import pandas as pd
 import pytest
 
 from aurora.config import settings
-from aurora.exchange.ccxt_client import CcxtClient
-from aurora_ict.bot.aurora_adapter import AuroraClientAdapter
+from aurora_ict.bot.origo_adapter import OrigoCcxtClient as CcxtClient
+from aurora_ict.bot.origo_adapter import OrigoClientAdapter as AuroraClientAdapter
 
 SYMBOL = "BTC/USDT:USDT"
 MARKET = {
@@ -337,3 +339,43 @@ async def test_public_candle_success_does_not_reset_auth_failure():
     adapter.last_auth_error = "33004 expired"
     assert await adapter.fetch_ohlcv(SYMBOL, "5m", 2) == []
     assert adapter.auth_fail_streak == 2
+
+
+async def test_factories_isolate_origo_without_changing_cursus_clients():
+    """실제 factory의 클래스 선택만 검증한다. 주문/시세/인증 API는 호출하지 않는다."""
+    from aurora.exchange.ccxt_client import CcxtClient as LegacyCcxtClient
+    from aurora_ict.bot import aurora_client_factory, origo_client_factory
+    from aurora_ict.bot.aurora_adapter import AuroraClientAdapter as LegacyAdapter
+
+    config = SimpleNamespace(active_api_key="", active_api_secret="", is_demo=False)
+    legacy = await aurora_client_factory(config)
+    strict = await origo_client_factory(config)
+    try:
+        assert type(legacy) is LegacyAdapter
+        assert type(legacy._client) is LegacyCcxtClient
+        assert type(strict) is AuroraClientAdapter
+        assert type(strict._client) is CcxtClient
+        assert legacy._client._initialized is False
+        assert strict._client._initialized is False
+        assert not hasattr(legacy._client, "fetch_order")
+        assert not hasattr(legacy, "validate_trading_credentials")
+        assert callable(strict.fetch_order)
+        assert callable(strict.validate_trading_credentials)
+    finally:
+        await legacy._client.close()
+        await strict._client.close()
+
+
+def test_fill_metadata_is_only_on_origo_dataclass_subclasses():
+    """공통 Order/Position 필드를 바꾸지 않고 Origo만 메타데이터를 갖는다."""
+    from aurora.exchange.base import Order, Position
+    from aurora_ict.bot.origo_adapter import OrigoOrder, OrigoPosition
+
+    assert "filled_qty" not in {field.name for field in fields(Order)}
+    assert "raw" not in {field.name for field in fields(Position)}
+    assert {"filled_qty", "avg_fill_price", "remaining", "raw"} <= {
+        field.name for field in fields(OrigoOrder)
+    }
+    assert "raw" in {field.name for field in fields(OrigoPosition)}
+    assert issubclass(OrigoOrder, Order)
+    assert issubclass(OrigoPosition, Position)
