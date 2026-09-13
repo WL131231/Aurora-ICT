@@ -15,24 +15,19 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
-
 import pytest
 
 from aurora_ict.bot.bot_ict_instance import BotIctInstance, _ActivePosition
 from aurora_ict.indicators.fvg import FVGType
 from aurora_ict.strategy.htf_fvg_map import HtfFvgEntry
 from aurora_ict.strategy.silver_bullet import Direction
+from tests.test_origo_execution_safety import OrderLedger
 
 
-def _client() -> AsyncMock:
-    c = AsyncMock()
-    c.fetch_ticker = AsyncMock(return_value=101.0)
-    c.place_order = AsyncMock(return_value={"orderId": "X1"})
-    c.set_position_tpsl = AsyncMock(return_value={"retCode": 0})
-    c.modify_stop_loss = AsyncMock(return_value={"retCode": 0})
-    c.fetch_position = AsyncMock(return_value=None)
-    c.fetch_balance = AsyncMock(return_value={"USDT": {"total": 1000.0}})
+def _client() -> OrderLedger:
+    c = OrderLedger()
+    c.price = 101.0
+    c.position = dict(contracts=1.0, side="long", entryPrice=100.0)
     return c
 
 
@@ -88,25 +83,27 @@ async def test_gate_blocks_below_min_r() -> None:
     bot = _bot(1.5)
     bot.active_position = _pos()
     await bot.handle_htf_flip(trigger_price=101.0, ts_ms=1_000, target=_target())
-    bot.client.place_order.assert_not_awaited()
+    assert bot.client.requests == []
     assert bot.active_position is not None          # 포지션 유지
     assert bot._flip_done_for_ts != 1_000           # flag 안 세움 → 재평가 가능
 
 
 @pytest.mark.asyncio
-async def test_gate_allows_at_min_r() -> None:
+async def test_gate_allows_at_min_r(tmp_path) -> None:
     """1.5R 도달 시 flip 실행 — 기존 경로 회귀 없음."""
     bot = _bot(1.5)
+    bot.trades_data_dir = tmp_path
     bot.active_position = _pos()
     await bot.handle_htf_flip(trigger_price=103.0, ts_ms=2_000, target=_target())
-    bot.client.place_order.assert_awaited()         # 청산 주문 발생
+    assert len(bot.client.requests) == 1
     assert bot._flip_done_for_ts == 2_000
 
 
 @pytest.mark.asyncio
-async def test_gate_disabled_keeps_legacy() -> None:
+async def test_gate_disabled_keeps_legacy(tmp_path) -> None:
     """flip_min_r=0 이면 이익 0.5R 이라도 기존대로 flip (하위 호환)."""
     bot = _bot(0.0)
+    bot.trades_data_dir = tmp_path
     bot.active_position = _pos()
     await bot.handle_htf_flip(trigger_price=101.0, ts_ms=3_000, target=_target())
-    bot.client.place_order.assert_awaited()
+    assert len(bot.client.requests) == 1

@@ -15,6 +15,7 @@ from ccxt.base.errors import ExchangeError, RequestTimeout
 from aurora_ict.bot.bot_ict_instance import BotIctInstance, BotState, _ActivePosition
 from aurora_ict.indicators.fvg import FVG, FVGType
 from aurora_ict.interfaces.trades_store import TradeEventType
+from aurora_ict.strategy.htf_fvg_map import HtfFvgEntry
 from aurora_ict.strategy.silver_bullet import Direction, SilverBulletSetup
 
 SYMBOL = "BTC/USDT:USDT"
@@ -38,6 +39,13 @@ class OrderLedger:
         self.immediate_fill_fraction = 0.0
         self.cancel_fill_fraction = 0.0
         self.cancel_calls = 0
+        self.close_fill_fraction = 1.0
+        self.close_terminal = False
+        self.close_response_lost = False
+        self.defer_close_position = False
+        self.fail_after_close_submit = False
+        self.protection_fails = False
+        self.response_error_type: type[Exception] = RequestTimeout
 
     async def fetch_balance(self) -> dict[str, Any]:
         return {"USDT": {"total": 1000.0, "free": 1000.0}}
@@ -69,11 +77,21 @@ class OrderLedger:
             raise ExchangeError("10001: StopLoss is on the wrong side")
         if reduce_only:
             assert self.position is not None
-            actual = min(qty, self.position["contracts"])
-            self.position["contracts"] -= actual
-            if not self.position["contracts"]:
-                self.position = None
-            return dict(id="close", filled_qty=actual, avg_fill_price=self.price, status="closed")
+            oid = f"close{len(self.orders) + 1}"
+            self.orders[oid] = dict(
+                id=oid, qty=qty, status="open", filled_qty=0.0,
+                avg_fill_price=0.0, reduce_only=True,
+            )
+            self.fill_close(oid, qty * self.close_fill_fraction)
+            if self.close_terminal and self.orders[oid]["status"] == "open":
+                self.orders[oid]["status"] = "canceled"
+            if self.fail_after_close_submit:
+                self.position_read_fails = True
+            if self.close_response_lost:
+                error = self.response_error_type("합성 청산 응답 유실")
+                error.order_lookup_id = f"client:{oid}"
+                raise error
+            return dict(self.orders[oid])
         oid = str(len(self.orders) + 1)
         self.orders[oid] = dict(
             id=oid, status="open", filled_qty=0.0, avg_fill_price=0.0,
@@ -82,7 +100,7 @@ class OrderLedger:
         if self.immediate_fill_fraction:
             self.fill(oid, qty * self.immediate_fill_fraction)
         if self.lose_response:
-            error = RequestTimeout("합성 접수 응답 유실")
+            error = self.response_error_type("합성 접수 응답 유실")
             error.order_lookup_id = f"client:{oid}"
             raise error
         return dict(self.orders[oid])
@@ -106,7 +124,7 @@ class OrderLedger:
             raise RequestTimeout("합성 취소 미확인")
         count = 0
         for oid, order in self.orders.items():
-            if order["status"] != "open":
+            if order["status"] != "open" or order.get("reduce_only"):
                 continue
             if self.cancel_fill_fraction:
                 self.fill(oid, order["qty"] * self.cancel_fill_fraction)
@@ -114,12 +132,25 @@ class OrderLedger:
             if order["status"] == "open":
                 order["status"] = "canceled"
             count += 1
-        assert not any(order["status"] == "open" for order in self.orders.values())
+        assert not any(order["status"] == "open" and not order.get("reduce_only") for order in self.orders.values())
         return count
+
+    def fill_close(self, order_id: str, cumulative: float) -> None:
+        order = self.orders[order_id]
+        delta = cumulative - order["filled_qty"]
+        assert 0 <= delta and cumulative <= order["qty"]
+        order.update(filled_qty=cumulative, avg_fill_price=self.price)
+        if cumulative == order["qty"]:
+            order["status"] = "closed"
+        if delta and not self.defer_close_position:
+            assert self.position is not None
+            self.position["contracts"] -= delta
+            if self.position["contracts"] <= 1e-9:
+                self.position = None
 
     async def set_position_tpsl(self, symbol: str, **params: Any) -> dict[str, int]:
         self.protection.append(dict(params))
-        if self.position is None:
+        if self.position is None or self.protection_fails:
             return {}
         if params.get("stop_loss") is not None:
             self.position["stopLossPrice"] = params["stop_loss"]
@@ -186,13 +217,19 @@ async def test_sl_rejection_never_retries_without_sl(tmp_path: Path) -> None:
     assert len(ledger.requests) == 1
     assert ledger.requests[0]["stop_loss"] == 98.0
     assert ledger.orders == {}
+    assert bot._pending_entry is not None
+    assert not await bot._check_pending_entry()
     assert bot._pending_entry is None
 
 
 @pytest.mark.asyncio
-async def test_unknown_submission_tracks_lookup_and_blocks_duplicate(tmp_path: Path) -> None:
+@pytest.mark.parametrize("error_type", [RequestTimeout, ExchangeError])
+async def test_unknown_submission_tracks_lookup_and_blocks_duplicate(
+    tmp_path: Path, error_type: type[Exception],
+) -> None:
     ledger = OrderLedger()
     ledger.lose_response = True
+    ledger.response_error_type = error_type
     bot = make_bot(tmp_path, ledger)
     await bot._execute_setup(setup())
     assert bot._pending_entry.order_id == "client:1"
@@ -374,3 +411,207 @@ async def test_safety_stop_reason_reaches_persistence_callback(tmp_path: Path) -
     await bot._on_auth_stop(3, "expired")
     await bot._on_write_denied_stop(3, "permission")
     assert reasons == ["auth_expired", "api_permission"]
+
+
+def close_events(bot: BotIctInstance) -> list[Any]:
+    """실제 청산으로 기록된 이벤트를 반환한다.
+
+    Args:
+        bot: 검증 대상.
+    Returns:
+        청산 이벤트 목록.
+    """
+    if bot._trades_store is None:
+        return []
+    return [e for e in bot._trades_store.all_events() if e.event_type is not TradeEventType.ENTRY]
+
+
+@pytest.mark.asyncio
+async def test_emergency_ack_and_partial_fill_never_clear_or_duplicate(tmp_path: Path) -> None:
+    ledger = OrderLedger()
+    ledger.close_fill_fraction = 0.0
+    bot = make_bot(tmp_path, ledger)
+    be_position(bot, ledger)
+    await bot._emergency_close()
+    await bot._emergency_close()
+    assert len(ledger.requests) == 1
+    assert bot.active_position.qty == 1.0
+    assert close_events(bot) == []
+    ledger.fill_close("close1", 0.4)
+    await bot._check_pending_close()
+    assert bot.active_position.qty == pytest.approx(0.6)
+    assert sum(e.qty for e in close_events(bot)) == pytest.approx(0.4)
+    assert bot._pending_close is not None
+    ledger.fill_close("close1", 1.0)
+    await bot._check_pending_close()
+    assert bot.active_position is None
+    assert bot._pending_close is None
+    assert sum(e.qty for e in close_events(bot)) == pytest.approx(1.0)
+    assert len(ledger.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_fill_confirmation_waits_for_position_propagation(tmp_path: Path) -> None:
+    ledger = OrderLedger()
+    ledger.defer_close_position = True
+    bot = make_bot(tmp_path, ledger)
+    be_position(bot, ledger)
+    await bot._emergency_close()
+    assert bot.active_position is not None
+    assert bot._pending_close is not None
+    ledger.position = None
+    await bot._check_pending_close()
+    assert bot.active_position is None
+    assert len(ledger.requests) == 1
+    assert sum(e.qty for e in close_events(bot)) == 1.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [RequestTimeout, ExchangeError])
+async def test_lost_close_response_uses_same_lookup_without_resubmission(
+    tmp_path: Path, error_type: type[Exception],
+) -> None:
+    ledger = OrderLedger()
+    ledger.close_response_lost = True
+    ledger.response_error_type = error_type
+    bot = make_bot(tmp_path, ledger)
+    be_position(bot, ledger)
+    await bot._emergency_close()
+    assert bot._pending_close.order_id == "client:close1"
+    assert bot.active_position is not None
+    assert close_events(bot) == []
+    await bot._check_pending_close()
+    assert bot.active_position is None
+    assert len(ledger.requests) == 1
+    assert sum(e.qty for e in close_events(bot)) == 1.0
+
+
+@pytest.mark.asyncio
+async def test_close_position_read_failure_preserves_intent(tmp_path: Path) -> None:
+    ledger = OrderLedger()
+    ledger.fail_after_close_submit = True
+    bot = make_bot(tmp_path, ledger)
+    be_position(bot, ledger)
+    await bot._emergency_close()
+    assert bot.active_position is not None
+    assert bot._pending_close is not None
+    assert close_events(bot) == []
+    await bot._emergency_close()
+    assert len(ledger.requests) == 1
+    ledger.position_read_fails = False
+    await bot._check_pending_close()
+    assert bot.active_position is None
+
+
+@pytest.mark.asyncio
+async def test_partial_exit_retries_only_unfilled_original_target(tmp_path: Path) -> None:
+    ledger = OrderLedger()
+    ledger.price = 103.1
+    ledger.close_fill_fraction = 0.25
+    ledger.close_terminal = True
+    bot = make_bot(tmp_path, ledger)
+    df = be_position(bot, ledger)
+    await bot._maybe_partial_exit(df)
+    assert bot.active_position.qty == pytest.approx(0.875)
+    assert not bot.active_position.partial_done
+    assert bot._pending_close.remaining == pytest.approx(0.375)
+    ledger.close_fill_fraction = 1.0
+    await bot._check_pending_close()
+    assert [r["qty"] for r in ledger.requests] == [0.5, 0.375]
+    assert bot.active_position.qty == pytest.approx(0.5)
+    assert bot.active_position.partial_done
+    assert bot.active_position.stop_loss == 100.0
+    assert sum(e.qty for e in close_events(bot)) == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_flip_ack_is_not_a_close_and_never_immediately_retries(tmp_path: Path) -> None:
+    ledger = OrderLedger()
+    ledger.close_fill_fraction = 0.0
+    bot = make_bot(tmp_path, ledger)
+    be_position(bot, ledger)
+    target = HtfFvgEntry(tf="1h", weight=4, type=FVGType.BEARISH, high=105.0, low=101.0, ts_ms=1)
+    await bot.handle_htf_flip(103.0, ENTRY_TS, target)
+    await bot.handle_htf_flip(103.0, ENTRY_TS + 1, target)
+    assert bot.active_position is not None
+    assert len(ledger.requests) == 1
+    assert close_events(bot) == []
+
+
+@pytest.mark.asyncio
+async def test_stop_retains_task_when_close_order_unconfirmed(tmp_path: Path) -> None:
+    ledger = OrderLedger()
+    ledger.close_fill_fraction = 0.0
+    bot = make_bot(tmp_path, ledger)
+    be_position(bot, ledger)
+    bot.state = BotState.RUNNING
+    await bot._emergency_close()
+    with pytest.raises(RuntimeError, match="청산 주문 미확인"):
+        await bot.stop()
+    assert bot.state is BotState.RUNNING
+    assert bot.entry_paused
+    assert bot._pending_close is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sl", [0.0, float("nan"), float("inf"), 101.0])
+async def test_invalid_entry_sl_never_sends_order(tmp_path: Path, sl: float) -> None:
+    ledger = OrderLedger()
+    bot = make_bot(tmp_path, ledger)
+    signal = setup()
+    signal.stop_loss = sl
+    await bot._execute_setup(signal, force_qty=1.0)
+    assert ledger.requests == []
+
+
+@pytest.mark.asyncio
+async def test_emergency_cancels_entry_remainder_and_captures_cancel_fill_race(tmp_path: Path) -> None:
+    ledger = OrderLedger()
+    ledger.immediate_fill_fraction = 0.25
+    ledger.cancel_fill_fraction = 0.5
+    ledger.protection_fails = True
+    bot = make_bot(tmp_path, ledger)
+    await bot._execute_setup(setup())
+    assert ledger.orders["1"]["status"] == "canceled"
+    assert ledger.requests[1]["reduce_only"]
+    assert ledger.requests[1]["qty"] == 40.0
+    assert sum(e.qty for e in entries(bot)) == 40.0
+    assert sum(e.qty for e in close_events(bot)) == 40.0
+    assert bot.active_position is None
+    assert bot._pending_entry is None
+    assert bot._pending_close is None
+
+
+@pytest.mark.asyncio
+async def test_emergency_waits_for_entry_cancel_before_close(tmp_path: Path) -> None:
+    ledger = OrderLedger()
+    ledger.immediate_fill_fraction = 0.25
+    ledger.protection_fails = True
+    ledger.cancel_fails = True
+    bot = make_bot(tmp_path, ledger)
+    await bot._execute_setup(setup())
+    assert bot.active_position.qty == 20.0
+    assert bot._pending_close is not None
+    assert bot._pending_entry is not None
+    assert len(ledger.requests) == 1
+    ledger.cancel_fails = False
+    await bot._check_pending_close()
+    assert ledger.requests[1]["qty"] == 20.0
+    assert bot.active_position is None
+    assert bot._pending_entry is None
+    assert bot._pending_close is None
+
+
+@pytest.mark.asyncio
+async def test_historical_entry_fill_does_not_create_flat_or_opposite_position(tmp_path: Path) -> None:
+    for opposite in (False, True):
+        ledger = OrderLedger()
+        bot = make_bot(tmp_path / str(opposite), ledger)
+        await bot._execute_setup(setup())
+        ledger.fill("1", 80.0)
+        ledger.position = dict(contracts=2.0, side="short", entryPrice=100.0) if opposite else None
+        assert not await bot._check_pending_entry()
+        assert bot.active_position is None
+        assert ledger.protection == []
+        assert sum(e.qty for e in entries(bot)) == 80.0
+        assert bot._pending_entry is None
